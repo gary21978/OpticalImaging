@@ -1,18 +1,14 @@
 import torch
-from Numerics import Numerics
-from Source import Source
-from Mask import Mask
-from Projection import Projection
 
 def CalculateAerialImage_SOCS(mask, TCCMatrix_SOCS, source, projector, numerics):
     # Get Image
-    maskNf = numerics.SampleNumber_Mask_X  # default 81
-    maskNg = numerics.SampleNumber_Mask_Y  # default 81
+    maskNf = numerics.SampleNumber_Mask_X
+    maskNg = numerics.SampleNumber_Mask_Y
 
-    waferNf = numerics.SampleNumber_Wafer_X  #  default 81
-    waferNg = numerics.SampleNumber_Wafer_Y  #  default 81
+    waferNf = numerics.SampleNumber_Wafer_X
+    waferNg = numerics.SampleNumber_Wafer_Y
 
-    spectrum, f, g, _ = mask.CalculateMaskSpectrum(projector, source)  # Assuming CalculateMaskSpectrum is defined
+    spectrum, f, g, _ = mask.CalculateMaskSpectrum(projector, source)
 
     if waferNf == maskNf and waferNg == maskNg:
         spectrumEx = spectrum[:-1, :-1]
@@ -45,21 +41,3 @@ def CalculateAerialImage_SOCS(mask, TCCMatrix_SOCS, source, projector, numerics)
     intensity = torch.rot90(intensity, 2)
 
     return intensity
-
-# Define a function to check the correctness of CalculateSOCS
-def check():
-    sr = Source()
-    mk = Mask()  # Initialize with appropriate values
-    mk.CreateLineMask(45, 90)
-    po = Projection()  # Initialize with appropriate values
-    numerics = Numerics()  # Initialize with appropriate values
-    matrix = torch.ones(80,80,50)
-    # Call the function to be tested
-    result = CalculateAerialImage_SOCS(mk, matrix, sr, po, numerics)
-    
-    # Print some validation information (you can add more checks)
-    print("Intensity sum:", torch.sum(result))
-    print("Intensity:",result)
-if __name__ == '__main__':
-    # Call the check function to test CalculateSOCS
-    check()

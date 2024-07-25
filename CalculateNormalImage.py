@@ -1,11 +1,5 @@
 import torch
 
-from Numerics import Numerics
-from Source import Source
-from Recipe import Recipe
-from Mask import Mask
-from Projection import Projection
-
 def cartesian_to_polar(x, y):
     
     rho = torch.sqrt(x**2 + y**2)
@@ -144,20 +138,3 @@ def CalculateNormalImage(source, mask, projector, recipe, numerics):
         
     normalIntensity = intensityBlank / weight
     return normalIntensity
-
-# Define a function to check the correctness of CalculateNormalImage
-def check():
-    sr = Source()
-    mk = Mask.CreateMask('line_space')  # Initialize with appropriate values
-    po = Projection()  # Initialize with appropriate values
-    rp = Recipe()  # Initialize with appropriate values
-    numerics = Numerics()  # Initialize with appropriate values
-    # Call the function to be tested
-    result = CalculateNormalImage(sr, mk, po, rp, numerics)
-    
-    # Print some validation information (you can add more checks)
-    print("Intensity shape:", result)
-
-if __name__ == '__main__':
-    # Call the check function to test CalculateSOCS
-    check()

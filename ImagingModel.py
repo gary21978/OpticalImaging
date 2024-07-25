@@ -35,23 +35,24 @@ class ImagingModel:
 
 def check():
     im = ImagingModel()
-    im.Mask = Mask.CreateMask('crossgate')
+    im.Mask = Mask.CreateMask('complex')
 
     im.Numerics.ImageCalculationMethod = "abbe"
-    intensity_Abbe = im.CalculateAerialImage().Intensity.detach().numpy().squeeze()
-
+    intensity_Abbe = im.CalculateAerialImage().Intensity.detach().numpy()
     im.Numerics.ImageCalculationMethod = "hopkins"
-    intensity_Hopkins = im.CalculateAerialImage().Intensity.detach().numpy().squeeze()
+    intensity_Hopkins = im.CalculateAerialImage().Intensity.detach().numpy()
 
-    plt.subplot(1, 3, 1)
-    plt.imshow(intensity_Abbe, cmap='gray')
-    plt.title("Abbe")
-    plt.colorbar()
+    NFocus = intensity_Abbe.shape[0]
+    for i in range(NFocus):
+        plt.subplot(NFocus, 2, 2*i+1)
+        plt.imshow(intensity_Abbe[i, :, :].squeeze(), cmap='gray')
+        plt.title("Abbe")
+        plt.colorbar()
 
-    plt.subplot(1, 3, 2)
-    plt.imshow(intensity_Hopkins, cmap='gray')
-    plt.title("Hopkins")
-    plt.colorbar()
+        plt.subplot(NFocus, 2, 2*i+2)
+        plt.imshow(intensity_Hopkins[i, :, :].squeeze(), cmap='gray')
+        plt.title("Hopkins")
+        plt.colorbar()
     
     plt.show()
     

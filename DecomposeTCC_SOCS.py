@@ -1,5 +1,4 @@
 import torch
-from Numerics import Numerics
 
 def DecomposeTCC_SOCS(TCCMatrix_Stacked, FG_ValidSize, numerics):
     maskNf = numerics.SampleNumber_Mask_X
@@ -38,21 +37,3 @@ def DecomposeTCC_SOCS(TCCMatrix_Stacked, FG_ValidSize, numerics):
     TCCMatrix_Kernel = TCCMatrix_Kernel * torch.sqrt(diagS)
 
     return TCCMatrix_Kernel
-
-# Define a function to check the correctness of DecomposeTCC_SOCS
-def check():
-    
-    TCCMatrix_Stacked = torch.ones(529, 529)  # Example shape
-    FG_ValidSize = (23, 23)
-    
-    numerics = Numerics()
-    
-    # Call the function to be tested
-    result = DecomposeTCC_SOCS(TCCMatrix_Stacked, FG_ValidSize, numerics)
-    
-    # Print the shape of the result for validation (you can add more checks)
-    print("Result:", result)
-
-if __name__ == '__main__':
-# Call the check function to test DecomposeTCC_SOCS
-    check()

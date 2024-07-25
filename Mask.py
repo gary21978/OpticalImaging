@@ -719,10 +719,10 @@ class Mask:
                 mask.Period_Y = 1200  # 1000 at the beginning
                 boundaryVertexX = [[-510, 510],
                                    [240, 465],
-                                   [240, 345],
-                                   [120, 345],
-                                   [120, 345],
-                                   [240, 345],
+                                   [240, 245],
+                                   [120, 245],
+                                   [120, 245],
+                                   [240, 245],
                                    [240, 465],
                                    [-345, -120],
                                    [-345, -240],
@@ -738,10 +738,10 @@ class Mask:
                                    [-345, -240],
                                    [-345, -120],
                                    [240, 465],
-                                   [240, 345],
-                                   [120, 345],
-                                   [120, 345],
-                                   [240, 345],
+                                   [240, 245],
+                                   [120, 245],
+                                   [120, 245],
+                                   [240, 245],
                                    [240, 465],
                                    [-510, 510]]
                 boundaryVertexY = [[427.5, 472.5],
@@ -778,35 +778,6 @@ class Mask:
                                 boundaryvertexY=boundaryVertexY[i],
                                 complexam=[1, 0])
                         )
-            elif (maskType.lower() == 'mypattern'):
-                mask.bgPhase = 0
-                mask.Period_X = 600  # 1000 at the beginning
-                mask.Period_Y = 600  # 1000 at the beginning
-                boundaryVertexX = [[-200, 200],
-                                   [172, 200],
-                                   [-200, -140],
-                                   [-80, -20],
-                                   [-200, 100],
-                                   [-200, -172],
-                                   [-132, -104],
-                                   [-64, -36],
-                                   [72, 100]]
-                boundaryVertexY = [[172, 200],
-                                   [-200, 172],
-                                   [90, 118],
-                                   [90, 118],
-                                   [-200, -172],
-                                   [-172, 0],
-                                   [-172, 0],
-                                   [-172, 0],
-                                   [-172, -50]]
-                for i in range(len(boundaryVertexX)):
-                    mask.Feature.append(
-                        Feature(shapetype='r',
-                                boundaryvertexX=boundaryVertexX[i],
-                                boundaryvertexY=boundaryVertexY[i],
-                                complexam=[1, 0])
-                        )
             elif (maskType.lower() == 'sram'):
                 maskSize = 400
                 mask.bgTransmission = 0.0
@@ -815,8 +786,8 @@ class Mask:
                 mask.Period_Y = maskSize  # 1000 at the beginning
                 mask.Feature.append(
                         Feature(shapetype='r',
-                                boundaryvertexX=[-510, 510],
-                                boundaryvertexY=[-472.5, -427.5],
+                                boundaryvertexX=[-510, -500],
+                                boundaryvertexY=[-472.5, -300.5],
                                 complexam=[1, 0])
                         )
             else:

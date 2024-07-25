@@ -29,7 +29,7 @@ def CalculateAbbeImage(source, mask, projector, recipe, numerics):
     spectrum, mask_fs, mask_gs, _ = mask.CalculateMaskSpectrum(projector, source)
 
     SimulationRange = recipe.FocusRange - recipe.Focus
-    Intensity = torch.zeros(wafer_nf, wafer_ng, len(SimulationRange))
+    Intensity = torch.zeros(len(SimulationRange), wafer_nf, wafer_ng)
     Orientation = mask.Orientation
 
     for iFocus in range(len(SimulationRange)):
@@ -77,7 +77,7 @@ def CalculateAbbeImage(source, mask, projector, recipe, numerics):
             
             if numerics.ImageCalculationMode == 'vector':
                 obliqueRaysMatrix = torch.zeros(len(fgSquare), ExyzCalculateNumber_2D, dtype=torch.complex64)
-                m0xx, m0yx, m0xy, m0yy, m0xz, m0yz = CalculateCharacteristicMatrix(f_calc, g_calc, fgSquare, NA, indexImage)
+                m0xx, m0yx, m0xy, m0yy, m0xz, m0yz = CalculateCharacteristicMatrix(f_calc, g_calc, NA, indexImage)
                 
                 obliqueRaysMatrix[:, 0] = PolarizedX[j] * m0xx + PolarizedY[j] * m0yx
                 obliqueRaysMatrix[:, 1] = PolarizedX[j] * m0xy + PolarizedY[j] * m0yy
@@ -119,12 +119,11 @@ def CalculateAbbeImage(source, mask, projector, recipe, numerics):
         intensity2D = torch.cat((intensity2D, intensity2D[:, 0].unsqueeze(1)), 1)
         intensity2D = torch.cat((intensity2D, intensity2D[0, :].unsqueeze(0)), 0)
         intensity2D = torch.real(torch.rot90(intensity2D, 2))
-        Intensity[:, :, iFocus] = (indexImage / weight * intensity2D)
-        Intensity = torch.transpose(Intensity, 0, 2)
+        Intensity[iFocus, :, :] = indexImage / weight * torch.transpose(intensity2D, 0, 1)
     ImageX = torch.linspace(-mask.Period_X/2, mask.Period_X/2, wafer_nf)
     ImageY = torch.linspace(-mask.Period_Y/2, mask.Period_Y/2, wafer_ng)
     ImageZ = recipe.FocusRange
-    
+
     farfieldImage = ImageData()
     farfieldImage.Intensity = projector.IndexImage*Intensity
     farfieldImage.ImageX = ImageX
@@ -135,14 +134,21 @@ def CalculateAbbeImage(source, mask, projector, recipe, numerics):
 
 def CalculateHopkinsImage(source, mask, projector, recipe, numerics):
     pitchxy = [mask.Period_X, mask.Period_Y]
-    TCCMatrix_Stacked, FG_ValidSize = \
-                    CalculateTCCMatrix(source, pitchxy, projector, recipe, numerics)
-    TCCMatrix_Kernel = \
-                    DecomposeTCC_SOCS(TCCMatrix_Stacked, FG_ValidSize, numerics)
-    
+    SimulationRange = recipe.FocusRange - recipe.Focus
     farfieldImage = ImageData()
-    farfieldImage.Intensity = CalculateAerialImage_SOCS(mask, TCCMatrix_Kernel, \
-                                                     source, projector, numerics)
+    Intensity = torch.zeros(len(SimulationRange), numerics.SampleNumber_Wafer_X, numerics.SampleNumber_Wafer_Y)
+    for iFocus, focus in enumerate(SimulationRange):
+        TCCMatrix_Stacked, FG_ValidSize = \
+                        CalculateTCCMatrix(source, pitchxy, projector, focus, numerics)
+        
+        TCCMatrix_Kernel = \
+                        DecomposeTCC_SOCS(TCCMatrix_Stacked, FG_ValidSize, numerics)
+        
+        
+        Intensity[iFocus, :, :] = CalculateAerialImage_SOCS(mask, TCCMatrix_Kernel, \
+                                                source, projector, numerics)
+        
+    farfieldImage.Intensity = Intensity
     farfieldImage.ImageX = torch.linspace(-mask.Period_X / 2,
                                             mask.Period_X / 2,
                                             numerics.SampleNumber_Wafer_X)
