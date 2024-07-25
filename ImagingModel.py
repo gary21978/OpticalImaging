@@ -2,7 +2,7 @@ from Numerics import Numerics
 from Source import Source
 from Recipe import Recipe
 from Mask import Mask
-from ProjectionObjective import ProjectionObjective
+from Projection import Projection
 from CalculateAerialImage import CalculateAbbeImage, CalculateHopkinsImage
 from CalculateNormalImage import CalculateNormalImage
 import matplotlib.pyplot as plt
@@ -12,7 +12,7 @@ class ImagingModel:
         self.Numerics = Numerics()
         self.Source = Source()
         self.Mask = Mask.CreateMask('crossgate')
-        self.Projector = ProjectionObjective()
+        self.Projector = Projection()
         self.Receipe = Recipe()
 
     def CalculateAerialImage(self):

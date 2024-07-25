@@ -1,6 +1,6 @@
 import torch
 from CalculateCharacteristicMatrix import CalculateCharacteristicMatrix
-from CalculateTCCMatrix import Calculate2DTCCMatrix
+from CalculateTCCMatrix import CalculateTCCMatrix
 from DecomposeTCC_SOCS import DecomposeTCC_SOCS
 from CalculateAerialImage_SOCS import CalculateAerialImage_SOCS
 from ImageData import ImageData
@@ -49,7 +49,7 @@ def CalculateAbbeImage(source, mask, projector, recipe, numerics):
         sourceXY2 = sourceX ** 2 + sourceY ** 2
 
         for j in range(len(sourceData.Value)):
-            obliqueRaysMatrix = 1
+            obliqueRaysMatrix = torch.ones(1, 1, dtype=torch.complex64)
             ExyzCalculateNumber_2D = 1
 
             if numerics.ImageCalculationMode.lower() == 'vector':
@@ -134,8 +134,9 @@ def CalculateAbbeImage(source, mask, projector, recipe, numerics):
     return farfieldImage
 
 def CalculateHopkinsImage(source, mask, projector, recipe, numerics):
+    pitchxy = [mask.Period_X, mask.Period_Y]
     TCCMatrix_Stacked, FG_ValidSize = \
-                    Calculate2DTCCMatrix(source, mask, projector, recipe, numerics)
+                    CalculateTCCMatrix(source, pitchxy, projector, recipe, numerics)
     TCCMatrix_Kernel = \
                     DecomposeTCC_SOCS(TCCMatrix_Stacked, FG_ValidSize, numerics)
     

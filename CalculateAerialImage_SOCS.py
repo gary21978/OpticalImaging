@@ -1,9 +1,8 @@
 import torch
-
 from Numerics import Numerics
 from Source import Source
 from Mask import Mask
-from ProjectionObjective import ProjectionObjective
+from Projection import Projection
 
 def CalculateAerialImage_SOCS(mask, TCCMatrix_SOCS, source, projector, numerics):
     # Get Image
@@ -52,7 +51,7 @@ def check():
     sr = Source()
     mk = Mask()  # Initialize with appropriate values
     mk.CreateLineMask(45, 90)
-    po = ProjectionObjective()  # Initialize with appropriate values
+    po = Projection()  # Initialize with appropriate values
     numerics = Numerics()  # Initialize with appropriate values
     matrix = torch.ones(80,80,50)
     # Call the function to be tested

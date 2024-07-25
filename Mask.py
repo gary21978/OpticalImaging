@@ -6,7 +6,7 @@ from scipy.spatial import Delaunay
 import numpy as np
 from matplotlib import path
 from Source import Source
-from ProjectionObjective import ProjectionObjective as PO
+from Projection import Projection as PO
 
 IMAGE_WH = 2048
 class Mask:

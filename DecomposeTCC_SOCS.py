@@ -10,7 +10,6 @@ def DecomposeTCC_SOCS(TCCMatrix_Stacked, FG_ValidSize, numerics):
     U, S, _ = torch.svd(TCCMatrix_Stacked)
     if numerics.Hopkins_SettingType.lower() == 'order':
         socsNumber = min(numerics.Hopkins_Order, U.size(1) - 1)
-        print(socsNumber)
     elif numerics.Hopkins_SettingType.lower() == 'threshold':
         rateThreshold = numerics.Hopkins_Threshold
         singularVector = torch.diag(S)
@@ -26,21 +25,6 @@ def DecomposeTCC_SOCS(TCCMatrix_Stacked, FG_ValidSize, numerics):
         raise ValueError('Error: TCCKernalSetting.method should be setNumber or setThreshold!')
 
     TCCMatrix_Kernel = torch.zeros(waferNg - 1, waferNf - 1, socsNumber, dtype=torch.complex64)
-
-    if waferNf > maskNf:
-        rangeWaferNf = torch.arange((waferNf - maskNf + 2) // 2 - 1, (waferNf + maskNf - 2) // 2)
-        rangeMaskNf = torch.arange(0, maskNf - 1)
-    else:
-        rangeWaferNf = torch.arange(0, waferNf - 1)
-        rangeMaskNf = torch.arange((maskNf - waferNf + 2) // 2 - 1, (waferNf + maskNf - 2) // 2)
-    
-    if waferNg > maskNg:
-        rangeWaferNg = torch.arange((waferNg - maskNg + 2) // 2 - 1, (waferNg + maskNg - 2) // 2)
-        rangeMaskNg = torch.arange(0, maskNg - 1)
-    else:
-        rangeWaferNg = torch.arange(0, waferNg - 1)
-        rangeMaskNg = torch.arange((maskNg - waferNg + 2) // 2 - 1, (waferNg + maskNg - 2) // 2)
-
     temp2 = torch.zeros(maskNg - 1, maskNf - 1, dtype=torch.complex64)
     
     for i in range(socsNumber):

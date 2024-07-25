@@ -4,7 +4,7 @@ from Numerics import Numerics
 from Source import Source
 from Recipe import Recipe
 from Mask import Mask
-from ProjectionObjective import ProjectionObjective
+from Projection import Projection
 
 def cartesian_to_polar(x, y):
     
@@ -149,7 +149,7 @@ def CalculateNormalImage(source, mask, projector, recipe, numerics):
 def check():
     sr = Source()
     mk = Mask.CreateMask('line_space')  # Initialize with appropriate values
-    po = ProjectionObjective()  # Initialize with appropriate values
+    po = Projection()  # Initialize with appropriate values
     rp = Recipe()  # Initialize with appropriate values
     numerics = Numerics()  # Initialize with appropriate values
     # Call the function to be tested

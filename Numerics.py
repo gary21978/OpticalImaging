@@ -19,7 +19,7 @@ class Numerics:
     SimulationRange_Resist=[]
     # Normailization
     Normalization_Intensity=0
-    # Imaging model => 'vector'  'sclar'
+    # Imaging model => 'vector'  'scalar'
     ImageCalculationMode: str = 'vector'
     # Calculation model =>‘abbe’ ‘hopkins’
     ImageCalculationMethod: str = 'abbe'
