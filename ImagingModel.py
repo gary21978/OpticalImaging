@@ -1,6 +1,5 @@
 from Numerics import Numerics
 from Source import Source
-from Recipe import Recipe
 from Mask import Mask
 from Projection import Projection
 from CalculateAerialImage import CalculateAbbeImage, CalculateHopkinsImage
@@ -13,27 +12,25 @@ class ImagingModel:
         self.Source = Source()
         self.Mask = Mask.CreateMask('crossgate')
         self.Projector = Projection()
-        self.Receipe = Recipe()
 
     def CalculateAerialImage(self):
         sr = self.Source
         mk = self.Mask
         po = self.Projector
-        rp = self.Receipe
         nm = self.Numerics
         if (nm.ImageCalculationMethod == 'abbe'):
-            ali = CalculateAbbeImage(sr, mk, po, rp, nm)
+            ali = CalculateAbbeImage(sr, mk, po, nm)
         elif (nm.ImageCalculationMethod == 'hopkins'):
-            ali = CalculateHopkinsImage(sr, mk, po, rp, nm)
+            ali = CalculateHopkinsImage(sr, mk, po, nm)
         else:
             raise ValueError('Unsupported Calculation Method')
         
         if nm.Normalization_Intensity:
-            ni = CalculateNormalImage(sr, mk, po, rp, nm)
+            ni = CalculateNormalImage(sr, mk, po, nm)
             ali.Intensity = ali.Intensity / ni
         return ali
 
-def check():
+def compareAbbeHopkins():
     im = ImagingModel()
     im.Mask = Mask.CreateMask('complex')
 
@@ -44,18 +41,22 @@ def check():
 
     NFocus = intensity_Abbe.shape[0]
     for i in range(NFocus):
-        plt.subplot(NFocus, 2, 2*i+1)
-        plt.imshow(intensity_Abbe[i, :, :].squeeze(), cmap='gray')
+        plt.subplot(NFocus, 3, 3*i+1)
+        plt.imshow(intensity_Abbe[i, :, :].squeeze(), cmap='jet')
         plt.title("Abbe")
         plt.colorbar()
 
-        plt.subplot(NFocus, 2, 2*i+2)
-        plt.imshow(intensity_Hopkins[i, :, :].squeeze(), cmap='gray')
+        plt.subplot(NFocus, 3, 3*i+2)
+        plt.imshow(intensity_Hopkins[i, :, :].squeeze(), cmap='jet')
         plt.title("Hopkins")
+        plt.colorbar()
+
+        plt.subplot(NFocus, 3, 3*i+3)
+        plt.imshow(intensity_Hopkins[i, :, :].squeeze() - intensity_Abbe[i, :, :].squeeze(), cmap='jet')
+        plt.title("Diff")
         plt.colorbar()
     
     plt.show()
     
 if __name__ == '__main__':
-    # Call the check function to test Calculate1DAerialImage
-    check()
+    compareAbbeHopkins()

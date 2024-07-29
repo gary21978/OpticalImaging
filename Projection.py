@@ -6,12 +6,10 @@ class Projection:
     def __init__(self):
         self.Aberration_Zernike = torch.zeros(37)
         self.Aberration_Polarization = None
-        self.PupilFilter = {}  # type : 'none', 'gaussian'
         self.Reduction = 0.5
         self.NA = 0.9
-        self.IndexImage = 1.0   # Air => 1.0, Water => 1.44
-        self.PupilFilter['Type'] = 'none'
-        self.PupilFilter['Parameters'] = 0
+        self.IndexImage = 1.0
+        self.FocusRange = torch.tensor([0])
 
     def CalculateAberration(self, rho, theta, Orientation):
         # Rotate projection objective
@@ -242,18 +240,6 @@ class Projection:
         Aberration = Aberration + Coefficients[36] * self.Zerniken(12, 0 ,rho, theta)
         return Aberration
 
-    def CalculatePupilFilter(self, rho, theta):
-        parameters = self.PupilFilter
-        if (parameters['Type'] == 'gaussian'):
-            # filter = parameters['Type']
-            # para = parameters['Parameters']
-            pupilFilter = 1  # TODO
-        elif (self.PupilFilter['Type'] == 'none'):
-            pupilFilter = 1
-        else:
-            pupilFilter = 1
-        return pupilFilter
-
     @staticmethod
     def Zerniken(n, m, rho, theta):
         Rnm = torch.zeros(rho.shape)
@@ -312,7 +298,6 @@ class Projection:
             c1[pp[ii]] = c1[pp[ii]] - tt[ii] * c0[ii]\
                 * torch.sin(mm[ii]*theta)
         return c1
-
 
 if __name__ == '__main__':
     po = Projection()

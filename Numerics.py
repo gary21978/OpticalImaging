@@ -16,7 +16,7 @@ class Numerics:
     ImageCalculationMethod: str = 'abbe'
     # Truncation method for hopkins model => 'order' 'Threshold'
     Hopkins_SettingType: str = 'order'
-    Hopkins_Order=10 # 50
+    Hopkins_Order=50
     Hopkins_Threshold=0.95  # (0, 1)
     def __init__(self):
         pass

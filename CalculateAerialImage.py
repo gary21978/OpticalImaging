@@ -10,7 +10,7 @@ def cartesian_to_polar(x, y):
     theta = torch.atan2(y, x)
     return rho, theta
 
-def CalculateAbbeImage(source, mask, projector, recipe, numerics):
+def CalculateAbbeImage(source, mask, projector, numerics):
     mask_nf = numerics.SampleNumber_Mask_X
     mask_ng = numerics.SampleNumber_Mask_Y
     wafer_nf = numerics.SampleNumber_Wafer_X
@@ -26,9 +26,9 @@ def CalculateAbbeImage(source, mask, projector, recipe, numerics):
 
     mask.Nf = mask_nf
     mask.Ng = mask_ng
-    spectrum, mask_fs, mask_gs, _ = mask.CalculateMaskSpectrum(projector, source)
+    spectrum, mask_fs, mask_gs = mask.CalculateMaskSpectrum(projector, source)
 
-    SimulationRange = recipe.FocusRange - recipe.Focus
+    SimulationRange = projector.FocusRange
     Intensity = torch.zeros(len(SimulationRange), wafer_nf, wafer_ng)
     Orientation = mask.Orientation
 
@@ -69,11 +69,10 @@ def CalculateAbbeImage(source, mask, projector, recipe, numerics):
                 (1 - (M ** 2 * NA ** 2) * fgSquare) / (1 - ((NA / indexImage) ** 2) * fgSquare)))
             
             aberration = projector.CalculateAberrationFast(rho_calc, theta_calc, Orientation)
-            pupilFilter = projector.CalculatePupilFilter(rho_calc, theta_calc)
             focusFactor = torch.exp(-1j * 2 * torch.pi / wavelength * (indexImage - torch.sqrt(indexImage ** 2 - NA * NA * fgSquare)) * focus)
             SpectrumCalc = new_spectrum[validPupil]
 
-            TempHAber = SpectrumCalc * obliquityFactor * torch.exp(1j * 2 * torch.pi * aberration) * pupilFilter * focusFactor
+            TempHAber = SpectrumCalc * obliquityFactor * torch.exp(1j * 2 * torch.pi * aberration) * focusFactor
             
             if numerics.ImageCalculationMode == 'vector':
                 obliqueRaysMatrix = torch.zeros(len(fgSquare), ExyzCalculateNumber_2D, dtype=torch.complex64)
@@ -122,7 +121,7 @@ def CalculateAbbeImage(source, mask, projector, recipe, numerics):
         Intensity[iFocus, :, :] = indexImage / weight * torch.transpose(intensity2D, 0, 1)
     ImageX = torch.linspace(-mask.Period_X/2, mask.Period_X/2, wafer_nf)
     ImageY = torch.linspace(-mask.Period_Y/2, mask.Period_Y/2, wafer_ng)
-    ImageZ = recipe.FocusRange
+    ImageZ = projector.FocusRange
 
     farfieldImage = ImageData()
     farfieldImage.Intensity = projector.IndexImage*Intensity
@@ -132,9 +131,9 @@ def CalculateAbbeImage(source, mask, projector, recipe, numerics):
 
     return farfieldImage
 
-def CalculateHopkinsImage(source, mask, projector, recipe, numerics):
+def CalculateHopkinsImage(source, mask, projector, numerics):
     pitchxy = [mask.Period_X, mask.Period_Y]
-    SimulationRange = recipe.FocusRange - recipe.Focus
+    SimulationRange = projector.FocusRange
     farfieldImage = ImageData()
     Intensity = torch.zeros(len(SimulationRange), numerics.SampleNumber_Wafer_X, numerics.SampleNumber_Wafer_Y)
     for iFocus, focus in enumerate(SimulationRange):
@@ -155,6 +154,6 @@ def CalculateHopkinsImage(source, mask, projector, recipe, numerics):
     farfieldImage.ImageY = torch.linspace(-mask.Period_Y / 2,
                                             mask.Period_Y / 2,
                                             numerics.SampleNumber_Wafer_Y)
-    farfieldImage.ImageZ = recipe.FocusRange
+    farfieldImage.ImageZ = projector.FocusRange
 
     return farfieldImage

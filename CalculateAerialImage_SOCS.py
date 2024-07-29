@@ -8,7 +8,7 @@ def CalculateAerialImage_SOCS(mask, TCCMatrix_SOCS, source, projector, numerics)
     waferNf = numerics.SampleNumber_Wafer_X
     waferNg = numerics.SampleNumber_Wafer_Y
 
-    spectrum, f, g, _ = mask.CalculateMaskSpectrum(projector, source)
+    spectrum, f, g = mask.CalculateMaskSpectrum(projector, source)
 
     if waferNf == maskNf and waferNg == maskNg:
         spectrumEx = spectrum[:-1, :-1]
