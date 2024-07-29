@@ -11,10 +11,8 @@ def cartesian_to_polar(x, y):
     return rho, theta
 
 def CalculateAbbeImage(source, mask, projector, numerics):
-    mask_nf = numerics.SampleNumber_Mask_X
-    mask_ng = numerics.SampleNumber_Mask_Y
-    wafer_nf = numerics.SampleNumber_Wafer_X
-    wafer_ng = numerics.SampleNumber_Wafer_Y
+    target_nf = mask.Feature.shape[1]
+    target_ng = mask.Feature.shape[0]
 
     source.PntNum = numerics.SampleNumber_Source
     sourceData = source.Calc_SourceSimple()
@@ -23,17 +21,15 @@ def CalculateAbbeImage(source, mask, projector, numerics):
     NA = projector.NA
     M = projector.Reduction
     indexImage = projector.IndexImage
-
-    mask.Nf = mask_nf
-    mask.Ng = mask_ng
     spectrum, mask_fs, mask_gs = mask.CalculateMaskSpectrum(projector, source)
 
     SimulationRange = projector.FocusRange
-    Intensity = torch.zeros(len(SimulationRange), wafer_nf, wafer_ng)
+    Intensity = torch.zeros(len(SimulationRange), target_nf, target_ng)
 
     for iFocus in range(len(SimulationRange)):
-        mask_fm, mask_gm = torch.meshgrid(mask_fs[:-1], mask_gs[:-1], indexing='ij')
-        intensity2D = torch.zeros(wafer_nf - 1, wafer_ng - 1, len(sourceData.Value))
+        #mask_fm, mask_gm = torch.meshgrid(mask_fs[:-1], mask_gs[:-1], indexing='ij')
+        mask_fm, mask_gm = torch.meshgrid(mask_gs[:-1], mask_fs[:-1], indexing='ij')
+        intensity2D = torch.zeros(target_ng - 1, target_nf - 1, len(sourceData.Value))
         sourceX = sourceData.X
         sourceY = sourceData.Y
         sourceV = sourceData.Value
@@ -57,6 +53,7 @@ def CalculateAbbeImage(source, mask, projector, numerics):
                 ExyzCalculateNumber_2D = 1
 
             rho2 = (mask_fg2m + 2 * (sourceX[j] * mask_fm + sourceY[j] * mask_gm) + sourceXY2[j]).to(torch.complex64)
+            
             validPupil = torch.where(torch.real(rho2) <= 1)
 
             f_calc = mask_fm[validPupil] + sourceX[j]
@@ -82,31 +79,11 @@ def CalculateAbbeImage(source, mask, projector, numerics):
                 obliqueRaysMatrix[:, 2] = PolarizedX[j] * m0xz + PolarizedY[j] * m0yz
                 
             rho2[:] = 0
-            intensityTemp = torch.zeros(wafer_nf - 1, wafer_ng - 1)
+            intensityTemp = torch.zeros(target_ng - 1, target_nf - 1)
             
             for iEM in range(ExyzCalculateNumber_2D):
                 rho2[validPupil] = TempHAber * obliqueRaysMatrix[:, iEM]
-
-                if wafer_nf == mask_nf and wafer_ng == mask_ng:
-                    ExyzFrequency = rho2
-                else:
-                    ExyzFrequency = torch.zeros(wafer_nf - 1, wafer_ng - 1)
-                    if wafer_nf > mask_nf:
-                        rangeWaferNf = torch.arange((wafer_nf - mask_nf + 2) // 2, (wafer_nf + mask_nf - 2) // 2)
-                        rangeMaskNf = torch.arange(0, mask_nf - 1)
-                    else:
-                        rangeWaferNf = torch.arange(0, wafer_nf - 1)
-                        rangeMaskNf = torch.arange((mask_nf - wafer_nf + 2) // 2, (wafer_nf + mask_nf - 2) // 2)
-
-                    if wafer_ng > mask_ng:
-                        rangeWaferNg = torch.arange((wafer_ng - mask_ng + 2) // 2, (wafer_ng + mask_ng - 2) // 2)
-                        rangeMaskNg = torch.arange(0, mask_ng - 1)
-                    else:
-                        rangeWaferNg = torch.arange(0, wafer_ng - 1)
-                        rangeMaskNg = torch.arange((mask_ng - wafer_ng + 2) // 2, (wafer_ng + mask_ng - 2) // 2)
-
-                    ExyzFrequency[rangeWaferNf, rangeWaferNg] = rho2[rangeMaskNf, rangeMaskNg]
-
+                ExyzFrequency = rho2
                 Exyz_Partial = torch.fft.fft2(ExyzFrequency)
                 intensityTemp = intensityTemp + torch.abs(Exyz_Partial) ** 2
 
@@ -118,8 +95,8 @@ def CalculateAbbeImage(source, mask, projector, numerics):
         intensity2D = torch.cat((intensity2D, intensity2D[0, :].unsqueeze(0)), 0)
         intensity2D = torch.real(torch.rot90(intensity2D, 2))
         Intensity[iFocus, :, :] = indexImage / weight * torch.transpose(intensity2D, 0, 1)
-    ImageX = torch.linspace(-mask.Period_X/2, mask.Period_X/2, wafer_nf)
-    ImageY = torch.linspace(-mask.Period_Y/2, mask.Period_Y/2, wafer_ng)
+    ImageX = torch.linspace(-mask.Period_X/2, mask.Period_X/2, target_nf)
+    ImageY = torch.linspace(-mask.Period_Y/2, mask.Period_Y/2, target_ng)
     ImageZ = projector.FocusRange
 
     farfieldImage = ImageData()
@@ -132,27 +109,29 @@ def CalculateAbbeImage(source, mask, projector, numerics):
 
 def CalculateHopkinsImage(source, mask, projector, numerics):
     pitchxy = [mask.Period_X, mask.Period_Y]
+    Nfg = [mask.Feature.shape[1], mask.Feature.shape[0]]
+
     SimulationRange = projector.FocusRange
     farfieldImage = ImageData()
-    Intensity = torch.zeros(len(SimulationRange), numerics.SampleNumber_Wafer_X, numerics.SampleNumber_Wafer_Y)
+    Intensity = torch.zeros(len(SimulationRange), mask.Feature.shape[1], mask.Feature.shape[0])
     for iFocus, focus in enumerate(SimulationRange):
         TCCMatrix_Stacked, FG_ValidSize = \
                         CalculateTCCMatrix(source, pitchxy, projector, focus, numerics)
         
         TCCMatrix_Kernel = \
-                        DecomposeTCC_SOCS(TCCMatrix_Stacked, FG_ValidSize, numerics)
+                        DecomposeTCC_SOCS(TCCMatrix_Stacked, FG_ValidSize, Nfg, numerics)
         
         
         Intensity[iFocus, :, :] = CalculateAerialImage_SOCS(mask, TCCMatrix_Kernel, \
-                                                source, projector, numerics)
+                                                            source, projector)
         
     farfieldImage.Intensity = Intensity
     farfieldImage.ImageX = torch.linspace(-mask.Period_X / 2,
                                             mask.Period_X / 2,
-                                            numerics.SampleNumber_Wafer_X)
+                                            mask.Feature.shape[0])
     farfieldImage.ImageY = torch.linspace(-mask.Period_Y / 2,
-                                            mask.Period_Y / 2,
-                                            numerics.SampleNumber_Wafer_Y)
+                                           mask.Period_Y / 2,
+                                           mask.Feature.shape[1])
     farfieldImage.ImageZ = projector.FocusRange
 
     return farfieldImage

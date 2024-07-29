@@ -1,9 +1,6 @@
 class Numerics:
-    SampleNumber_Source: int = 61
-    SampleNumber_Mask_X: int = 81
-    SampleNumber_Mask_Y: int = 81
-    SampleNumber_Wafer_X: int = 81
-    SampleNumber_Wafer_Y: int = 81
+    # Source sample number
+    SampleNumber_Source: int = 41
     # Normailization
     Normalization_Intensity = 0
     # Imaging model => 'vector'  'scalar'
