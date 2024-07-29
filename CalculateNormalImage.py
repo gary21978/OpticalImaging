@@ -7,7 +7,7 @@ def cartesian_to_polar(x, y):
 
     return rho, theta
 
-def CalculateNormalImage(source, mask, projector, recipe, numerics):
+def CalculateNormalImage(source, mask, projector, numerics):
 
     source.PntNum = numerics.SampleNumber_Source
     sourceData = source.Calc_SourceSimple()
@@ -66,13 +66,7 @@ def CalculateNormalImage(source, mask, projector, recipe, numerics):
 
     obliquityFactor = torch.sqrt(torch.sqrt((1 - (M**2 * NA**2) * fgSquare) / (1 - (NA / indexImage)**2 * fgSquare)))
 
-    if mask.Orientation == 0:
-        aberration = projector.CalculateAberrationFast(rho_calc, theta_calc, 0)
-    elif abs(mask.Orientation - torch.pi / 2) < 1e-6:
-        aberration = projector.CalculateAberrationFast(rho_calc, theta_calc, torch.pi / 2)
-    else:
-        raise ValueError('Not supported orientation angle')
-
+    aberration = projector.CalculateAberrationFast(rho_calc, theta_calc, 0)
     TempH0Aber = SpectrumCalc * obliquityFactor * torch.exp(1j * 2 * torch.pi * aberration)
 
     obliqueRaysMatrix = torch.ones(len(rho_calc), ExyzCalculateNumber)
@@ -118,16 +112,8 @@ def CalculateNormalImage(source, mask, projector, recipe, numerics):
         obliqueRaysMatrix[:, 1] = PolarizedX * M0xy + PolarizedY * M0yy
         obliqueRaysMatrix[:, 2] = PolarizedX * M0xz + PolarizedY * M0yz
         
-    # if projector.PupilFilter.Type.lower() != 'none':
-    #    filter = projector.PupilFilter.Type
-    #    parameter = projector.PupilFilter.Parameter
-    #    f_pupil = f0_s[validPupil] 
-    #    g_pupil = g0_s[validPupil]
-    #    pupilFilterData = filter(parameter, f_pupil, g_pupil)  # Assuming filter is a function
-    #    TempH0Aber = pupilFilterData * TempH0Aber
-
-    TempFocus = -1j * 2 * torch.pi / wavelength * torch.sqrt(indexImage**2 - NA**2 * fgSquare)
-    tempF = torch.exp(TempFocus * recipe.Focus)
+    TempFocus = -1j * 2 * torch.pi / wavelength * (indexImage - torch.sqrt(indexImage**2 - NA**2 * fgSquare))
+    tempF = torch.exp(TempFocus * projector.Focus)
     intensityBlank = 0
     for iEM in range(ExyzCalculateNumber):
         ExyzFrequency = obliqueRaysMatrix[:, iEM] * TempH0Aber * tempF

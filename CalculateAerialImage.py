@@ -30,7 +30,6 @@ def CalculateAbbeImage(source, mask, projector, numerics):
 
     SimulationRange = projector.FocusRange
     Intensity = torch.zeros(len(SimulationRange), wafer_nf, wafer_ng)
-    Orientation = mask.Orientation
 
     for iFocus in range(len(SimulationRange)):
         mask_fm, mask_gm = torch.meshgrid(mask_fs[:-1], mask_gs[:-1], indexing='ij')
@@ -67,8 +66,8 @@ def CalculateAbbeImage(source, mask, projector, numerics):
 
             obliquityFactor = torch.sqrt(torch.sqrt(
                 (1 - (M ** 2 * NA ** 2) * fgSquare) / (1 - ((NA / indexImage) ** 2) * fgSquare)))
-            
-            aberration = projector.CalculateAberrationFast(rho_calc, theta_calc, Orientation)
+
+            aberration = projector.CalculateAberrationFast(rho_calc, theta_calc, 0)
             focusFactor = torch.exp(-1j * 2 * torch.pi / wavelength * (indexImage - torch.sqrt(indexImage ** 2 - NA * NA * fgSquare)) * focus)
             SpectrumCalc = new_spectrum[validPupil]
 

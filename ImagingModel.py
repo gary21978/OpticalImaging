@@ -5,12 +5,13 @@ from Projection import Projection
 from CalculateAerialImage import CalculateAbbeImage, CalculateHopkinsImage
 from CalculateNormalImage import CalculateNormalImage
 import matplotlib.pyplot as plt
+import torch
 
 class ImagingModel:
     def __init__(self):
         self.Numerics = Numerics()
         self.Source = Source()
-        self.Mask = Mask.CreateMask('crossgate')
+        self.Mask = Mask()
         self.Projector = Projection()
 
     def CalculateAerialImage(self):
@@ -25,14 +26,16 @@ class ImagingModel:
         else:
             raise ValueError('Unsupported Calculation Method')
         
-        if nm.Normalization_Intensity:
-            ni = CalculateNormalImage(sr, mk, po, nm)
-            ali.Intensity = ali.Intensity / ni
+        #if nm.Normalization_Intensity:
+        #    ni = CalculateNormalImage(sr, mk, po, nm)
+        #    ali.Intensity = ali.Intensity / ni
         return ali
 
 def compareAbbeHopkins():
     im = ImagingModel()
-    im.Mask = Mask.CreateMask('complex')
+    im.Mask.Feature = torch.zeros((81, 81))
+    im.Mask.Feature[20:40, 10:15] = 1
+    im.Mask.Feature[20:40, 70:75] = 1
 
     im.Numerics.ImageCalculationMethod = "abbe"
     intensity_Abbe = im.CalculateAerialImage().Intensity.detach().numpy()

@@ -32,8 +32,7 @@ def CalculateTCCMatrix(source, pitchxy, projector, focus, numerics):
     validRhoSquare = rhoSquare[validPupil]
     obliquityFactor = torch.sqrt(torch.sqrt(
         (1 - (M ** 2 * NA ** 2) * validRhoSquare) / (1 - ((NA / indexImage) ** 2) * validRhoSquare)))
-    Orientation = 0
-    aberration = projector.CalculateAberrationFast(validRho, validTheta, Orientation)
+    aberration = projector.CalculateAberrationFast(validRho, validTheta, 0)
     shiftedPupil = torch.zeros(validPupil.size()).to(torch.complex64)
     TempFocus = 1j * 2 * torch.pi / wavelength * (indexImage - torch.sqrt(indexImage ** 2 - NA ** 2 * validRhoSquare))
     shiftedPupil[validPupil] = obliquityFactor * torch.exp(1j * 2 * torch.pi * aberration) * torch.exp(TempFocus*focus)
