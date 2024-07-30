@@ -1,10 +1,9 @@
 import torch
-import torch.special
 
 class Mask:
     def __init__(self):
-        self.Period_X = 500
-        self.Period_Y = 500
+        self.Period_X = 700   # nanometer
+        self.Period_Y = 1000  # nanometer
         self.Feature = []
 
     def CalculateMaskSpectrum(self, po, sr):

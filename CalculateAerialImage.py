@@ -19,7 +19,7 @@ def CalculateAbbeImage(source, mask, projector, numerics):
     weight = torch.sum(sourceData.Value)
     wavelength = source.Wavelength
     NA = projector.NA
-    M = projector.Reduction
+    M = projector.Magnification
     indexImage = projector.IndexImage
     spectrum, mask_fs, mask_gs = mask.CalculateMaskSpectrum(projector, source)
 
@@ -59,10 +59,9 @@ def CalculateAbbeImage(source, mask, projector, numerics):
             f_calc = mask_fm[validPupil] + sourceX[j]
             g_calc = mask_gm[validPupil] + sourceY[j]
             rho_calc, theta_calc = cartesian_to_polar(f_calc, g_calc)
-            fgSquare = rho_calc ** 2
+            fgSquare = rho_calc**2
 
-            obliquityFactor = torch.sqrt(torch.sqrt(
-                (1 - (M ** 2 * NA ** 2) * fgSquare) / (1 - ((NA / indexImage) ** 2) * fgSquare)))
+            obliquityFactor = torch.pow((1 - (M ** 2 * NA ** 2) * fgSquare) / (1 - ((NA / indexImage) ** 2) * fgSquare), 0.25)
 
             aberration = projector.CalculateAberrationFast(rho_calc, theta_calc, 0)
             focusFactor = torch.exp(-1j * 2 * torch.pi / wavelength * (indexImage - torch.sqrt(indexImage ** 2 - NA * NA * fgSquare)) * focus)
@@ -100,7 +99,7 @@ def CalculateAbbeImage(source, mask, projector, numerics):
     ImageZ = projector.FocusRange
 
     farfieldImage = ImageData()
-    farfieldImage.Intensity = projector.IndexImage*Intensity
+    farfieldImage.Intensity = Intensity
     farfieldImage.ImageX = ImageX
     farfieldImage.ImageY = ImageY
     farfieldImage.ImageZ = ImageZ
@@ -108,7 +107,7 @@ def CalculateAbbeImage(source, mask, projector, numerics):
     return farfieldImage
 
 def CalculateHopkinsImage(source, mask, projector, numerics):
-    pitchxy = [mask.Period_X, mask.Period_Y]
+    pitchxy = [mask.Period_Y, mask.Period_X]
     Nfg = [mask.Feature.shape[1], mask.Feature.shape[0]]
 
     SimulationRange = projector.FocusRange
@@ -128,10 +127,10 @@ def CalculateHopkinsImage(source, mask, projector, numerics):
     farfieldImage.Intensity = Intensity
     farfieldImage.ImageX = torch.linspace(-mask.Period_X / 2,
                                             mask.Period_X / 2,
-                                            mask.Feature.shape[0])
+                                            mask.Feature.shape[1])
     farfieldImage.ImageY = torch.linspace(-mask.Period_Y / 2,
                                            mask.Period_Y / 2,
-                                           mask.Feature.shape[1])
+                                           mask.Feature.shape[0])
     farfieldImage.ImageZ = projector.FocusRange
 
     return farfieldImage

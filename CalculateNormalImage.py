@@ -18,12 +18,11 @@ def CalculateNormalImage(source, mask, projector, numerics):
     if projector.LensType == 'Immersion':
         indexImage = projector.Index_ImmersionLiquid
     elif projector.LensType == 'Dry':
-        indexImage = 1  # 1.44
+        indexImage = 1
         if NA >= 1:
             raise ValueError('Wrong NA!')
     else:
         raise ValueError('Unsupported Lens Type')
-
    
     if mask.Orientation == 0:
         pass

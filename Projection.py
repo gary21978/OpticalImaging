@@ -6,9 +6,9 @@ class Projection:
     def __init__(self):
         self.Aberration_Zernike = torch.zeros(37)
         self.Aberration_Polarization = None
-        self.Reduction = 0.5
+        self.Magnification = 1.0
         self.NA = 0.9
-        self.IndexImage = 1.0
+        self.IndexImage = 2.0
         self.FocusRange = torch.tensor([0])
 
     def CalculateAberration(self, rho, theta, Orientation):

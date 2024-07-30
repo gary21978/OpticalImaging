@@ -15,13 +15,13 @@ def conv2(matr, ker, mode='same'):
 class Source:
     def __init__(self):
         self.PntNum = 101
-        self.Wavelength = 193.368
+        self.Wavelength = 365
         self.Shape = "annular"
         # Source shape :
         # 'annular''multipole''dipolecirc''quadrupole''pixel''quasar'
 
-        self.SigmaOut = 0.8
-        self.SigmaIn = 0.6
+        self.SigmaOut = 0.9
+        self.SigmaIn = 0.0
 
         self.SigmaCenter = 0.5
         self.SigmaRadius = 0.1

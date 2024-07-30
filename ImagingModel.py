@@ -36,6 +36,10 @@ def compareAbbeHopkins():
     im.Mask.Feature = torch.zeros((101, 71))
     im.Mask.Feature[80:90, 10:15] = 1
 
+    Lx = im.Mask.Period_X
+    Ly = im.Mask.Period_Y
+    M = im.Projector.Magnification
+    mask = im.Mask.Feature.detach().numpy().squeeze().transpose()
     im.Numerics.ImageCalculationMethod = "abbe"
     intensity_Abbe = im.CalculateAerialImage().Intensity.detach().numpy()
     im.Numerics.ImageCalculationMethod = "hopkins"
@@ -44,23 +48,35 @@ def compareAbbeHopkins():
     NFocus = intensity_Abbe.shape[0]
     for i in range(NFocus):
         plt.subplot(NFocus, 4, 4*i+1)
-        plt.imshow(im.Mask.Feature.detach().numpy().squeeze().transpose(), cmap='gray')
-        plt.title("Design")
+        plt.imshow(mask, cmap='gray', interpolation='none', \
+                   extent = (0, Lx, 0, Ly))
+        plt.title("Mask")
+        plt.xlabel('nm')
+        plt.ylabel('nm')
         plt.colorbar()
 
         plt.subplot(NFocus, 4, 4*i+2)
-        plt.imshow(intensity_Abbe[i, :, :].squeeze(), cmap='jet')
+        plt.imshow(intensity_Abbe[i, :, :].squeeze(), cmap='jet', \
+                   extent = (0, Lx*M, 0, Ly*M))
         plt.title("Abbe")
+        plt.xlabel('nm')
+        plt.ylabel('nm')
         plt.colorbar()
 
         plt.subplot(NFocus, 4, 4*i+3)
-        plt.imshow(intensity_Hopkins[i, :, :].squeeze(), cmap='jet')
+        plt.imshow(intensity_Hopkins[i, :, :].squeeze(), cmap='jet', \
+                   extent = (0, Lx*M, 0, Ly*M))
         plt.title("Hopkins")
+        plt.xlabel('nm')
+        plt.ylabel('nm')
         plt.colorbar()
 
         plt.subplot(NFocus, 4, 4*i+4)
-        plt.imshow(intensity_Hopkins[i, :, :].squeeze() - intensity_Abbe[i, :, :].squeeze(), cmap='jet')
+        plt.imshow(intensity_Hopkins[i, :, :].squeeze() - intensity_Abbe[i, :, :].squeeze(), cmap='jet', \
+                   extent = (0, Lx*M, 0, Ly*M))
         plt.title("Diff")
+        plt.xlabel('nm')
+        plt.ylabel('nm')
         plt.colorbar()
     
     plt.show()

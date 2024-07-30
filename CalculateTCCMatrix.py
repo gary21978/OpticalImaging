@@ -6,13 +6,13 @@ def cartesian_to_polar(x, y):
     theta = torch.atan2(y, x)
     return rho, theta
 
-def CalculateTCCMatrix(source, pitchxy, projector, focus, numerics):
+def CalculateTCCMatrix(source, xypitch, projector, focus, numerics):
     indexImage = projector.IndexImage
     wavelength = source.Wavelength
-    xPitch = pitchxy[0]
-    yPitch = pitchxy[1]
+    xPitch = xypitch[0]
+    yPitch = xypitch[1]
     sourceData = source.Calc_SourceSimple()
-    M = projector.Reduction
+    M = projector.Magnification
     NA = projector.NA
     normalized_xPitch = torch.tensor(xPitch / (wavelength / NA))
     normalized_yPitch = torch.tensor(yPitch / (wavelength / NA))
@@ -30,8 +30,7 @@ def CalculateTCCMatrix(source, pitchxy, projector, focus, numerics):
     validRho = rho[validPupil]
     validTheta = theta[validPupil]
     validRhoSquare = rhoSquare[validPupil]
-    obliquityFactor = torch.sqrt(torch.sqrt(
-        (1 - (M ** 2 * NA ** 2) * validRhoSquare) / (1 - ((NA / indexImage) ** 2) * validRhoSquare)))
+    obliquityFactor = torch.pow((1 - (M ** 2 * NA ** 2) * validRhoSquare) / (1 - ((NA / indexImage) ** 2) * validRhoSquare), 0.25)
     aberration = projector.CalculateAberrationFast(validRho, validTheta, 0)
     shiftedPupil = torch.zeros(validPupil.size()).to(torch.complex64)
     TempFocus = 1j * 2 * torch.pi / wavelength * (indexImage - torch.sqrt(indexImage ** 2 - NA ** 2 * validRhoSquare))
