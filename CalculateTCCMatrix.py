@@ -33,8 +33,9 @@ def CalculateTCCMatrix(source, xypitch, projector, focus, numerics):
     obliquityFactor = torch.pow((1 - (M ** 2 * NA ** 2) * validRhoSquare) / (1 - ((NA / indexImage) ** 2) * validRhoSquare), 0.25)
     aberration = projector.CalculateAberrationFast(validRho, validTheta, 0)
     shiftedPupil = torch.zeros(validPupil.size()).to(torch.complex64)
-    TempFocus = 1j * 2 * torch.pi / wavelength * (indexImage - torch.sqrt(indexImage ** 2 - NA ** 2 * validRhoSquare))
-    shiftedPupil[validPupil] = obliquityFactor * torch.exp(1j * 2 * torch.pi * aberration) * torch.exp(TempFocus*focus)
+    focusFactor = torch.exp(-1j * 2 * torch.pi / wavelength * (indexImage - torch.sqrt(indexImage ** 2 - NA * NA * validRhoSquare)) * focus)
+
+    shiftedPupil[validPupil] = obliquityFactor * torch.exp(1j * 2 * torch.pi * aberration) * focusFactor
     if numerics.ImageCalculationMode == 'vector':
         M0xx, M0yx, M0xy, M0yy, M0xz, M0yz = CalculateCharacteristicMatrix(new_f, new_g, NA, indexImage)
         rho_s, theta_s = cartesian_to_polar(sourceData.X, sourceData.Y)

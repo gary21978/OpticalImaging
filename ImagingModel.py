@@ -55,7 +55,7 @@ def compareAbbeHopkins():
     im.Projector.Magnification = 1.0
     im.Projector.NA = 0.9
     im.Projector.IndexImage = 1.0
-    im.Projector.FocusRange = torch.tensor([0])
+    im.Projector.FocusRange = torch.tensor([300, 0, -300])
     im.Numerics.ImageCalculationMode = "vector"
     im.Numerics.ImageCalculationMethod = "abbe"
     im.Numerics.Hopkins_SettingType = 'order'
