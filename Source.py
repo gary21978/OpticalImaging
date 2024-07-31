@@ -186,9 +186,9 @@ class Source:
         elif (self.PolarizationType == 'y_pol'):
             PolarizedX = torch.zeros(theta.size())
             PolarizedY = torch.ones(theta.size())
-        #elif (self.PolarizationType == 'c_pol'):
-        #    PolarizedX = torch.ones(theta.size())
-        #    PolarizedY = 1j * torch.ones(theta.size())
+        elif (self.PolarizationType == 'c_pol'):
+            PolarizedX = torch.ones(theta.size())
+            PolarizedY = 1j * torch.ones(theta.size())
         elif (self.PolarizationType == 'r_pol'):
             PolarizedX = torch.cos(theta)
             PolarizedY = torch.sin(theta)

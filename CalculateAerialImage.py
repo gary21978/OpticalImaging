@@ -27,7 +27,6 @@ def CalculateAbbeImage(source, mask, projector, numerics):
     Intensity = torch.zeros(len(SimulationRange), target_nf, target_ng)
 
     for iFocus in range(len(SimulationRange)):
-        #mask_fm, mask_gm = torch.meshgrid(mask_fs[:-1], mask_gs[:-1], indexing='ij')
         mask_fm, mask_gm = torch.meshgrid(mask_gs[:-1], mask_fs[:-1], indexing='ij')
         intensity2D = torch.zeros(target_ng - 1, target_nf - 1, len(sourceData.Value))
         sourceX = sourceData.X
@@ -39,7 +38,7 @@ def CalculateAbbeImage(source, mask, projector, numerics):
 
         source_rho, source_theta = cartesian_to_polar(sourceX, sourceY)
         PolarizedX, PolarizedY = source.Calc_PolarizationMap(source_theta, source_rho)
-        new_spectrum = spectrum[:-1, :-1] # Discard last row and column??
+        new_spectrum = spectrum[:-1, :-1]
         mask_fg2m = mask_fm ** 2 + mask_gm ** 2
         sourceXY2 = sourceX ** 2 + sourceY ** 2
 
@@ -120,6 +119,19 @@ def CalculateHopkinsImage(source, mask, projector, numerics):
         TCCMatrix_Kernel = \
                         DecomposeTCC_SOCS(TCCMatrix_Stacked, FG_ValidSize, Nfg, numerics)
         
+        """
+        # Visualize kernels
+        kernels = TCCMatrix_Kernel.permute(2, 1, 0)
+        spatial = torch.fft.fft2(kernels)
+        spatial = torch.abs(torch.fft.fftshift(spatial, dim=(1,2)))
+        import matplotlib.pyplot as plt
+        for i in range(4):
+            for j in range(5):
+                plt.subplot(5, 4, i * 5 + j + 1)
+                plt.imshow(spatial[i * 5 + j, :, :].detach().numpy(), cmap='jet')
+                plt.colorbar()
+        plt.show()
+        """
         
         Intensity[iFocus, :, :] = CalculateAerialImage_SOCS(mask, TCCMatrix_Kernel, \
                                                             source, projector)

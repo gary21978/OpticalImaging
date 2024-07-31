@@ -3,7 +3,6 @@ from Source import Source
 from Mask import Mask
 from Projection import Projection
 from CalculateAerialImage import CalculateAbbeImage, CalculateHopkinsImage
-from CalculateNormalImage import CalculateNormalImage
 import matplotlib.pyplot as plt
 import torch
 
@@ -25,15 +24,11 @@ class ImagingModel:
             ali = CalculateHopkinsImage(sr, mk, po, nm)
         else:
             raise ValueError('Unsupported Calculation Method')
-        
-        #if nm.Normalization_Intensity:
-        #    ni = CalculateNormalImage(sr, mk, po, nm)
-        #    ali.Intensity = ali.Intensity / ni
         return ali
 
 def compareAbbeHopkins():
     im = ImagingModel()
-    im.Mask.Feature = torch.zeros((101, 71))
+    im.Mask.Feature = torch.zeros((101, 101))
     im.Mask.Feature[80:90, 10:15] = 1
 
     Lx = im.Mask.Period_X
