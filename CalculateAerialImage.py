@@ -13,8 +13,6 @@ def cartesian_to_polar(x, y):
 def CalculateAbbeImage(source, mask, projector, numerics):
     target_nf = mask.Feature.shape[1]
     target_ng = mask.Feature.shape[0]
-
-    source.PntNum = numerics.SampleNumber_Source
     sourceData = source.Calc_SourceSimple()
     weight = torch.sum(sourceData.Value)
     wavelength = source.Wavelength

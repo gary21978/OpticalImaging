@@ -6,6 +6,18 @@ from CalculateAerialImage import CalculateAbbeImage, CalculateHopkinsImage
 import matplotlib.pyplot as plt
 import torch
 
+def createGeometry():
+    from PIL import Image, ImageDraw, ImageFont
+    import numpy as np
+    image = np.zeros((51, 51), dtype=np.uint8)
+    image = Image.fromarray(image)
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.truetype("arial.ttf", 32)
+    text = "S"
+    draw.text((15, 10), text, fill=1, font=font)
+    P = np.transpose(np.array(image, dtype=np.int8))
+    return torch.from_numpy(P)
+
 class ImagingModel:
     def __init__(self):
         self.Numerics = Numerics()
@@ -28,8 +40,28 @@ class ImagingModel:
 
 def compareAbbeHopkins():
     im = ImagingModel()
-    im.Mask.Feature = torch.zeros((101, 101))
-    im.Mask.Feature[80:90, 10:15] = 1
+    im.Mask.Feature = createGeometry()
+
+    ############################################
+    im.Mask.Period_X = 2000
+    im.Mask.Period_Y = 2000
+    im.Source.Wavelength = 365
+    im.Source.PntNum = 41
+    im.Source.Shape = "annular"
+    im.Source.PolarizationType = 'c_pol'
+    im.Source.SigmaOut = 0.9
+    im.Source.SigmaIn = 0.0
+    im.Projector.Aberration_Zernike = torch.zeros(37)
+    im.Projector.Magnification = 1.0
+    im.Projector.NA = 0.9
+    im.Projector.IndexImage = 1.0
+    im.Projector.FocusRange = torch.tensor([0])
+    im.Numerics.ImageCalculationMode = "vector"
+    im.Numerics.ImageCalculationMethod = "abbe"
+    im.Numerics.Hopkins_SettingType = 'order'
+    im.Numerics.Hopkins_Order = 50
+    im.Numerics.Hopkins_Threshold = 0.95
+    ############################################
 
     Lx = im.Mask.Period_X
     Ly = im.Mask.Period_Y

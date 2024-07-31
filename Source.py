@@ -187,8 +187,11 @@ class Source:
             PolarizedX = torch.zeros(theta.size())
             PolarizedY = torch.ones(theta.size())
         elif (self.PolarizationType == 'c_pol'):
-            PolarizedX = torch.ones(theta.size())
-            PolarizedY = 1j * torch.ones(theta.size())
+            PolarizedX = math.sqrt(.5) * torch.ones(theta.size())
+            PolarizedY = math.sqrt(.5) * 1j * torch.ones(theta.size())
+        elif (self.PolarizationType == 'd_pol'):
+            PolarizedX = math.sqrt(.5) * torch.ones(theta.size())
+            PolarizedY = math.sqrt(.5) * torch.ones(theta.size())    
         elif (self.PolarizationType == 'r_pol'):
             PolarizedX = torch.cos(theta)
             PolarizedY = torch.sin(theta)
@@ -211,6 +214,8 @@ class Source:
         if (len(biz) > sys.float_info.epsilon):
             PolarizedX[biz] = 0
             PolarizedY[biz] = 0
+        PolarizedX = PolarizedX.to(torch.complex64)
+        PolarizedY = PolarizedY.to(torch.complex64)
         return PolarizedX, PolarizedY
 
 

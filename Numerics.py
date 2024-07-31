@@ -1,8 +1,4 @@
 class Numerics:
-    # Source sample number
-    SampleNumber_Source: int = 41
-    # Normailization
-    Normalization_Intensity = 0
     # Imaging model => 'vector'  'scalar'
     ImageCalculationMode: str = 'vector'
     # Calculation model =>'abbe' 'hopkins'

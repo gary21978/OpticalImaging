@@ -2,7 +2,7 @@ import torch
 
 class Mask:
     def __init__(self):
-        self.Period_X = 700   # nanometer
+        self.Period_X = 1000  # nanometer
         self.Period_Y = 1000  # nanometer
         self.Feature = []
 

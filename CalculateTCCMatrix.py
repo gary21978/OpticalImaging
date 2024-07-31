@@ -50,6 +50,7 @@ def CalculateTCCMatrix(source, xypitch, projector, focus, numerics):
         TCCMatrix_Stacked = TCCMatrixX + TCCMatrixY + TCCMatrixZ
     elif numerics.ImageCalculationMode == 'scalar':
         TCCMatrix_Stacked = GetTCCMatrix(sourceData, shiftedPupil)
+
     TCCMatrix_Stacked = projector.IndexImage * TCCMatrix_Stacked
     return TCCMatrix_Stacked, [len(g), len(f)]
 
@@ -66,7 +67,8 @@ def GetTCCMatrix(sourceData, shiftedPupil):
         size=(n, n),  # size of the sparse tensor
     )
     # Perform matrix operations
-    TCCMatrix = torch.matmul(torch.matmul(shiftedPupil, S), shiftedPupil.t())  # Utilizing matrix conjugate transpose to get HSH*
+    TCCMatrix = torch.matmul(torch.matmul(shiftedPupil, S), shiftedPupil.t().conj())  
+    # Utilizing matrix conjugate transpose to get HSH*
     # Normalize the entire matrix by dividing it by the sum of all elements
     sum_value = torch.sum(sourceData.Value)
     TCCMatrix = TCCMatrix / sum_value
