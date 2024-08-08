@@ -29,6 +29,7 @@ class Source:
         self.RotateAngle = 0
         self.PoleNumber = 2
         self.Source_Mask = None  # tensor
+        self.Irradiance = 100
 
         # parameter for pixel source, maybe 2d tensor
         self.SPointX = torch.zeros(self.PntNum)
@@ -180,6 +181,8 @@ class Source:
 
     # source polarization
     def Calc_PolarizationMap(self, theta, rho):
+        PolarizedX2 = None
+        PolarizedY2 = None
         if (self.PolarizationType == 'x_pol'):
             PolarizedX = torch.ones(theta.size())
             PolarizedY = torch.zeros(theta.size())
@@ -207,6 +210,37 @@ class Source:
                 torch.cos(self.PolarizationParameters.Angle),
                 torch.ones(theta.size())
                 )
+        elif (self.PolarizationType == 'custom'):
+            J = self.PolarizationParameters.CoherencyMatrix
+            assert(J[0, 1] == torch.conj(J[1, 0]))
+            assert(J[0, 0].imag == 0)
+            assert(J[1, 1].imag == 0)
+            assert(J[0, 0].real >= 0)
+            assert(J[1, 1].real >= 0)
+            Jxx = J[0, 0]
+            Jxy = J[0, 1]
+            Jyy = J[1, 1]
+            detJ = Jxx*Jyy - torch.abs(Jxy)**2
+            trJ = Jxx + Jyy
+            DOP = torch.sqrt(1.0 - 4.0*detJ/(trJ**2)).real
+            self.PolarizationParameters.Degree = DOP
+            D = (1.0 - DOP)/(1.0 + DOP)
+            if (DOP > sys.float_info.epsilon):
+                A = (Jxx - D*Jyy)/(1.0 - D**2)
+                B = Jxy/(1.0 - D**2)
+                C = (Jyy - D*Jxx)/(1.0 - D**2)
+                phase = torch.exp(-1j*torch.angle(B))
+            else:
+                # unpolarized
+                A = Jxx
+                C = torch.tensor([0])
+                D = torch.tensor([1])
+                phase = torch.tensor([-1])
+
+            PolarizedX = torch.sqrt(A)*torch.ones(theta.size())
+            PolarizedY = torch.sqrt(C)*phase*torch.ones(theta.size())
+            PolarizedX2 = torch.sqrt(C*D)*torch.ones(theta.size())
+            PolarizedY2 = -torch.sqrt(A*D)*phase*torch.ones(theta.size())           
         else:
             raise ValueError("unsupported polarization type")
 
@@ -216,8 +250,11 @@ class Source:
             PolarizedY[biz] = 0
         PolarizedX = PolarizedX.to(torch.complex64)
         PolarizedY = PolarizedY.to(torch.complex64)
-        return PolarizedX, PolarizedY
 
+        if PolarizedX2 is not None:
+            PolarizedX2 = PolarizedX2.to(torch.complex64)
+            PolarizedY2 = PolarizedY2.to(torch.complex64)            
+        return PolarizedX, PolarizedY, PolarizedX2, PolarizedY2
 
 def CalculateAnnularSourceMatrix(
     SigmaOut, SigmaIn,
@@ -298,5 +335,6 @@ class SourceData:
 
 class PolarizationParameters:
     def __init__(self):
-        self.Degree = 1  # Partially polarized light is not yet supported
+        self.Degree = torch.tensor(1)
         self.Angle = torch.tensor(0)  # Polarization direction: start at positive half of x-axis, counterclockwise
+        self.CoherencyMatrix = torch.tensor([[0.5, 0], [0, 0.5]], dtype=torch.complex64)  # Coherency matrix
