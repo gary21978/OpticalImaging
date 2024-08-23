@@ -16,7 +16,6 @@ def CalculateAbbeImage(source, mask, projector, numerics):
     sourceData = source.Calc_SourceSimple()
     weight = torch.sum(sourceData.Value)
     wavelength = source.Wavelength
-    irradiance = source.Irradiance
     NA = projector.NA
     M = projector.Magnification
     indexImage = projector.IndexImage
@@ -36,7 +35,7 @@ def CalculateAbbeImage(source, mask, projector, numerics):
         dfmdg = (mask_fs[1] - mask_fs[0]) * (mask_gs[1] - mask_gs[0])
 
         source_rho, source_theta = cartesian_to_polar(sourceX, sourceY)
-        PolarizedX, PolarizedY, PolarizedX2, PolarizedY2 = source.Calc_PolarizationMap(source_theta, source_rho)
+        PolarizedX, PolarizedY = source.Calc_PolarizationMap(source_theta, source_rho)
         new_spectrum = spectrum[:-1, :-1]
         mask_fg2m = mask_fm ** 2 + mask_gm ** 2
         sourceXY2 = sourceX ** 2 + sourceY ** 2
@@ -59,10 +58,10 @@ def CalculateAbbeImage(source, mask, projector, numerics):
             rho_calc, theta_calc = cartesian_to_polar(f_calc, g_calc)
             fgSquare = rho_calc**2
 
-            #obliquityFactor = torch.pow((1 - (M ** 2 * NA ** 2) * fgSquare) / (1 - ((NA / indexImage) ** 2) * fgSquare), 0.25)
-            obliquityFactor = torch.pow((1 - (NA ** 2) * fgSquare) / (1 - ((NA / M /indexImage) ** 2) * fgSquare), 0.25)
+            obliquityFactor = torch.pow((1 - (NA ** 2/M ** 2) * fgSquare) / (1 - (NA ** 2) * fgSquare), 0.25)
+
             aberration = projector.CalculateAberrationFast(rho_calc, theta_calc, 0)
-            focusFactor = torch.exp(-1j * 2 * torch.pi / wavelength * (indexImage - torch.sqrt(indexImage ** 2 - NA * NA * fgSquare)) * focus)
+            focusFactor = torch.exp(1j * 2 * torch.pi / wavelength * torch.sqrt(indexImage**2 - NA * NA * fgSquare) * focus)
             SpectrumCalc = new_spectrum[validPupil]
 
             TempHAber = SpectrumCalc * obliquityFactor * torch.exp(1j * 2 * torch.pi * aberration) * focusFactor
@@ -84,18 +83,6 @@ def CalculateAbbeImage(source, mask, projector, numerics):
                 Exyz_Partial = torch.fft.fft2(ExyzFrequency)
                 intensityTemp = intensityTemp + torch.abs(Exyz_Partial) ** 2
 
-            if numerics.ImageCalculationMode == 'vector' and PolarizedX2 is not None:            
-                obliqueRaysMatrix[:, 0] = PolarizedX2[j] * m0xx + PolarizedY2[j] * m0yx
-                obliqueRaysMatrix[:, 1] = PolarizedX2[j] * m0xy + PolarizedY2[j] * m0yy
-                obliqueRaysMatrix[:, 2] = PolarizedX2[j] * m0xz + PolarizedY2[j] * m0yz
-
-                rho2[:] = 0
-                for iEM in range(ExyzCalculateNumber_2D):
-                    rho2[validPupil] = TempHAber * obliqueRaysMatrix[:, iEM]
-                    ExyzFrequency = rho2
-                    Exyz_Partial = torch.fft.fft2(ExyzFrequency)
-                    intensityTemp = intensityTemp + torch.abs(Exyz_Partial) ** 2
-
             intensity2D[:, :, j] = intensityTemp
         
         intensity2D = torch.reshape(sourceV, (1, 1, -1)) * intensity2D
@@ -103,7 +90,7 @@ def CalculateAbbeImage(source, mask, projector, numerics):
         intensity2D = torch.cat((intensity2D, intensity2D[:, 0].unsqueeze(1)), 1)
         intensity2D = torch.cat((intensity2D, intensity2D[0, :].unsqueeze(0)), 0)
         intensity2D = torch.real(torch.rot90(intensity2D, 2))
-        Intensity[iFocus, :, :] = irradiance*indexImage / weight * torch.transpose(intensity2D, 0, 1)
+        Intensity[iFocus, :, :] = indexImage / weight * torch.transpose(intensity2D, 0, 1)
     ImageX = torch.linspace(-mask.Period_X/2, mask.Period_X/2, target_nf)
     ImageY = torch.linspace(-mask.Period_Y/2, mask.Period_Y/2, target_ng)
     ImageZ = projector.FocusRange

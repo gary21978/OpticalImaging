@@ -48,16 +48,14 @@ def compareAbbeHopkins():
     im.Source.Wavelength = 365
     im.Source.PntNum = 41
     im.Source.Shape = "annular"
-    im.Source.Irradiance = 100
-    im.Source.PolarizationType = 'custom'
-    im.Source.PolarizationParameters.CoherencyMatrix = torch.tensor([[0.5, 0], [0, 0.5]], dtype=torch.complex64)
+    im.Source.PolarizationType = 'c_pol'
     im.Source.SigmaOut = 0.9
     im.Source.SigmaIn = 0.0
     im.Projector.Aberration_Zernike = torch.zeros(37)
-    im.Projector.Magnification = 10
+    im.Projector.Magnification = 100.0
     im.Projector.NA = 0.9
     im.Projector.IndexImage = 1.0
-    im.Projector.FocusRange = torch.tensor([300, 0, -300])
+    im.Projector.FocusRange = torch.tensor([0])
     im.Numerics.ImageCalculationMode = "scalar"
     im.Numerics.ImageCalculationMethod = "abbe"
     im.Numerics.Hopkins_SettingType = 'order'
@@ -78,34 +76,34 @@ def compareAbbeHopkins():
     for i in range(NFocus):
         plt.subplot(NFocus, 4, 4*i+1)
         plt.imshow(mask, cmap='gray', interpolation='none', \
-                   extent = (0, Lx*0.001, 0, Ly*0.001))
+                   extent = (0, 0.001*Lx, 0, 0.001*Ly))
         plt.title("Mask")
         plt.xlabel('μm')
-        #plt.ylabel('μm')
+        plt.ylabel('μm')
         plt.colorbar()
 
         plt.subplot(NFocus, 4, 4*i+2)
         plt.imshow(intensity_Abbe[i, :, :].squeeze(), cmap='jet', \
-                   extent = (0, Lx*M*0.001, 0, Ly*M*0.001))
+                   extent = (0, 0.001*Lx*M, 0, 0.001*Ly*M))
         plt.title("Abbe")
         plt.xlabel('μm')
-        #plt.ylabel('μm')
+        plt.ylabel('μm')
         plt.colorbar()
 
         plt.subplot(NFocus, 4, 4*i+3)
         plt.imshow(intensity_Hopkins[i, :, :].squeeze(), cmap='jet', \
-                   extent = (0, Lx*M*0.001, 0, Ly*M*0.001))
+                   extent = (0, 0.001*Lx*M, 0, 0.001*Ly*M))
         plt.title("Hopkins")
         plt.xlabel('μm')
-        #plt.ylabel('μm')
+        plt.ylabel('μm')
         plt.colorbar()
 
         plt.subplot(NFocus, 4, 4*i+4)
         plt.imshow(intensity_Hopkins[i, :, :].squeeze() - intensity_Abbe[i, :, :].squeeze(), cmap='jet', \
-                   extent = (0, Lx*M*0.001, 0, Ly*M*0.001))
+                   extent = (0, 0.001*Lx*M, 0, 0.001*Ly*M))
         plt.title("Diff")
         plt.xlabel('μm')
-        #plt.ylabel('μm')
+        plt.ylabel('μm')
         plt.colorbar()
     
     plt.show()

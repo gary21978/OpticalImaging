@@ -30,8 +30,7 @@ def CalculateTCCMatrix(source, xypitch, projector, focus, numerics):
     validRho = rho[validPupil]
     validTheta = theta[validPupil]
     validRhoSquare = rhoSquare[validPupil]
-    #obliquityFactor = torch.pow((1 - (M ** 2 * NA ** 2) * validRhoSquare) / (1 - ((NA / indexImage) ** 2) * validRhoSquare), 0.25)
-    obliquityFactor = torch.pow((1 - (NA ** 2) * validRhoSquare) / (1 - ((NA / M /indexImage) ** 2) * validRhoSquare), 0.25)
+    obliquityFactor = torch.pow((1 - (NA ** 2/M ** 2) * validRhoSquare) / (1 - (NA ** 2) * validRhoSquare), 0.25)
     aberration = projector.CalculateAberrationFast(validRho, validTheta, 0)
     shiftedPupil = torch.zeros(validPupil.size()).to(torch.complex64)
     focusFactor = torch.exp(-1j * 2 * torch.pi / wavelength * (indexImage - torch.sqrt(indexImage ** 2 - NA * NA * validRhoSquare)) * focus)
@@ -40,7 +39,7 @@ def CalculateTCCMatrix(source, xypitch, projector, focus, numerics):
     if numerics.ImageCalculationMode == 'vector':
         M0xx, M0yx, M0xy, M0yy, M0xz, M0yz = CalculateCharacteristicMatrix(new_f, new_g, NA, indexImage)
         rho_s, theta_s = cartesian_to_polar(sourceData.X, sourceData.Y)
-        PolarizedX, PolarizedY, PolarizedX2, PolarizedY2 = source.Calc_PolarizationMap(theta_s, rho_s)
+        PolarizedX, PolarizedY = source.Calc_PolarizationMap(theta_s, rho_s)
 
         Gx = (PolarizedX * M0xx + PolarizedY * M0yx) * shiftedPupil
         Gy = (PolarizedX * M0xy + PolarizedY * M0yy) * shiftedPupil
@@ -50,16 +49,6 @@ def CalculateTCCMatrix(source, xypitch, projector, focus, numerics):
         TCCMatrixY = GetTCCMatrix(sourceData, Gy)
         TCCMatrixZ = GetTCCMatrix(sourceData, Gz)
         TCCMatrix_Stacked = TCCMatrixX + TCCMatrixY + TCCMatrixZ
-
-        if PolarizedX2 is not None:
-            Gx = (PolarizedX2 * M0xx + PolarizedY2 * M0yx) * shiftedPupil
-            Gy = (PolarizedX2 * M0xy + PolarizedY2 * M0yy) * shiftedPupil
-            Gz = (PolarizedX2 * M0xz + PolarizedY2 * M0yz) * shiftedPupil
-
-            TCCMatrixX = GetTCCMatrix(sourceData, Gx)
-            TCCMatrixY = GetTCCMatrix(sourceData, Gy)
-            TCCMatrixZ = GetTCCMatrix(sourceData, Gz)
-            TCCMatrix_Stacked = TCCMatrix_Stacked + TCCMatrixX + TCCMatrixY + TCCMatrixZ
     elif numerics.ImageCalculationMode == 'scalar':
         TCCMatrix_Stacked = GetTCCMatrix(sourceData, shiftedPupil)
 

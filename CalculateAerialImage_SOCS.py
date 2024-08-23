@@ -12,5 +12,4 @@ def CalculateAerialImage_SOCS(mask, TCCMatrix_SOCS, source, projector):
     intensity = torch.cat((intensity, intensity[:, 0].unsqueeze(1)), dim = 1)
     intensity = torch.cat((intensity, intensity[0, :].unsqueeze(0)), dim = 0)
     intensity = torch.rot90(intensity, 2)
-    intensity = source.Irradiance*intensity
     return intensity
