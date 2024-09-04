@@ -21,8 +21,8 @@ def DecomposeTCC_SOCS(TCCMatrix_Stacked, FG_ValidSize, Nfg, numerics):
     else:
         raise ValueError('Error: TCCKernalSetting.method should be setNumber or setThreshold!')
 
-    TCCMatrix_Kernel = torch.zeros(Ng - 1, Nf - 1, socsNumber, dtype=torch.complex64)
-    temp2 = torch.zeros(Ng - 1, Nf - 1, dtype=torch.complex64)
+    TCCMatrix_Kernel = torch.zeros(Ng, Nf, socsNumber, dtype=torch.complex64)
+    temp2 = torch.zeros(Ng, Nf, dtype=torch.complex64)
     
     for i in range(socsNumber):
         temp1 = U[:, i].reshape(FG_ValidSize[1], FG_ValidSize[0])

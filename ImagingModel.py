@@ -1,6 +1,6 @@
 from Numerics import Numerics
 from Source import Source
-from Mask import Mask
+from Scatter import Scatter
 from Projection import Projection
 from CalculateAerialImage import CalculateAbbeImage, CalculateHopkinsImage
 import matplotlib.pyplot as plt
@@ -13,7 +13,7 @@ def createGeometry():
     image = Image.fromarray(image)
     draw = ImageDraw.Draw(image)
     font = ImageFont.truetype("arial.ttf", 32)
-    text = "S"
+    text = "U"
     draw.text((15, 10), text, fill=1, font=font)
     P = np.transpose(np.array(image, dtype=np.int8))
     return torch.from_numpy(P)
@@ -22,29 +22,30 @@ class ImagingModel:
     def __init__(self):
         self.Numerics = Numerics()
         self.Source = Source()
-        self.Mask = Mask()
+        self.Scatter = Scatter()
         self.Projector = Projection()
 
     def CalculateAerialImage(self):
         sr = self.Source
-        mk = self.Mask
+        sc = self.Scatter
         po = self.Projector
         nm = self.Numerics
         if (nm.ImageCalculationMethod == 'abbe'):
-            ali = CalculateAbbeImage(sr, mk, po, nm)
+            ali = CalculateAbbeImage(sr, sc, po, nm)
         elif (nm.ImageCalculationMethod == 'hopkins'):
-            ali = CalculateHopkinsImage(sr, mk, po, nm)
+            ali = CalculateHopkinsImage(sr, sc, po, nm)
         else:
             raise ValueError('Unsupported Calculation Method')
         return ali
 
 def compareAbbeHopkins():
     im = ImagingModel()
-    im.Mask.Feature = createGeometry()
-
+    geometry = createGeometry().to(torch.complex64)
+    scatter_field = geometry
+    im.Scatter.ScatterField = scatter_field
     ############################################
-    im.Mask.Period_X = 2000
-    im.Mask.Period_Y = 2000
+    im.Scatter.Period_X = 2000
+    im.Scatter.Period_Y = 2000
     im.Source.Wavelength = 365
     im.Source.PntNum = 41
     im.Source.Shape = "annular"
@@ -59,14 +60,14 @@ def compareAbbeHopkins():
     im.Numerics.ImageCalculationMode = "scalar"
     im.Numerics.ImageCalculationMethod = "abbe"
     im.Numerics.Hopkins_SettingType = 'order'
-    im.Numerics.Hopkins_Order = 50
+    im.Numerics.Hopkins_Order = 100
     im.Numerics.Hopkins_Threshold = 0.95
     ############################################
 
-    Lx = im.Mask.Period_X
-    Ly = im.Mask.Period_Y
+    Lx = im.Scatter.Period_X
+    Ly = im.Scatter.Period_Y
     M = im.Projector.Magnification
-    mask = im.Mask.Feature.detach().numpy().squeeze().transpose()
+    mask = im.Scatter.ScatterField.detach().numpy().squeeze().transpose()
     im.Numerics.ImageCalculationMethod = "abbe"
     intensity_Abbe = im.CalculateAerialImage().Intensity.detach().numpy()
     im.Numerics.ImageCalculationMethod = "hopkins"
@@ -75,7 +76,7 @@ def compareAbbeHopkins():
     NFocus = intensity_Abbe.shape[0]
     for i in range(NFocus):
         plt.subplot(NFocus, 4, 4*i+1)
-        plt.imshow(mask, cmap='gray', interpolation='none', \
+        plt.imshow(mask.real, cmap='gray', interpolation='none', \
                    extent = (0, 0.001*Lx, 0, 0.001*Ly))
         plt.title("Mask")
         plt.xlabel('μm')
