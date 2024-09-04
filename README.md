@@ -24,7 +24,7 @@
 
 **FocusRange** (Tensor) Focus range
 
-## Mask
+## Scatter
 
 **Period_X** (float) X-period in nanometers
 
