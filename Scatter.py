@@ -11,7 +11,7 @@ class Scatter:
         Wavelength = sr.Wavelength
         h = self.ScatterField
         h = h.to(torch.complex64)
-        PntNum_Y, PntNum_X = h.size()
+        PntNum_Y, PntNum_X, _ = h.size()
         normPitchX = self.Period_X / (Wavelength / NA)
         normPitchY = self.Period_Y / (Wavelength / NA)
         f = (1/normPitchX)*torch.arange(-(PntNum_X//2), (PntNum_X + 1)//2)

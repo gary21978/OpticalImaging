@@ -13,7 +13,7 @@ def createGeometry():
     image = Image.fromarray(image)
     draw = ImageDraw.Draw(image)
     font = ImageFont.truetype("arial.ttf", 32)
-    text = "U"
+    text = "T"
     draw.text((15, 10), text, fill=1, font=font)
     P = np.transpose(np.array(image, dtype=np.int8))
     return torch.from_numpy(P)
@@ -41,7 +41,7 @@ class ImagingModel:
 def compareAbbeHopkins():
     im = ImagingModel()
     geometry = createGeometry().to(torch.complex64)
-    scatter_field = geometry
+    scatter_field = torch.stack((geometry, 1j*geometry, 0.3*geometry), 2)
     im.Scatter.ScatterField = scatter_field
     ############################################
     im.Scatter.Period_X = 2000
@@ -49,17 +49,17 @@ def compareAbbeHopkins():
     im.Source.Wavelength = 365
     im.Source.PntNum = 41
     im.Source.Shape = "annular"
-    im.Source.PolarizationType = 'c_pol'
+    im.Source.PolarizationType = "c_pol"
     im.Source.SigmaOut = 0.9
     im.Source.SigmaIn = 0.0
     im.Projector.Aberration_Zernike = torch.zeros(37)
     im.Projector.Magnification = 100.0
     im.Projector.NA = 0.9
     im.Projector.IndexImage = 1.0
-    im.Projector.FocusRange = torch.tensor([0])
+    im.Projector.FocusRange = torch.tensor([-5e+6, 0, 5e+6])
     im.Numerics.ImageCalculationMode = "scalar"
     im.Numerics.ImageCalculationMethod = "abbe"
-    im.Numerics.Hopkins_SettingType = 'order'
+    im.Numerics.Hopkins_SettingType = "order"
     im.Numerics.Hopkins_Order = 100
     im.Numerics.Hopkins_Threshold = 0.95
     ############################################
@@ -67,7 +67,8 @@ def compareAbbeHopkins():
     Lx = im.Scatter.Period_X
     Ly = im.Scatter.Period_Y
     M = im.Projector.Magnification
-    mask = im.Scatter.ScatterField.detach().numpy().squeeze().transpose()
+    scatter_field = im.Scatter.ScatterField.detach().numpy()
+    Ex = scatter_field[:,:,0].squeeze().transpose().real
     im.Numerics.ImageCalculationMethod = "abbe"
     intensity_Abbe = im.CalculateAerialImage().Intensity.detach().numpy()
     im.Numerics.ImageCalculationMethod = "hopkins"
@@ -76,9 +77,9 @@ def compareAbbeHopkins():
     NFocus = intensity_Abbe.shape[0]
     for i in range(NFocus):
         plt.subplot(NFocus, 4, 4*i+1)
-        plt.imshow(mask.real, cmap='gray', interpolation='none', \
+        plt.imshow(Ex, cmap='gray', interpolation='none', \
                    extent = (0, 0.001*Lx, 0, 0.001*Ly))
-        plt.title("Mask")
+        plt.title("Real(Ex)")
         plt.xlabel('μm')
         plt.ylabel('μm')
         plt.colorbar()

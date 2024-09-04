@@ -37,9 +37,9 @@ def CalculateAbbeImage(source, scatter, projector, numerics):
         source_rho, source_theta = cartesian_to_polar(sourceX, sourceY)
         PolarizedX, PolarizedY = source.Calc_PolarizationMap(source_theta, source_rho)
 
-        new_spectrum = spectrum
         scatter_fg2m = scatter_fm ** 2 + scatter_gm ** 2
         sourceXY2 = sourceX ** 2 + sourceY ** 2
+
         for j in range(len(sourceData.Value)):
             obliqueRaysMatrix = torch.ones(1, 1, dtype=torch.complex64)
             ExyzCalculateNumber_2D = 1
@@ -62,27 +62,26 @@ def CalculateAbbeImage(source, scatter, projector, numerics):
 
             aberration = projector.CalculateAberrationFast(rho_calc, theta_calc, 0)
             focusFactor = torch.exp(1j * 2 * torch.pi / wavelength * torch.sqrt(indexImage**2 - (NA/M)**2*fgSquare) * focus)
-            SpectrumCalc = new_spectrum[validPupil]
-
-            TempHAber = SpectrumCalc * obliquityFactor * torch.exp(1j * 2 * torch.pi * aberration) * focusFactor
-            
             if numerics.ImageCalculationMode == 'vector':
                 obliqueRaysMatrix = torch.zeros(len(fgSquare), ExyzCalculateNumber_2D, dtype=torch.complex64)
                 m0xx, m0yx, m0xy, m0yy, m0xz, m0yz = CalculateCharacteristicMatrix(f_calc, g_calc, NA, indexImage)
-                
+                    
                 obliqueRaysMatrix[:, 0] = PolarizedX[j] * m0xx + PolarizedY[j] * m0yx
                 obliqueRaysMatrix[:, 1] = PolarizedX[j] * m0xy + PolarizedY[j] * m0yy
                 obliqueRaysMatrix[:, 2] = PolarizedX[j] * m0xz + PolarizedY[j] * m0yz
-                
-            rho2[:] = 0
-            intensityTemp = torch.zeros(target_ng, target_nf)
-            for iEM in range(ExyzCalculateNumber_2D):
-                rho2[validPupil] = TempHAber * obliqueRaysMatrix[:, iEM]
-                ExyzFrequency = rho2
-                Exyz_Partial = torch.fft.fft2(ExyzFrequency)
-                intensityTemp = intensityTemp + torch.abs(Exyz_Partial) ** 2
-
-            intensity2D[:, :, j] = intensityTemp
+                    
+            for channel in range(3):
+                spectrum_channel = spectrum[:, :, channel].squeeze()
+                SpectrumCalc = spectrum_channel[validPupil]
+                TempHAber = SpectrumCalc * obliquityFactor * torch.exp(1j * 2 * torch.pi * aberration) * focusFactor
+                rho2[:] = 0
+                intensityTemp = torch.zeros(target_ng, target_nf)
+                for iEM in range(ExyzCalculateNumber_2D):
+                    rho2[validPupil] = TempHAber * obliqueRaysMatrix[:, iEM]
+                    ExyzFrequency = rho2
+                    Exyz_Partial = torch.fft.fft2(ExyzFrequency)
+                    intensityTemp = intensityTemp + torch.abs(Exyz_Partial) ** 2
+                intensity2D[:, :, j] = intensity2D[:, :, j] + intensityTemp
         
         intensity2D = torch.reshape(sourceV, (1, 1, -1)) * intensity2D
         intensity2D = dfmdg ** 2 * torch.fft.fftshift(torch.sum(intensity2D, dim=2))
