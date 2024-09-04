@@ -227,7 +227,7 @@ def CalculateAnnularSourceMatrix(
     s.X, s.Y = torch.meshgrid(Source_Coordinate_X, Source_Coordinate_Y, indexing='ij')
     Radius = torch.sqrt(s.X.pow(2) + s.Y.pow(2))
     Index = (Radius <= SigmaOut) & (Radius >= SigmaIn)
-    s.Value[Index] = 1
+    s.Value[Index] = 1.0/((SigmaOut**2 - SigmaIn**2) * math.pi)
     return s
 
 def CalculateQuasarSourceMatrix(
@@ -245,7 +245,7 @@ def CalculateQuasarSourceMatrix(
         (torch.abs(theta + math.pi / 2) <= openAngle / 2)
     Indextheta = Indextheta1 | Indextheta2
     Index = (Radius <= SigmaOut) & (Radius >= SigmaIn) & Indextheta
-    s.Value[Index] = 1
+    s.Value[Index] = 0.5/((SigmaOut**2 - SigmaIn**2) * openAngle)
     return s
 
 def CalculateDipoleSourceMatrix(
@@ -259,7 +259,7 @@ def CalculateDipoleSourceMatrix(
     Indextheta = (torch.abs(torch.cos(theta - rotateAngle)) >=
                   math.cos(openAngle / 2))
     Index = (Radius <= SigmaOut) & (Radius >= SigmaIn) & Indextheta
-    s.Value[Index] = 1
+    s.Value[Index] = 1.0/((SigmaOut**2 - SigmaIn**2) * openAngle)
     return s
 
 # multipule source
@@ -275,7 +275,7 @@ def CalculateMultiCircSourceMatrix(
         yCenter = SigmaCenter * math.sin(RotateAngle + i * rotateStep)
         Radius2 = (s.X - xCenter).pow(2) + (s.Y - yCenter).pow(2)
         Index = (Radius2 <= SigmaRadius**2)
-        s.Value[Index] = 1
+        s.Value[Index] = 1.0/PoleNumber/(SigmaRadius**2)
     return s
 
 def ConvertSourceMatrix2SourceData(s):
@@ -289,7 +289,6 @@ def ConvertSourceMatrix2SourceData(s):
 
     return SourceData
 
-# data class
 class SourceData:
     def __init__(self, x, y):
         self.X = torch.zeros((x, y))
