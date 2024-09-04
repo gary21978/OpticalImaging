@@ -26,8 +26,8 @@ def DecomposeTCC_SOCS(TCCMatrix_Stacked, FG_ValidSize, Nfg, numerics):
     
     for i in range(socsNumber):
         temp1 = U[:, i].reshape(FG_ValidSize[1], FG_ValidSize[0])
-        temp2[(Ng - FG_ValidSize[1]) // 2 : (Ng + FG_ValidSize[1]) // 2,
-              (Nf - FG_ValidSize[0]) // 2 : (Nf + FG_ValidSize[0]) // 2] = temp1
+        temp2[(Ng - FG_ValidSize[1] + 1) // 2 : (Ng + FG_ValidSize[1] + 1) // 2,
+              (Nf - FG_ValidSize[0] + 1) // 2 : (Nf + FG_ValidSize[0] + 1) // 2] = temp1
         TCCMatrix_Kernel[:, :, i] = torch.fft.fftshift(temp2)
 
     diagS = S[0:socsNumber]
