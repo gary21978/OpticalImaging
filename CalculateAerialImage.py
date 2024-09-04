@@ -3,7 +3,14 @@ from CalculateCharacteristicMatrix import CalculateCharacteristicMatrix
 from CalculateTCCMatrix import CalculateTCCMatrix
 from DecomposeTCC_SOCS import DecomposeTCC_SOCS
 from CalculateAerialImage_SOCS import CalculateAerialImage_SOCS
-from ImageData import ImageData
+from dataclasses import dataclass
+
+@dataclass
+class ImageData:
+    Intensity: torch.tensor = None
+    ImageX: torch.tensor = None
+    ImageY: torch.tensor = None
+    ImageZ: torch.tensor = None
 
 def cartesian_to_polar(x, y):
     rho = torch.sqrt(x**2 + y**2)

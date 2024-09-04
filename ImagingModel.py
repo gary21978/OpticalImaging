@@ -48,10 +48,10 @@ def compareAbbeHopkins():
     im.Scatter.Period_Y = 2000
     im.Source.Wavelength = 365
     im.Source.PntNum = 41
-    im.Source.Shape = "annular"
+    im.Source.Shape = "quasar"
     im.Source.PolarizationType = "c_pol"
-    im.Source.SigmaOut = 0.9
-    im.Source.SigmaIn = 0.0
+    im.Source.SigmaOut = 0.7
+    im.Source.SigmaIn = 0.2
     im.Projector.Aberration_Zernike = torch.zeros(37)
     im.Projector.Magnification = 100.0
     im.Projector.NA = 0.9
@@ -73,8 +73,20 @@ def compareAbbeHopkins():
     intensity_Abbe = im.CalculateAerialImage().Intensity.detach().numpy()
     im.Numerics.ImageCalculationMethod = "hopkins"
     intensity_Hopkins = im.CalculateAerialImage().Intensity.detach().numpy()
-
     NFocus = intensity_Abbe.shape[0]
+    """
+    # Visualize source
+    fig, ax = plt.subplots()
+    sd = im.Source.source_data
+    import numpy as np
+    t = np.linspace(0, 2*np.pi, 100)
+    plt.scatter(sd.X, sd.Y, sd.Value, c='r', alpha=0.5)
+    plt.plot(im.Source.SigmaOut*np.cos(t), im.Source.SigmaOut*np.sin(t), 'b')
+    plt.plot(im.Source.SigmaIn*np.cos(t), im.Source.SigmaIn*np.sin(t), 'b')
+    plt.axis('equal')
+    plt.show()
+    """
+    plt.figure()
     for i in range(NFocus):
         plt.subplot(NFocus, 4, 4*i+1)
         plt.imshow(Ex, cmap='gray', interpolation='none', \

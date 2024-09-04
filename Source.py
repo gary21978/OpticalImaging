@@ -18,7 +18,7 @@ class Source:
         self.Wavelength = 365
         self.Shape = "annular"
         # Source shape :
-        # 'annular''multipole''dipolecirc''quadrupole''pixel''quasar'
+        # 'annular''multipole''dipolecirc''pixel''quasar'
 
         self.SigmaOut = 0.9
         self.SigmaIn = 0.0
