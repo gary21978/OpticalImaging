@@ -14,15 +14,15 @@ class ImagingModel:
         self.Scatter = Scatter()
         self.Projector = Projection()
 
-        self.Scatter.Period_X = 2000 # nm
-        self.Scatter.Period_Y = 2000 # nm
+        self.Scatter.Period_X = 3000 # nm
+        self.Scatter.Period_Y = 1500 # nm
         self.Source.Wavelength = 365 # nm
         self.Projector.Magnification = 100
         self.Projector.NA = 0.9
-        self.Numerics.ScatterGrid_X = 300
-        self.Numerics.ScatterGrid_Y = 300
-        self.Numerics.ScatterOrder_X = 10
-        self.Numerics.ScatterOrder_Y = 10
+        self.Numerics.ScatterGrid_X = 256
+        self.Numerics.ScatterGrid_Y = 128
+        self.Numerics.ScatterOrder_X = 5
+        self.Numerics.ScatterOrder_Y = 5
         self.Source.PolarizationVector = [0.0, 1.0]
         self.Projector.FocusRange = torch.tensor([0])
         self.Projector.Aberration_Zernike = torch.zeros(37)
@@ -46,7 +46,7 @@ class ImagingModel:
     def LoadGeometry(self):
         from PIL import Image, ImageDraw, ImageFont
         import numpy as np
-        image = np.zeros((400, 400), dtype=np.uint8)
+        image = np.zeros((200, 400), dtype=np.uint8)
         image = Image.fromarray(image)
         draw = ImageDraw.Draw(image)
         font = ImageFont.truetype("arial.ttf", 150)
@@ -57,30 +57,36 @@ class ImagingModel:
 
     def Scattering(self):
         sim_dtype = torch.complex64
-        # material
-        substrate_eps = 1.1**2
-        silicon_eps = 1.45**2
+
+        sim = rcwa(freq=1/self.Source.Wavelength,
+                   order=[self.Numerics.ScatterOrder_X, self.Numerics.ScatterOrder_Y],
+                   L=[self.Scatter.Period_X, self.Scatter.Period_Y],dtype=sim_dtype)
+        sim.add_input_layer(eps=1.0)
+        sim.set_incident_angle(inc_ang=0, azi_ang=0)
+
+        # reflective indices
+        n_OX = 1.4745
+        n_TIN = 2.0669 + 1.0563j
+        n_TEOS = 1.380
+        n_SIN = 2.1222
+        n_substrate = 6.5271 + 2.6672j
+        ##################################################
+        thickness = [5, 21, 100]
+        ns = [n_OX, n_TIN, n_TEOS]
+        for t, n in zip(thickness, ns):
+            layer_eps = self.Geometry*(n**2 - 1) + 1.0
+            sim.add_layer(thickness=t, eps=layer_eps)
+        sim.add_layer(thickness=20, eps=n_SIN**2)
+        sim.add_layer(thickness=5, eps=n_substrate**2)
+
+        sim.solve_global_smatrix()
+        sim.source_planewave(amplitude=self.Source.PolarizationVector, direction='forward', notation='xy')
 
         n_scatter_x = self.Numerics.ScatterGrid_X
         n_scatter_y = self.Numerics.ScatterGrid_Y
 
         xs = (self.Scatter.Period_X/n_scatter_x)*(torch.arange(n_scatter_x)+0.5)
         ys = (self.Scatter.Period_Y/n_scatter_y)*(torch.arange(n_scatter_y)+0.5)
-        
-        # layers
-        layer0_geometry = self.Geometry
-        layer0_thickness = 30.
-
-        order = [self.Numerics.ScatterOrder_X, self.Numerics.ScatterOrder_Y]
-        sim = rcwa(freq=1/self.Source.Wavelength,order=order,
-                   L=[self.Scatter.Period_X, self.Scatter.Period_Y],dtype=sim_dtype)
-        sim.add_input_layer(eps=substrate_eps)
-        sim.set_incident_angle(inc_ang=0,azi_ang=0)
-
-        layer0_eps = layer0_geometry*silicon_eps + (1.-layer0_geometry)
-        sim.add_layer(thickness=layer0_thickness,eps=layer0_eps)
-        sim.solve_global_smatrix()
-        sim.source_planewave(amplitude=self.Source.PolarizationVector, direction='forward', notation='xy')
         [Ex, Ey, Ez], [_, _, _] = sim.field_xy(xs, ys)
         self.Scatter.ScatterField = torch.stack((Ex, Ey, Ez), 2)
 
@@ -96,11 +102,12 @@ class ImagingModel:
 
     def Visualizing(self):
         plt.subplot(331)
-        plt.imshow(self.Geometry.cpu(), cmap='gray',
+        plt.imshow(1.0 - self.Geometry.cpu(), cmap='gray',
                    extent = (0, 1e-3*self.Scatter.Period_X, 0, 1e-3*self.Scatter.Period_Y))
         plt.xlabel('μm')
         plt.ylabel('μm')
         plt.title('Pattern')
+        plt.colorbar()
 
         plt.subplot(332)
         plt.imshow(self.Intensity[0,:,:].squeeze().cpu(),cmap='gray',
