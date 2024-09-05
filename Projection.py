@@ -4,7 +4,7 @@ import sys
 class Projection:
     def __init__(self):
         self.Aberration_Zernike = torch.zeros(37)
-        self.Magnification = 1.0
+        self.Magnification = 100
         self.NA = 0.9
         self.IndexImage = 1.0
         self.FocusRange = torch.tensor([0])

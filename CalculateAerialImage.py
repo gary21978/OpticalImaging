@@ -3,9 +3,7 @@ from CalculateCharacteristicMatrix import CalculateCharacteristicMatrix
 from CalculateTCCMatrix import CalculateTCCMatrix
 from DecomposeTCC_SOCS import DecomposeTCC_SOCS
 from CalculateAerialImage_SOCS import CalculateAerialImage_SOCS
-from dataclasses import dataclass
 
-@dataclass
 class ImageData:
     Intensity: torch.tensor = None
     ImageX: torch.tensor = None
@@ -26,11 +24,9 @@ def CalculateAbbeImage(source, scatter, projector, numerics):
     NA = projector.NA
     M = projector.Magnification
     indexImage = projector.IndexImage
-    spectrum, scatter_fs, scatter_gs = scatter.CalculateSpectrum(projector, source)
-
+    spectrum, scatter_fs, scatter_gs, pupilImage = scatter.CalculateSpectrum(projector, source)
     SimulationRange = projector.FocusRange
-    Intensity = torch.zeros(len(SimulationRange), target_nf, target_ng)
-
+    Intensity = torch.zeros(len(SimulationRange), target_ng, target_nf)
     for iFocus in range(len(SimulationRange)):
         scatter_fm, scatter_gm = torch.meshgrid(scatter_gs, scatter_fs, indexing='ij')
         intensity2D = torch.zeros(target_ng, target_nf, len(sourceData.Value))
@@ -93,7 +89,7 @@ def CalculateAbbeImage(source, scatter, projector, numerics):
         intensity2D = torch.reshape(sourceV, (1, 1, -1)) * intensity2D
         intensity2D = dfmdg ** 2 * torch.fft.fftshift(torch.sum(intensity2D, dim=2))
         intensity2D = torch.real(torch.rot90(intensity2D, 2))
-        Intensity[iFocus, :, :] = indexImage / weight * torch.transpose(intensity2D, 0, 1)
+        Intensity[iFocus, :, :] = indexImage / weight * intensity2D
     ImageX = torch.linspace(-scatter.Period_X/2, scatter.Period_X/2, target_nf)
     ImageY = torch.linspace(-scatter.Period_Y/2, scatter.Period_Y/2, target_ng)
     ImageZ = projector.FocusRange
@@ -104,7 +100,7 @@ def CalculateAbbeImage(source, scatter, projector, numerics):
     farfieldImage.ImageY = ImageY
     farfieldImage.ImageZ = ImageZ
 
-    return farfieldImage
+    return farfieldImage, pupilImage
 
 def CalculateHopkinsImage(source, scatter, projector, numerics):
     pitchxy = [scatter.Period_Y, scatter.Period_X]
@@ -112,15 +108,15 @@ def CalculateHopkinsImage(source, scatter, projector, numerics):
 
     SimulationRange = projector.FocusRange
     farfieldImage = ImageData()
-    Intensity = torch.zeros(len(SimulationRange), scatter.ScatterField.shape[1], scatter.ScatterField.shape[0])
+    Intensity = torch.zeros(len(SimulationRange), scatter.ScatterField.shape[0], scatter.ScatterField.shape[1])
     for iFocus, focus in enumerate(SimulationRange):
         TCCMatrix_Stacked, FG_ValidSize = \
                         CalculateTCCMatrix(source, pitchxy, projector, focus, numerics)
         
         TCCMatrix_Kernel = \
                         DecomposeTCC_SOCS(TCCMatrix_Stacked, FG_ValidSize, Nfg, numerics)
-        Intensity[iFocus, :, :] = CalculateAerialImage_SOCS(scatter, TCCMatrix_Kernel, \
-                                                            source, projector)
+        Intensity[iFocus, :, :], pupilImage = CalculateAerialImage_SOCS(scatter, TCCMatrix_Kernel, \
+                                                                      source, projector)
         
     farfieldImage.Intensity = Intensity
     farfieldImage.ImageX = torch.linspace(-scatter.Period_X / 2,
@@ -131,4 +127,4 @@ def CalculateHopkinsImage(source, scatter, projector, numerics):
                                            scatter.ScatterField.shape[0])
     farfieldImage.ImageZ = projector.FocusRange
 
-    return farfieldImage
+    return farfieldImage, pupilImage

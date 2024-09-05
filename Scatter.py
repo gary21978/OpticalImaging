@@ -20,4 +20,16 @@ class Scatter:
         DFThh = torch.fft.fft2(hh, dim=(0, 1))
         Hk = torch.fft.fftshift(DFThh, dim=(0, 1))
         Hk = normPitchX*normPitchY/PntNum_X/PntNum_Y * Hk
-        return Hk, f, g
+        
+        PupilImage = Hk.clone()
+        fm, gm = torch.meshgrid(g, f, indexing='ij')
+        fm = torch.stack((fm, fm, fm),dim=2)
+        gm = torch.stack((gm, gm, gm),dim=2)
+        PupilImage[fm**2 + gm**2 > 1] = float('nan')
+
+        offsetX = int(normPitchX) + 3
+        offsetY = int(normPitchY) + 3
+
+        PupilImage = PupilImage[(PntNum_Y // 2) - offsetY:(PntNum_Y // 2) + offsetY,\
+                                (PntNum_X // 2) - offsetX:(PntNum_X // 2) + offsetX]
+        return Hk, f, g, PupilImage

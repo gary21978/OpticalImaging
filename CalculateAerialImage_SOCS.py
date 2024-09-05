@@ -1,7 +1,7 @@
 import torch
 
 def CalculateAerialImage_SOCS(scatter, TCCMatrix_SOCS, source, projector):
-    spectrum, f, g = scatter.CalculateSpectrum(projector, source)
+    spectrum, f, g, pupilImage = scatter.CalculateSpectrum(projector, source)
     intensity = 0
     for channel in range(3):
         spectrum_channel = spectrum[:, :, channel].squeeze()
@@ -12,5 +12,6 @@ def CalculateAerialImage_SOCS(scatter, TCCMatrix_SOCS, source, projector):
         intensity_channel = torch.sum(Esquare, dim=0)
         intensity_channel = torch.fft.fftshift(intensity_channel)
         intensity_channel = torch.rot90(intensity_channel, 2)
+        intensity_channel = torch.transpose(intensity_channel, -2, -1)
         intensity = intensity + intensity_channel
-    return intensity
+    return intensity, pupilImage

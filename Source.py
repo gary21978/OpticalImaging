@@ -14,14 +14,14 @@ def conv2(matr, ker, mode='same'):
 
 class Source:
     def __init__(self):
-        self.PntNum = 101
+        self.PntNum = 81
         self.Wavelength = 365
         self.Shape = "annular"
         # Source shape :
         # 'annular''multipole''dipolecirc''pixel''quasar'
 
-        self.SigmaOut = 0.9
-        self.SigmaIn = 0.0
+        self.SigmaOut = 0.7
+        self.SigmaIn = 0.1
 
         self.SigmaCenter = 0.5
         self.SigmaRadius = 0.1
@@ -38,11 +38,12 @@ class Source:
         # source blur parameter initialization
         self.PSFEnable = False
         self.PSFSigma = 0.02
+
         # source polarization
-        self.PolarizationType = 'x_pol'
         self.PolarizationParameters = PolarizationParameters()
         self.source_data = SourceData(self.PntNum, self.PntNum)
-        
+        self.PolarizationVector = [1.0, 0.0]
+
     def Calc_SourceSimple(self):
         self.source_data = self.Calc_SourceAll()
         Low_Weight = self.source_data.Value < 1e-5
@@ -180,6 +181,7 @@ class Source:
 
     # source polarization
     def Calc_PolarizationMap(self, theta, rho):
+        """
         if (self.PolarizationType == 'x_pol'):
             PolarizedX = torch.ones(theta.size())
             PolarizedY = torch.zeros(theta.size())
@@ -191,7 +193,7 @@ class Source:
             PolarizedY = math.sqrt(.5) * 1j * torch.ones(theta.size())
         elif (self.PolarizationType == 'd_pol'):
             PolarizedX = math.sqrt(.5) * torch.ones(theta.size())
-            PolarizedY = math.sqrt(.5) * torch.ones(theta.size())    
+            PolarizedY = math.sqrt(.5) * torch.ones(theta.size())
         elif (self.PolarizationType == 'r_pol'):
             PolarizedX = torch.cos(theta)
             PolarizedY = torch.sin(theta)
@@ -214,6 +216,11 @@ class Source:
         if (len(biz) > sys.float_info.epsilon):
             PolarizedX[biz] = 0
             PolarizedY[biz] = 0
+        PolarizedX = PolarizedX.to(torch.complex64)
+        PolarizedY = PolarizedY.to(torch.complex64)
+        """
+        PolarizedX = self.PolarizationVector[0]*torch.ones(theta.size())
+        PolarizedY = self.PolarizationVector[1]*torch.ones(theta.size())
         PolarizedX = PolarizedX.to(torch.complex64)
         PolarizedY = PolarizedY.to(torch.complex64)
         return PolarizedX, PolarizedY
