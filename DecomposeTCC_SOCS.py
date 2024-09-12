@@ -19,7 +19,7 @@ def DecomposeTCC_SOCS(TCCMatrix_Stacked, FG_ValidSize, Nfg, numerics):
                 socsNumber = i
                 break
     else:
-        raise ValueError('Error: TCCKernalSetting.method should be setNumber or setThreshold!')
+        raise ValueError('Error: Hopkins_SettingType should be order or threshold!')
 
     TCCMatrix_Kernel = torch.zeros(Ng, Nf, socsNumber, dtype=torch.complex64)
     temp2 = torch.zeros(Ng, Nf, dtype=torch.complex64)

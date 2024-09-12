@@ -2,7 +2,7 @@ from Numerics import Numerics
 from Source import Source
 from Scatter import Scatter
 from Projection import Projection
-from CalculateAerialImage import CalculateAbbeImage, CalculateHopkinsImage
+from CalculateAerialImage import CalculateAbbeImage, CalculateHopkinsImage, CalculateOptimized
 from rcwa import rcwa
 import matplotlib.pyplot as plt
 import torch
@@ -39,6 +39,8 @@ class ImagingModel:
             ali, sp = CalculateAbbeImage(sr, sc, po, nm)
         elif (nm.ImageCalculationMethod == 'hopkins'):
             ali, sp = CalculateHopkinsImage(sr, sc, po, nm)
+        elif (nm.ImageCalculationMethod == 'optimized'):
+            ali, sp = CalculateOptimized(sr, sc, po, nm)
         else:
             raise ValueError('Unsupported Calculation Method')
         return ali, sp
@@ -57,9 +59,16 @@ class ImagingModel:
 
     def Scattering(self):
         sim_dtype = torch.complex64
+        normalized_xPitch = torch.tensor(self.Scatter.Period_X / (self.Source.Wavelength / self.Projector.NA))
+        normalized_yPitch = torch.tensor(self.Scatter.Period_Y / (self.Source.Wavelength / self.Projector.NA))
+        # TODO use recommended Fourier orders
+        #Nf = torch.ceil(2 * normalized_xPitch).int()
+        #Ng = torch.ceil(2 * normalized_yPitch).int()
+        #print("Recommended Fourier orders: [%d,%d]" % (Nf, Ng))
+        #self.Numerics.ScatterOrder_X = Nf
+        #self.Numerics.ScatterOrder_Y = Ng
 
-        sim = rcwa(freq=1/self.Source.Wavelength,
-                   order=[self.Numerics.ScatterOrder_X, self.Numerics.ScatterOrder_Y],
+        sim = rcwa(freq=1/self.Source.Wavelength, order=[self.Numerics.ScatterOrder_X, self.Numerics.ScatterOrder_Y],
                    L=[self.Scatter.Period_X, self.Scatter.Period_Y],dtype=sim_dtype)
         sim.add_input_layer(eps=1.0)
         sim.set_incident_angle(inc_ang=0, azi_ang=0)
@@ -89,6 +98,10 @@ class ImagingModel:
         ys = (self.Scatter.Period_Y/n_scatter_y)*(torch.arange(n_scatter_y)+0.5)
         [Ex, Ey, Ez], [_, _, _] = sim.field_xy(xs, ys)
         self.Scatter.ScatterField = torch.stack((Ex, Ey, Ez), 2)
+
+        # Compute Floquet mode ONLY
+        Ex_mn, Ey_mn, Ez_mn = sim.Floquet_mode()
+        self.Scatter.FloquetMode = torch.stack((Ex_mn, Ey_mn, Ez_mn), 2)
 
     def Imaging(self):
         img, pupilimg = self.CalculateImage()

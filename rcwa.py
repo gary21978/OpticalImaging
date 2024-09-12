@@ -291,8 +291,8 @@ class rcwa:
         azi_angle = torch.atan2(torch.real(ky_norm),torch.real(kx_norm))
 
         if unit == 'degree':
-            inc_angle = (180./pi) * inc_angle
-            azi_angle = (180./pi) * azi_angle
+            inc_angle = (180./torch.pi) * inc_angle
+            azi_angle = (180./torch.pi) * azi_angle
 
         return inc_angle, azi_angle
 
@@ -699,6 +699,29 @@ class rcwa:
         Hz = torch.sum(Hz_mn.reshape(1,1,-1)*xy_phase,dim=2)
 
         return [Ex, Ey, Ez], [Hx, Hy, Hz]
+    def Floquet_mode(self):
+        eps = self.eps_in if hasattr(self,'eps_in') else 1.
+        Vi = self.Vi if hasattr(self,'Vi') else self.Vf
+        if self.source_direction == 'forward':
+            Exy_p = self.E_i
+            Hxy_p = torch.matmul(Vi,Exy_p)
+            Exy_m = torch.matmul(self.S[1],self.E_i)
+            Hxy_m = torch.matmul(-Vi,Exy_m)
+        elif self.source_direction == 'backward':
+            Exy_p = torch.zeros_like(self.E_i)
+            Hxy_p = torch.zeros_like(self.E_i)
+            Exy_m = torch.matmul(self.S[3],self.E_i)
+            Hxy_m = torch.matmul(-Vi,Exy_m)
+        Ex_mn = Exy_p[:self.order_N] + Exy_m[:self.order_N]
+        Ey_mn = Exy_p[self.order_N:] + Exy_m[self.order_N:]
+        Hx_mn = Hxy_p[:self.order_N] + Hxy_m[:self.order_N]
+        Hy_mn = Hxy_p[self.order_N:] + Hxy_m[self.order_N:]
+        Ez_mn = torch.matmul(self.Ky_norm,Hx_mn)/eps - torch.matmul(self.Kx_norm,Hy_mn)/eps
+        mnshape = (self.order_x.shape[0], self.order_y.shape[0])
+        Ex_mn = torch.reshape(Ex_mn, mnshape)
+        Ey_mn = torch.reshape(Ey_mn, mnshape)
+        Ez_mn = torch.reshape(Ez_mn, mnshape)
+        return Ex_mn, Ey_mn, Ez_mn
 
     # Internal functions
     def _matching_indices(self,orders):

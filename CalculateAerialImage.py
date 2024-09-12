@@ -2,7 +2,7 @@ import torch
 from CalculateCharacteristicMatrix import CalculateCharacteristicMatrix
 from CalculateTCCMatrix import CalculateTCCMatrix
 from DecomposeTCC_SOCS import DecomposeTCC_SOCS
-from CalculateAerialImage_SOCS import CalculateAerialImage_SOCS
+from CalculateAerialImage_SOCS import CalculateAerialImage_SOCS, CalculateSOCS
 
 class ImageData:
     Intensity: torch.tensor = None
@@ -128,3 +128,25 @@ def CalculateHopkinsImage(source, scatter, projector, numerics):
     farfieldImage.ImageZ = projector.FocusRange
 
     return farfieldImage, pupilImage
+def CalculateOptimized(source, scatter, projector, numerics):
+    pitchxy = [scatter.Period_Y, scatter.Period_X]
+    FloquetMode = scatter.FloquetMode
+    Nfg = [FloquetMode.shape[0], FloquetMode.shape[1]]
+    SimulationRange = projector.FocusRange
+    farfieldImage = ImageData()
+    Intensity = torch.zeros(len(SimulationRange), numerics.ScatterGrid_X, numerics.ScatterGrid_Y)
+    for iFocus, focus in enumerate(SimulationRange):
+        TCCMatrix_Stacked, FG_ValidSize = \
+                        CalculateTCCMatrix(source, pitchxy, projector, focus, numerics)
+        TCCMatrix_Kernel = \
+                        DecomposeTCC_SOCS(TCCMatrix_Stacked, FG_ValidSize, Nfg, numerics)
+        Intensity[iFocus, :, :] = CalculateSOCS(FloquetMode, TCCMatrix_Kernel, numerics)
+    farfieldImage.Intensity = Intensity
+    farfieldImage.ImageX = torch.linspace(-scatter.Period_X / 2,
+                                            scatter.Period_X / 2,
+                                            numerics.ScatterGrid_X)
+    farfieldImage.ImageY = torch.linspace(-scatter.Period_Y / 2,
+                                           scatter.Period_Y / 2,
+                                           numerics.ScatterGrid_Y)
+    farfieldImage.ImageZ = projector.FocusRange
+    return farfieldImage, torch.tensor([])

@@ -5,6 +5,7 @@ class Scatter:
         self.Period_X = 1000  # nanometer
         self.Period_Y = 1000  # nanometer
         self.ScatterField = []
+        self.FloquetMode = []
 
     def CalculateSpectrum(self, po, sr):
         NA = po.NA
