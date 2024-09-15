@@ -3,12 +3,11 @@ import torch
 def CalculateAerialImage_SOCS(scatter, TCCMatrix_SOCS, source, projector):
     spectrum, f, g, pupilImage = scatter.CalculateSpectrum(projector, source)
     sp = spectrum.unsqueeze(3).permute(0, 1, 3, 2)
-    Es = TCCMatrix_SOCS.unsqueeze(3) * torch.fft.fftshift(sp, dim=(0, 1))
+    Es = TCCMatrix_SOCS.unsqueeze(3) * torch.fft.ifftshift(sp, dim=(0, 1))
     E = (f[1] - f[0]) * (g[1] - g[0]) * torch.fft.fft2(Es, dim=(0, 1))
     Esquare = torch.abs(E)**2
     intensity = torch.sum(Esquare, dim=(2, 3)) # sum over xyz and coherent systems
     intensity = torch.fft.fftshift(intensity, dim=(0, 1))
-    intensity = torch.rot90(intensity, 2)
     return intensity, pupilImage
     
 def CalculateSOCS(FloquetMode, TCCMatrix_SOCS, numerics):

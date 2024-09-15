@@ -88,7 +88,7 @@ def CalculateAbbeImage(source, scatter, projector, numerics):
         
         intensity2D = torch.reshape(sourceV, (1, 1, -1)) * intensity2D
         intensity2D = dfmdg ** 2 * torch.fft.fftshift(torch.sum(intensity2D, dim=2))
-        intensity2D = torch.real(torch.rot90(intensity2D, 2))
+        intensity2D = torch.real(intensity2D)
         Intensity[iFocus, :, :] = indexImage / weight * intensity2D
     ImageX = torch.linspace(-scatter.Period_X/2, scatter.Period_X/2, target_nf)
     ImageY = torch.linspace(-scatter.Period_Y/2, scatter.Period_Y/2, target_ng)

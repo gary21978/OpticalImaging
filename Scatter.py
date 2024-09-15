@@ -17,10 +17,10 @@ class Scatter:
         normPitchY = self.Period_Y / (Wavelength / NA)
         f = (1/normPitchX)*torch.arange(-(PntNum_X//2), (PntNum_X + 1)//2)
         g = (1/normPitchY)*torch.arange(-(PntNum_Y//2), (PntNum_Y + 1)//2)
-        hh = torch.fft.fftshift(h, dim=(0, 1))
-        DFThh = torch.fft.fft2(hh, dim=(0, 1))
+        hh = torch.fft.ifftshift(h, dim=(0, 1))
+        DFThh = torch.fft.ifft2(hh, dim=(0, 1))
         Hk = torch.fft.fftshift(DFThh, dim=(0, 1))
-        Hk = normPitchX*normPitchY/PntNum_X/PntNum_Y * Hk
+        Hk = normPitchX*normPitchY*Hk
         
         PupilImage = Hk.clone()
         fm, gm = torch.meshgrid(g, f, indexing='ij')
