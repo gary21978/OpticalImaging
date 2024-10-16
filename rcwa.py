@@ -45,8 +45,6 @@ class rcwa:
             dtype=torch.complex64,
             device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
             stable_eig_grad=True,
-            avoid_Pinv_instability=False,
-            max_Pinv_instability=0.005
         ):
 
         '''
@@ -64,8 +62,6 @@ class rcwa:
             - dtype: simulation data type (only torch.complex64 and torch.complex128 are allowed.)
             - device: simulation device (only torch.device('cpu') and torch.device('cuda') are allowed.)
             - stable_eig_grad: stabilize gradient calculation of eigendecompsition (default as True)
-            - avoid_Pinv_instability: avoid instability of P inverse (P: H to E) (default as False)
-            - max_Pinv_instability: allowed maximum instability value for P inverse (default as 0.005 if avoid_Pinv_instability is True)
         '''
 
         # Hardware
@@ -78,18 +74,6 @@ class rcwa:
 
         # Stabilize the gradient of eigendecomposition
         self.stable_eig_grad = True if stable_eig_grad else False
-
-        # Stability setting for inverse matrix of P and Q
-        if avoid_Pinv_instability is True:
-            self.avoid_Pinv_instability = True
-            self.max_Pinv_instability = max_Pinv_instability
-            self.Pinv_instability = []
-            self.Qinv_instability = []
-        else:
-            self.avoid_Pinv_instability = False
-            self.max_Pinv_instability = None
-            self.Pinv_instability = None
-            self.Qinv_instability = None
 
         # Simulation parameters
         self.freq = torch.as_tensor(freq,dtype=self._dtype,device=self._device) # unit^-1
@@ -120,9 +104,6 @@ class rcwa:
         # Internal layer eigenmodes
         self.P, self.Q = [], []
         self.kz_norm, self.E_eigvec, self.H_eigvec = [], [], []
-
-        # Internal layer mode coupling coefficiencts
-        self.Cf, self.Cb = [], []
 
         # Single layer scattering matrices
         self.layer_S11, self.layer_S21, self.layer_S12, self.layer_S22 = [], [], [], []
@@ -155,26 +136,17 @@ class rcwa:
         self.mu_out = torch.as_tensor(mu,dtype=self._dtype,device=self._device)
         self.Sout = []
 
-    def set_incident_angle(self,inc_ang,azi_ang,angle_layer='input'):
+    def set_incident_angle(self,inc_ang,azi_ang):
         '''
             Set incident angle
 
             Parameters
             - inc_ang: incident angle (unit: radian)
             - azi_ang: azimuthal angle (unit: radian)
-            - angle_layer: reference layer to calculate angle ('i', 'in', 'input' / 'o', 'out', 'output')
         '''
 
         self.inc_ang = torch.as_tensor(inc_ang,dtype=self._dtype,device=self._device)
         self.azi_ang = torch.as_tensor(azi_ang,dtype=self._dtype,device=self._device)
-
-        if angle_layer in ['i', 'in', 'input']:
-            self.angle_layer = 'input'
-        elif angle_layer in ['o', 'out', 'output']:
-            self.angle_layer = 'output'
-        else:
-            warnings.warn('Invalid angle layer. Set as input layer.',UserWarning)
-            self.angle_layer = 'input'
 
         self._kvectors()
 
@@ -216,49 +188,42 @@ class rcwa:
             S21 = self.layer_S21[0]
             S12 = self.layer_S12[0]
             S22 = self.layer_S22[0]
-            C = [[self.Cf[0]], [self.Cb[0]]]
         else:
             S11 = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
             S21 = torch.zeros(2*self.order_N,dtype=self._dtype,device=self._device)
             S12 = torch.zeros(2*self.order_N,dtype=self._dtype,device=self._device)
             S22 = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
-            C = [[], []]
 
         # Connection
         for i in range(self.layer_N-1):
-            [S11, S21, S12, S22], C = self._RS_prod(Sm=[S11, S21, S12, S22],
-                Sn=[self.layer_S11[i+1], self.layer_S21[i+1], self.layer_S12[i+1], self.layer_S22[i+1]],
-                Cm=C, Cn=[[self.Cf[i+1]], [self.Cb[i+1]]])
+            S11, S21, S12, S22 = self._RS_prod(Sm=[S11, S21, S12, S22],
+                Sn=[self.layer_S11[i+1], self.layer_S21[i+1], self.layer_S12[i+1], self.layer_S22[i+1]])
 
         if hasattr(self,'Sin'):
             # input layer coupling
-            [S11, S21, S12, S22], C = self._RS_prod(Sm=[self.Sin[0], self.Sin[1], self.Sin[2], self.Sin[3]],
-                Sn=[S11, S21, S12, S22],
-                Cm=[[],[]], Cn=C)
+            S11, S21, S12, S22= self._RS_prod(Sm=[self.Sin[0], self.Sin[1], self.Sin[2], self.Sin[3]],
+                Sn=[S11, S21, S12, S22])
 
         if hasattr(self,'Sout'):
             # output layer coupling
-            [S11, S21, S12, S22], C = self._RS_prod(Sm=[S11, S21, S12, S22],
-                Sn=[self.Sout[0], self.Sout[1], self.Sout[2], self.Sout[3]],
-                Cm=C, Cn=[[],[]])
+            S11, S21, S12, S22 = self._RS_prod(Sm=[S11, S21, S12, S22],
+                Sn=[self.Sout[0], self.Sout[1], self.Sout[2], self.Sout[3]])
 
         self.S = [S11, S21, S12, S22]
-        self.C = C
         
-    def source_planewave(self,*,amplitude=[1.,0.],direction='forward',notation='xy'):
+    def source_planewave(self,*,amplitude=[1.,0.],direction='forward'):
         '''
             Generate planewave
 
             Paramters
-            - amplitude: amplitudes at the matched diffraction orders ([Ex_amp, Ey_amp] for 'xy' notation, [Ep_amp, Es_amp] for 'ps' notation)
+            - amplitude: amplitudes at the matched diffraction orders ([Ex_amp, Ey_amp])
               (list / np.ndarray / torch.Tensor) (Recommended shape: 1x2)
             - direction: incident direction ('f', 'forward' / 'b', 'backward')
-            - notation: amplitude notation (xy-pol: 'xy' / ps-pol: 'ps')
         '''
 
-        self.source_fourier(amplitude=amplitude,orders=[0,0],direction=direction,notation=notation)
+        self.source_fourier(amplitude=amplitude,orders=[0,0],direction=direction)
 
-    def source_fourier(self,*,amplitude,orders,direction='forward',notation='xy'):
+    def source_fourier(self,*,amplitude,orders,direction='forward'):
         '''
             Generate Fourier source
 
@@ -267,7 +232,6 @@ class rcwa:
                 (list / np.ndarray / torch.Tensor) (Recommended shape: Nx2)
             - orders: diffraction orders (list / np.ndarray / torch.Tensor) (Recommended shape: Nx2)
             - direction: incident direction ('f', 'forward' / 'b', 'backward')
-            - notation: amplitude notation (xy-pol: 'xy' / ps-pol: 'ps')
         '''
         amplitude = torch.as_tensor(amplitude,dtype=self._dtype,device=self._device).reshape([-1,2])
         orders = torch.as_tensor(orders,dtype=torch.int64,device=self._device).reshape([-1,2])
@@ -280,10 +244,6 @@ class rcwa:
             warnings.warn('Invalid source direction. Set as forward.',UserWarning)
             direction = 'forward'
 
-        if notation not in ['xy', 'ps']:
-            warnings.warn('Invalid amplitude notation. Set as xy notation.',UserWarning)
-            notation = 'xy'
-
         # Matching indices
         order_indices = self._matching_indices(orders)
 
@@ -292,28 +252,6 @@ class rcwa:
         E_i = torch.zeros([2*self.order_N,1],dtype=self._dtype,device=self._device)
         E_i[order_indices,0] = amplitude[:,0]
         E_i[order_indices+self.order_N,0] = amplitude[:,1]
-
-        # Convert ps-pol to xy-pol
-        if notation == 'ps':
-            if direction == 'forward':
-                eps, mu = self.eps_in, self.mu_in
-                sign = 1
-            else:
-                eps, mu = self.eps_out, self.mu_out
-                sign = -1
-            
-            Kt_norm_dn = torch.sqrt(self.Kx_norm_dn**2 + self.Ky_norm_dn**2)
-            Kz_norm_dn = sign*torch.abs(torch.real(torch.sqrt(eps*mu - self.Kx_norm_dn**2 - self.Ky_norm_dn**2)))
-
-            inc_angle = torch.atan2(torch.real(Kt_norm_dn),Kz_norm_dn)
-            azi_angle = torch.atan2(torch.real(self.Ky_norm_dn),torch.real(self.Kx_norm_dn))
-
-            tmp1 = torch.vstack((torch.diag(torch.cos(inc_angle)*torch.cos(azi_angle)),
-                                torch.diag(torch.cos(inc_angle)*torch.sin(azi_angle))))
-            tmp2 = torch.vstack((torch.diag(-torch.sin(azi_angle)),torch.diag(torch.cos(azi_angle))))
-            ps2xy = torch.hstack((tmp1, tmp2)) 
-            
-            E_i = torch.matmul(ps2xy.to(self._dtype),E_i)
 
         self.E_i = E_i
 
@@ -414,12 +352,8 @@ class rcwa:
         return order_indices
 
     def _kvectors(self):
-        if self.angle_layer == 'input':
-            self.kx0_norm = torch.real(torch.sqrt(self.eps_in*self.mu_in)) * torch.sin(self.inc_ang) * torch.cos(self.azi_ang)
-            self.ky0_norm = torch.real(torch.sqrt(self.eps_in*self.mu_in)) * torch.sin(self.inc_ang) * torch.sin(self.azi_ang)
-        else:
-            self.kx0_norm = torch.real(torch.sqrt(self.eps_out*self.mu_out)) * torch.sin(self.inc_ang) * torch.cos(self.azi_ang)
-            self.ky0_norm = torch.real(torch.sqrt(self.eps_out*self.mu_out)) * torch.sin(self.inc_ang) * torch.sin(self.azi_ang)
+        self.kx0_norm = torch.real(torch.sqrt(self.eps_in*self.mu_in)) * torch.sin(self.inc_ang) * torch.cos(self.azi_ang)
+        self.ky0_norm = torch.real(torch.sqrt(self.eps_in*self.mu_in)) * torch.sin(self.inc_ang) * torch.sin(self.azi_ang)
 
         # Free space k-vectors and E to H transformation matrix
         self.kx_norm = self.kx0_norm + self.order_x * self.Gx_norm
@@ -473,6 +407,7 @@ class rcwa:
             self.Sout.append(2*torch.matmul(Vtmp1,self.Vo))  # Tb S22
 
     def _material_conv(self,material):
+        material = material.to(self._dtype)
         material_N = material.shape[0]*material.shape[1]
 
         # Matching indices
@@ -484,15 +419,13 @@ class rcwa:
         indx, indy = torch.meshgrid(ind.to(torch.int64),ind.to(torch.int64),indexing='ij')
 
         material_fft = torch.fft.fft2(material)/material_N
-
         material_fft_real = torch.real(material_fft)
         material_fft_imag = torch.imag(material_fft)
         
-        material_convmat_real = (material_fft_real[ox[indx]-ox[indy],oy[indx]-oy[indy]])
-        material_convmat_imag = (material_fft_imag[ox[indx]-ox[indy],oy[indx]-oy[indy]])
-
-        material_convmat = torch.complex(material_convmat_real,material_convmat_imag)
+        material_convmat_real = material_fft_real[ox[indx]-ox[indy],oy[indx]-oy[indy]]
+        material_convmat_imag = material_fft_imag[ox[indx]-ox[indy],oy[indx]-oy[indy]]
         
+        material_convmat = torch.complex(material_convmat_real,material_convmat_imag)
         return material_convmat
     
     def _eigen_decomposition_homogenous(self,eps,mu):
@@ -538,43 +471,25 @@ class rcwa:
         phase = torch.diag(torch.exp(1.j*self.omega*self.kz_norm[-1]*self.thickness[-1]))
 
         Pinv_tmp = torch.linalg.inv(self.P[-1])
-        if self.avoid_Pinv_instability == True:
-            
-            Pinv_ins_tmp1 = torch.max(torch.abs( torch.matmul(self.P[-1].detach(),Pinv_tmp.detach())-torch.eye(self.P[-1].shape[-1]).to(self.P[-1]) ))
-            Pinv_ins_tmp2 = torch.max(torch.abs( torch.matmul(Pinv_tmp.detach(),self.P[-1].detach())-torch.eye(self.P[-1].shape[-1]).to(self.P[-1]) ))
-            Qinv_ins_tmp1 = torch.max(torch.abs( torch.matmul(self.Q[-1].detach(),torch.linalg.inv(self.Q[-1]).detach())-torch.eye(self.Q[-1].shape[-1]).to(self.Q[-1]) ))
-            Qinv_ins_tmp2 = torch.max(torch.abs( torch.matmul(self.Q[-1].detach(),torch.linalg.inv(self.Q[-1]).detach())-torch.eye(self.Q[-1].shape[-1]).to(self.Q[-1]) ))
+        self.H_eigvec.append(torch.matmul(Pinv_tmp,torch.matmul(self.E_eigvec[-1],Kz_norm)))
+        #self.H_eigvec.append(torch.matmul(self.Q[-1],torch.matmul(self.E_eigvec[-1],torch.linalg.inv(Kz_norm)))) # another form
 
-            self.Pinv_instability.append(torch.maximum(Pinv_ins_tmp1,Pinv_ins_tmp2))
-            self.Qinv_instability.append(torch.maximum(Qinv_ins_tmp1,Qinv_ins_tmp2))
+        W = self.E_eigvec[-1]
+        V0iV = torch.matmul(torch.linalg.inv(self.Vf), self.H_eigvec[-1])
+        A = W + V0iV
+        B = torch.matmul(W - V0iV, phase)
+        BAi = torch.matmul(B, torch.linalg.inv(A))
+        C1 = 2*torch.linalg.inv(A - torch.matmul(BAi, B))
+        C2 = -torch.matmul(C1, BAi)
+        S11 = torch.matmul(W, torch.matmul(phase, C1) + C2)
+        S12 = torch.matmul(W, torch.matmul(phase, C2) + C1) - torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+        self.layer_S11.append(S11)
+        self.layer_S12.append(S12)
+        self.layer_S21.append(S12)
+        self.layer_S22.append(S11)
 
-            if self.Pinv_instability[-1] < self.max_Pinv_instability:
-                self.H_eigvec.append(torch.matmul(Pinv_tmp,torch.matmul(self.E_eigvec[-1],Kz_norm)))
-            else:
-                self.H_eigvec.append(torch.matmul(self.Q[-1],torch.matmul(self.E_eigvec[-1],torch.linalg.inv(Kz_norm))))
-        else:
-            self.H_eigvec.append(torch.matmul(Pinv_tmp,torch.matmul(self.E_eigvec[-1],Kz_norm)))
-
-        Ctmp1 = torch.vstack((self.E_eigvec[-1] + torch.matmul(torch.linalg.inv(self.Vf),self.H_eigvec[-1]), torch.matmul(self.E_eigvec[-1] - torch.matmul(torch.linalg.inv(self.Vf),self.H_eigvec[-1]),phase)))
-        Ctmp2 = torch.vstack((torch.matmul(self.E_eigvec[-1] - torch.matmul(torch.linalg.inv(self.Vf),self.H_eigvec[-1]),phase), self.E_eigvec[-1] + torch.matmul(torch.linalg.inv(self.Vf),self.H_eigvec[-1])))
-        Ctmp = torch.hstack((Ctmp1,Ctmp2))
-
-        # Mode coupling coefficients
-        self.Cf.append(torch.matmul( torch.linalg.inv(Ctmp), torch.vstack((2*torch.eye(2*self.order_N,dtype=self._dtype,device=self._device),
-            torch.zeros([2*self.order_N,2*self.order_N],dtype=self._dtype,device=self._device))) ))
-        self.Cb.append(torch.matmul( torch.linalg.inv(Ctmp), torch.vstack((torch.zeros([2*self.order_N,2*self.order_N],dtype=self._dtype,device=self._device),
-            2*torch.eye(2*self.order_N,dtype=self._dtype,device=self._device))) ))
-
-        self.layer_S11.append(torch.matmul(torch.matmul(self.E_eigvec[-1],phase), self.Cf[-1][:2*self.order_N,:]) + torch.matmul(self.E_eigvec[-1],self.Cf[-1][2*self.order_N:,:]))
-        self.layer_S21.append(torch.matmul(self.E_eigvec[-1], self.Cf[-1][:2*self.order_N,:]) + torch.matmul(torch.matmul(self.E_eigvec[-1],phase),self.Cf[-1][2*self.order_N:,:])
-            - torch.eye(2*self.order_N,dtype=self._dtype,device=self._device))
-        self.layer_S12.append(torch.matmul(torch.matmul(self.E_eigvec[-1],phase), self.Cb[-1][:2*self.order_N,:]) + torch.matmul(self.E_eigvec[-1],self.Cb[-1][2*self.order_N:,:])
-            - torch.eye(2*self.order_N,dtype=self._dtype,device=self._device))
-        self.layer_S22.append(torch.matmul(self.E_eigvec[-1], self.Cb[-1][:2*self.order_N,:]) + torch.matmul(torch.matmul(self.E_eigvec[-1],phase),self.Cb[-1][2*self.order_N:,:]))
-
-    def _RS_prod(self,Sm,Sn,Cm,Cn):
+    def _RS_prod(self,Sm,Sn):
         # S11 = S[0] / S21 = S[1] / S12 = S[2] / S22 = S[3]
-        # Cf = C[0] / Cb = C[1]
 
         tmp1 = torch.linalg.inv(torch.eye(2*self.order_N,dtype=self._dtype,device=self._device) - torch.matmul(Sm[2],Sn[1]))
         tmp2 = torch.linalg.inv(torch.eye(2*self.order_N,dtype=self._dtype,device=self._device) - torch.matmul(Sn[1],Sm[2]))
@@ -585,14 +500,4 @@ class rcwa:
         S12 = Sn[2] + torch.matmul(Sn[0],torch.matmul(tmp1,torch.matmul(Sm[2],Sn[3])))
         S22 = torch.matmul(Sm[3],torch.matmul(tmp2,Sn[3]))
 
-        # Mode coupling coefficients
-        C = [[],[]]
-        for m in range(len(Cm[0])):
-            C[0].append(Cm[0][m] + torch.matmul(Cm[1][m],torch.matmul(tmp2,torch.matmul(Sn[1],Sm[0]))))
-            C[1].append(torch.matmul(Cm[1][m],torch.matmul(tmp2,Sn[3])))
-
-        for n in range(len(Cn[0])):
-            C[0].append(torch.matmul(Cn[0][n],torch.matmul(tmp1,Sm[0])))
-            C[1].append(Cn[1][n] + torch.matmul(Cn[0][n],torch.matmul(tmp1,torch.matmul(Sm[2],Sn[3]))))
-
-        return [S11, S21, S12, S22], C
+        return S11, S21, S12, S22
