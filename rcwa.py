@@ -1,50 +1,11 @@
 import warnings
 import torch
 
-class Eig(torch.autograd.Function):
-    broadening_parameter = 1e-10
-
-    @staticmethod
-    def forward(ctx,x):
-        ctx.input = x
-        eigval, eigvec = torch.linalg.eig(x)
-        ctx.eigval = eigval.cpu()
-        ctx.eigvec = eigvec.cpu()
-        return eigval, eigvec
-
-    @staticmethod
-    def backward(ctx,grad_eigval,grad_eigvec):
-        eigval = ctx.eigval.to(grad_eigval)
-        eigvec = ctx.eigvec.to(grad_eigvec)
-
-        grad_eigval = torch.diag(grad_eigval)
-        s = eigval.unsqueeze(-2) - eigval.unsqueeze(-1)
-
-        # Lorentzian broadening: get small error but stabilizing the gradient calculation
-        if Eig.broadening_parameter is not None:
-            F = torch.conj(s)/(torch.abs(s)**2 + Eig.broadening_parameter)
-        elif s.dtype == torch.complex64:
-            F = torch.conj(s)/(torch.abs(s)**2 + 1.4e-45)
-        elif s.dtype == torch.complex128:
-            F = torch.conj(s)/(torch.abs(s)**2 + 4.9e-324)
-
-        diag_indices = torch.linspace(0,F.shape[-1]-1,F.shape[-1],dtype=torch.int64)
-        F[diag_indices,diag_indices] = 0.
-        XH = torch.transpose(torch.conj(eigvec),-2,-1)
-        tmp = torch.conj(F) * torch.matmul(XH, grad_eigvec)
-
-        grad = torch.matmul(torch.matmul(torch.inverse(XH), grad_eigval + tmp), XH)
-        if not torch.is_complex(ctx.input):
-            grad = torch.real(grad)
-
-        return grad
-
 class rcwa:
     # Simulation setting
     def __init__(self,freq,order,L,*,
             dtype=torch.complex64,
             device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
-            stable_eig_grad=True,
         ):
 
         '''
@@ -61,7 +22,6 @@ class rcwa:
             Keyword Parameters
             - dtype: simulation data type (only torch.complex64 and torch.complex128 are allowed.)
             - device: simulation device (only torch.device('cpu') and torch.device('cuda') are allowed.)
-            - stable_eig_grad: stabilize gradient calculation of eigendecompsition (default as True)
         '''
 
         # Hardware
@@ -73,7 +33,6 @@ class rcwa:
         self._device = device
 
         # Stabilize the gradient of eigendecomposition
-        self.stable_eig_grad = True if stable_eig_grad else False
 
         # Simulation parameters
         self.freq = torch.as_tensor(freq,dtype=self._dtype,device=self._device) # unit^-1
@@ -100,7 +59,6 @@ class rcwa:
         self.eps_conv = []
 
         # Internal layer eigenmodes
-        self.P, self.Q = [], []
         self.kz_norm, self.E_eigvec, self.H_eigvec = [], [], []
 
         # Single layer scattering matrices
@@ -152,14 +110,14 @@ class rcwa:
             - eps: relative permittivity
         '''
 
-        is_eps_homogenous = (type(eps) == float) or (type(eps) == complex) or (eps.dim() == 0) or ((eps.dim() == 1) and eps.shape[0] == 1)
+        is_homogenous = (type(eps) == float) or (type(eps) == complex) or (eps.dim() == 0) or ((eps.dim() == 1) and eps.shape[0] == 1)
         
-        self.eps_conv.append(eps*torch.eye(self.order_N,dtype=self._dtype,device=self._device) if is_eps_homogenous else self._material_conv(eps))
+        self.eps_conv.append(eps*torch.eye(self.order_N,dtype=self._dtype,device=self._device) if is_homogenous else self._material_conv(eps))
 
         self.layer_N += 1
         self.thickness.append(thickness)
 
-        if is_eps_homogenous:
+        if is_homogenous:
             self._eigen_decomposition_homogenous(eps)
         else:
             self._eigen_decomposition()
@@ -256,7 +214,7 @@ class rcwa:
             - z_prop: z-direction distance from the upper boundary of the layer and should be negative.
 
             Return
-            - [Ex, Ey, Ez] (list[torch.Tensor]), [Hx, Hy, Hz] (list[torch.Tensor])
+            - [Ex, Ey, Ez] (list[torch.Tensor])
         '''
 
         if type(x_axis) != torch.Tensor or type(y_axis) != torch.Tensor:
@@ -279,8 +237,7 @@ class rcwa:
         Kz_norm_dn = torch.where(torch.imag(Kz_norm_dn)>0,torch.conj(Kz_norm_dn),Kz_norm_dn).reshape([-1,1])
 
         # Phase
-        Kz_norm_dn = torch.vstack((Kz_norm_dn,Kz_norm_dn))
-        z_phase = torch.exp(1.j*self.omega*Kz_norm_dn*z_prop)
+        z_phase = torch.exp(1.j*self.omega*torch.vstack((Kz_norm_dn,Kz_norm_dn))*z_prop)
             
         # Fourier domain fields
         # [diffraction order, diffraction order]
@@ -295,8 +252,8 @@ class rcwa:
             Exy_m = torch.matmul(self.S[3],self.E_i)*torch.conj(z_phase)
             Hxy_m = torch.matmul(-Vi,Exy_m)
 
-        Ex_mn = Exy_p[:self.order_N] + Exy_m[:self.order_N]
-        Ey_mn = Exy_p[self.order_N:] + Exy_m[self.order_N:]
+        Ex_mn = Exy_m[:self.order_N]
+        Ey_mn = Exy_m[self.order_N:]
         Hz_mn = torch.matmul(Kx_norm,Ey_mn) - torch.matmul(Ky_norm,Ex_mn)
         Hx_mn = Hxy_p[:self.order_N] + Hxy_m[:self.order_N]
         Hy_mn = Hxy_p[self.order_N:] + Hxy_m[self.order_N:]
@@ -317,7 +274,7 @@ class rcwa:
         Kz_norm_dn = torch.sqrt(1.0 - self.Kx_norm_dn**2 - self.Ky_norm_dn**2)
         Kz_norm_dn = torch.where(torch.imag(Kz_norm_dn)<0,torch.conj(Kz_norm_dn),Kz_norm_dn).reshape([-1,1])
         
-        Exy = self.E_i + torch.matmul(self.S[1],self.E_i)
+        Exy = torch.matmul(self.S[1],self.E_i)
         
         Ex_mn = Exy[:self.order_N]
         Ey_mn = Exy[self.order_N:]
@@ -417,23 +374,16 @@ class rcwa:
         return material_convmat
     
     def _eigen_decomposition_homogenous(self,eps):
-        KxKx = self.Kx_norm**2
-        KxKy = self.Kx_norm*self.Ky_norm
-        KyKy = self.Ky_norm**2
-        I = torch.eye(self.order_N,dtype=self._dtype,device=self._device)
-        Q = torch.hstack((torch.vstack((-KxKy, eps*I - KyKy)), torch.vstack((KxKx - eps*I, KxKy))))
-        P = -1/eps*Q
-
-        self.P.append(P)
-        self.Q.append(Q)
-        
-        E_eigvec = torch.eye(self.P[-1].shape[-1],dtype=self._dtype,device=self._device)
         kz_norm = torch.sqrt(eps- self.Kx_norm_dn**2 - self.Ky_norm_dn**2)
         kz_norm = torch.where(torch.imag(kz_norm)<0,torch.conj(kz_norm),kz_norm) # Normalized kz for positive mode
-        kz_norm = torch.cat((kz_norm,kz_norm))
+        KxKyKzi = self.Kx_norm*self.Ky_norm*torch.diag(1./kz_norm)
+        KzplusKxKxKzi = torch.diag(kz_norm) + self.Kx_norm**2*torch.diag(1./kz_norm)
+        KzplusKyKyKzi = torch.diag(kz_norm) + self.Ky_norm**2*torch.diag(1./kz_norm)
+        V = torch.hstack((torch.vstack((-KxKyKzi, KzplusKxKxKzi)), torch.vstack((-KzplusKyKyKzi, KxKyKzi))))
 
-        self.kz_norm.append(kz_norm) 
-        self.E_eigvec.append(E_eigvec)
+        self.kz_norm.append(torch.cat((kz_norm,kz_norm)))
+        self.E_eigvec.append(torch.eye(2*self.order_N,dtype=self._dtype,device=self._device))
+        self.H_eigvec.append(V)
 
     def _eigen_decomposition(self):
         KxEiKy = torch.matmul(torch.matmul(self.Kx_norm, torch.linalg.inv(self.eps_conv[-1])), self.Ky_norm)
@@ -446,27 +396,19 @@ class rcwa:
         I = torch.eye(self.order_N,dtype=self._dtype,device=self._device)
         P = torch.hstack((torch.vstack((KxEiKy, KyEiKy - I)), torch.vstack((I - KxEiKx, -KyEiKx))))
         Q = torch.hstack((torch.vstack((-KxKy, self.eps_conv[-1] - KyKy)), torch.vstack((KxKx - self.eps_conv[-1], KxKy))))
-
-        self.P.append(P)
-        self.Q.append(Q)
+        PQ = torch.matmul(P,Q)
 
         # Eigen-decomposition
-        if self.stable_eig_grad is True:
-            kz_norm, E_eigvec = Eig.apply(torch.matmul(self.P[-1],self.Q[-1]))
-        else:
-            kz_norm, E_eigvec = torch.linalg.eig(torch.matmul(self.P[-1],self.Q[-1]))
+        kz_norm, E_eigvec = torch.linalg.eig(PQ)
         
         kz_norm = torch.sqrt(kz_norm)
-        self.kz_norm.append(torch.where(torch.imag(kz_norm)<0,-kz_norm,kz_norm)) # Normalized kz for positive mode
+        kz_norm = torch.where(torch.imag(kz_norm)<0,-kz_norm,kz_norm)
+        self.kz_norm.append(kz_norm)
         self.E_eigvec.append(E_eigvec)
+        self.H_eigvec.append(torch.matmul(Q,torch.matmul(E_eigvec, torch.linalg.inv(torch.diag(kz_norm)))))
 
     def _solve_layer_smatrix(self):
-        Kz_norm = torch.diag(self.kz_norm[-1])
         phase = torch.diag(torch.exp(1.j*self.omega*self.kz_norm[-1]*self.thickness[-1]))
-
-        #Pinv_tmp = torch.linalg.inv(self.P[-1])
-        #self.H_eigvec.append(torch.matmul(Pinv_tmp,torch.matmul(self.E_eigvec[-1],Kz_norm)))
-        self.H_eigvec.append(torch.matmul(self.Q[-1],torch.matmul(self.E_eigvec[-1],torch.linalg.inv(Kz_norm)))) # another form
 
         W = self.E_eigvec[-1]
         V0iV = torch.matmul(torch.linalg.inv(self.Vf), self.H_eigvec[-1])
