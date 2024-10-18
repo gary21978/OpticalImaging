@@ -237,21 +237,23 @@ class rcwa:
         if self.angle_layer == 'input':
             eps = self.eps_in if hasattr(self,'eps_in') else 1.
         else:
-            eps = self.eps_out if hasattr(self,'eps_out') else 1. #eps_in???
+            eps = self.eps_out if hasattr(self,'eps_out') else 1.
 
-        Kz_norm_dn = torch.sqrt(eps - self.Kx_norm_dn**2 - self.Ky_norm_dn**2)
-        Kz_norm_dn = torch.where(torch.imag(Kz_norm_dn)<0,torch.conj(Kz_norm_dn),Kz_norm_dn).reshape([-1,1])
-     
         if self.angle_layer == 'input':
             port = 1 if self.source_direction == 'forward' else 3
-        else:
+        else:   
             port = 0 if self.source_direction == 'forward' else 2
 
-        Exy = torch.matmul(self.S[port],self.E_i)
+        Kz_norm_dn = torch.sqrt(eps - self.Kx_norm_dn**2 - self.Ky_norm_dn**2)
+        if self.angle_layer == 'input':
+            Kz_norm_dn = torch.where(torch.imag(Kz_norm_dn)<0,torch.conj(Kz_norm_dn),Kz_norm_dn).reshape([-1,1])
+        else:
+            Kz_norm_dn = -torch.where(torch.imag(Kz_norm_dn)<0,torch.conj(Kz_norm_dn),Kz_norm_dn).reshape([-1,1])
 
+        Exy = torch.matmul(self.S[port],self.E_i)
         Ex_mn = Exy[:self.order_N]
         Ey_mn = Exy[self.order_N:]
-        Ez_mn = (self.Kx_norm_dn.reshape([-1,1])*Ex_mn + self.Ky_norm_dn.reshape([-1,1])*Ey_mn)/Kz_norm_dn
+        Ez_mn = (self.Kx_norm_dn.reshape([-1,1])*Ex_mn + self.Ky_norm_dn.reshape([-1,1])*Ey_mn)/Kz_norm_dn    
 
         # Spatial domain fields
         xy_phase = torch.exp(1.j * self.omega * (self.Kx_norm_dn*x_axis + self.Ky_norm_dn*y_axis))
