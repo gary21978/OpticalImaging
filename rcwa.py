@@ -86,17 +86,25 @@ class rcwa:
         self.eps_out = torch.as_tensor(eps,dtype=self._dtype,device=self._device)
         self.Sout = []
 
-    def set_incident_angle(self,inc_ang,azi_ang):
+    def set_incident_angle(self,inc_ang,azi_ang,angle_layer='input'):
         '''
             Set incident angle
 
             Parameters
             - inc_ang: incident angle (unit: radian)
             - azi_ang: azimuthal angle (unit: radian)
+            - angle_layer: reference layer to calculate angle ('i', 'in', 'input' / 'o', 'out', 'output')
         '''
 
         self.inc_ang = torch.as_tensor(inc_ang,dtype=self._dtype,device=self._device)
         self.azi_ang = torch.as_tensor(azi_ang,dtype=self._dtype,device=self._device)
+        if angle_layer in ['i', 'in', 'input']:
+            self.angle_layer = 'input'
+        elif angle_layer in ['o', 'out', 'output']:
+            self.angle_layer = 'output'
+        else:
+            warnings.warn('Invalid angle layer. Set as input layer.',UserWarning)
+            self.angle_layer = 'input'
         self._kvectors()
 
     def add_layer(self,thickness,eps=1.):
@@ -109,7 +117,12 @@ class rcwa:
         '''
 
         is_homogenous = (type(eps) == float) or (type(eps) == complex) or (eps.dim() == 0) or ((eps.dim() == 1) and eps.shape[0] == 1)
-        self.eps_conv.append(eps*torch.eye(self.order_N,dtype=self._dtype,device=self._device) if is_homogenous else self._material_conv(eps))
+        if is_homogenous:
+            E = eps*torch.eye(self.order_N,dtype=self._dtype,device=self._device)
+        else:
+            E = self._material_conv(eps)
+        
+        self.eps_conv.append(E)
 
         self.layer_N += 1
         self.thickness.append(thickness)
@@ -200,10 +213,9 @@ class rcwa:
 
         self.E_i = E_i
 
-    def field_xy(self,x_axis,y_axis,z_prop=0.):
+    def field_xy(self,x_axis,y_axis):
         '''
             XY-plane field distribution at the selected layer.
-            Returns the field at z_prop away from the lower boundary of the layer.
 
             Parameters
             - x_axis: x-direction sampling coordinates (torch.Tensor)
@@ -222,16 +234,21 @@ class rcwa:
         x_axis = x_axis.reshape([-1,1,1])
         y_axis = y_axis.reshape([1,-1,1])
         
-        eps = self.eps_in if hasattr(self,'eps_in') else 1.
+        if self.angle_layer == 'input':
+            eps = self.eps_in if hasattr(self,'eps_in') else 1.
+        else:
+            eps = self.eps_out if hasattr(self,'eps_out') else 1. #eps_in???
+
         Kz_norm_dn = torch.sqrt(eps - self.Kx_norm_dn**2 - self.Ky_norm_dn**2)
         Kz_norm_dn = torch.where(torch.imag(Kz_norm_dn)<0,torch.conj(Kz_norm_dn),Kz_norm_dn).reshape([-1,1])
-        Kz_norm_dn_conj = torch.conj(Kz_norm_dn)
-        
-        z_prop = z_prop if z_prop <= 0. else 0.
-        z_phase = torch.exp(1.j*self.omega*torch.vstack((Kz_norm_dn_conj,Kz_norm_dn_conj))*z_prop)
-        
-        port = 1 if self.source_direction == 'forward' else 3
-        Exy = torch.matmul(self.S[port],self.E_i)*torch.conj(z_phase)
+     
+        if self.angle_layer == 'input':
+            port = 1 if self.source_direction == 'forward' else 3
+        else:
+            port = 0 if self.source_direction == 'forward' else 2
+
+        Exy = torch.matmul(self.S[port],self.E_i)
+
         Ex_mn = Exy[:self.order_N]
         Ey_mn = Exy[self.order_N:]
         Ez_mn = (self.Kx_norm_dn.reshape([-1,1])*Ex_mn + self.Ky_norm_dn.reshape([-1,1])*Ey_mn)/Kz_norm_dn
@@ -248,7 +265,11 @@ class rcwa:
         Kz_norm_dn = torch.sqrt(1.0 - self.Kx_norm_dn**2 - self.Ky_norm_dn**2)
         Kz_norm_dn = torch.where(torch.imag(Kz_norm_dn)<0,torch.conj(Kz_norm_dn),Kz_norm_dn).reshape([-1,1])
         
-        port = 1 if self.source_direction == 'forward' else 3
+        if self.angle_layer == 'input':
+            port = 1 if self.source_direction == 'forward' else 3
+        else:
+            port = 0 if self.source_direction == 'forward' else 2
+
         Exy = torch.matmul(self.S[port],self.E_i)
         
         Ex_mn = Exy[:self.order_N]
@@ -272,8 +293,12 @@ class rcwa:
         return order_indices
 
     def _kvectors(self):
-        self.kx0_norm = torch.real(torch.sqrt(self.eps_in)) * torch.sin(self.inc_ang) * torch.cos(self.azi_ang)
-        self.ky0_norm = torch.real(torch.sqrt(self.eps_in)) * torch.sin(self.inc_ang) * torch.sin(self.azi_ang)
+        if self.angle_layer == 'input':
+            self.kx0_norm = torch.real(torch.sqrt(self.eps_in)) * torch.sin(self.inc_ang) * torch.cos(self.azi_ang)
+            self.ky0_norm = torch.real(torch.sqrt(self.eps_in)) * torch.sin(self.inc_ang) * torch.sin(self.azi_ang)
+        else:
+            self.kx0_norm = torch.real(torch.sqrt(self.eps_out)) * torch.sin(self.inc_ang) * torch.cos(self.azi_ang)
+            self.ky0_norm = torch.real(torch.sqrt(self.eps_out)) * torch.sin(self.inc_ang) * torch.sin(self.azi_ang)
 
         # Free space k-vectors and E to H transformation matrix
         self.kx_norm = self.kx0_norm + self.order_x * self.Gx_norm
@@ -339,13 +364,8 @@ class rcwa:
         indx, indy = torch.meshgrid(ind.to(torch.int64),ind.to(torch.int64),indexing='ij')
 
         material_fft = torch.fft.fft2(material)/material_N
-        material_fft_real = torch.real(material_fft)
-        material_fft_imag = torch.imag(material_fft)
-        
-        material_convmat_real = material_fft_real[ox[indx]-ox[indy],oy[indx]-oy[indy]]
-        material_convmat_imag = material_fft_imag[ox[indx]-ox[indy],oy[indx]-oy[indy]]
-        
-        material_convmat = torch.complex(material_convmat_real,material_convmat_imag)
+        material_convmat = material_fft[ox[indx]-ox[indy],oy[indx]-oy[indy]]
+
         return material_convmat
     
     def _eigen_decomposition_homogenous(self,eps):
