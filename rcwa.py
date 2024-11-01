@@ -55,6 +55,9 @@ class rcwa:
         self.layer_N = 0  # total number of layers
         self.thickness = []
         self.eps_conv = []
+        self.P = []
+        self.Q = []
+        self.PQ = []
 
         # Internal layer eigenmodes
         self.kz_norm, self.E_eigvec, self.H_eigvec = [], [], []
@@ -131,8 +134,12 @@ class rcwa:
             self._eigen_decomposition_homogenous(eps)
         else:
             self._eigen_decomposition()
-
         self._solve_layer_smatrix()
+
+    def add_defect(self, layer_num=0, deps=None):
+        #self.eps_conv[layer_num] += self._material_conv(deps)
+        deps_conv = self._material_conv(deps)
+        self._update_layer_smatrix(layer_num, deps_conv)
 
     # Solve simulation
     def solve_global_smatrix(self):
@@ -250,7 +257,7 @@ class rcwa:
         else:
             Kz_norm_dn = -torch.where(torch.imag(Kz_norm_dn)<0,torch.conj(Kz_norm_dn),Kz_norm_dn).reshape([-1,1])
 
-        Exy = torch.matmul(self.S[port],self.E_i)
+        Exy = self.S[port]@self.E_i
         Ex_mn = Exy[:self.order_N]
         Ey_mn = Exy[self.order_N:]
         Ez_mn = (self.Kx_norm_dn.reshape([-1,1])*Ex_mn + self.Ky_norm_dn.reshape([-1,1])*Ey_mn)/Kz_norm_dn    
@@ -272,7 +279,7 @@ class rcwa:
         else:
             port = 0 if self.source_direction == 'forward' else 2
 
-        Exy = torch.matmul(self.S[port],self.E_i)
+        Exy = self.S[port]@self.E_i
         
         Ex_mn = Exy[:self.order_N]
         Ey_mn = Exy[self.order_N:]
@@ -331,10 +338,10 @@ class rcwa:
             Vtmp2 = self.Vf-self.Vi
 
             # Input layer S-matrix
-            self.Sin.append(2*torch.matmul(Vtmp1,self.Vi))  # S11
-            self.Sin.append(-torch.matmul(Vtmp1,Vtmp2))     # S21
-            self.Sin.append(torch.matmul(Vtmp1,Vtmp2))      # S12
-            self.Sin.append(2*torch.matmul(Vtmp1,self.Vf))  # S22
+            self.Sin.append(2*Vtmp1@self.Vi)  # S11
+            self.Sin.append(-Vtmp1@Vtmp2)     # S21
+            self.Sin.append(Vtmp1@Vtmp2)      # S12
+            self.Sin.append(2*Vtmp1@self.Vf)  # S22
 
         if hasattr(self,'Sout'):
             # Output layer k-vectors and E to H transformation matrix
@@ -348,10 +355,10 @@ class rcwa:
             Vtmp2 = self.Vf-self.Vo
 
             # Output layer S-matrix
-            self.Sout.append(2*torch.matmul(Vtmp1,self.Vf))  # S11
-            self.Sout.append(torch.matmul(Vtmp1,Vtmp2))      # S21
-            self.Sout.append(-torch.matmul(Vtmp1,Vtmp2))     # S12
-            self.Sout.append(2*torch.matmul(Vtmp1,self.Vo))  # S22
+            self.Sout.append(2*Vtmp1@self.Vf)  # S11
+            self.Sout.append(Vtmp1@Vtmp2)      # S21
+            self.Sout.append(-Vtmp1@Vtmp2)     # S12
+            self.Sout.append(2*Vtmp1@self.Vo)  # S22
 
     def _material_conv(self,material):
         material = material.to(self._dtype)
@@ -371,13 +378,24 @@ class rcwa:
         return material_convmat
     
     def _eigen_decomposition_homogenous(self,eps):
-        kz_norm = torch.sqrt(eps- self.Kx_norm_dn**2 - self.Ky_norm_dn**2)
+        kz_norm = torch.sqrt(eps - self.Kx_norm_dn**2 - self.Ky_norm_dn**2)
         kz_norm = torch.where(torch.imag(kz_norm)<0,torch.conj(kz_norm),kz_norm)
         KxKyKzi = self.Kx_norm*self.Ky_norm*torch.diag(1./kz_norm)
         KzplusKxKxKzi = torch.diag(kz_norm) + self.Kx_norm**2*torch.diag(1./kz_norm)
         KzplusKyKyKzi = torch.diag(kz_norm) + self.Ky_norm**2*torch.diag(1./kz_norm)
         V = torch.hstack((torch.vstack((-KxKyKzi, KzplusKxKxKzi)), torch.vstack((-KzplusKyKyKzi, KxKyKzi))))
+        
+        KxKx = self.Kx_norm**2
+        KxKy = self.Kx_norm*self.Ky_norm
+        KyKy = self.Ky_norm**2
+        I = torch.eye(self.order_N,dtype=self._dtype,device=self._device)
+        P = torch.hstack((torch.vstack((KxKy/eps, I - KxKx/eps)), torch.vstack((KyKy/eps - I, -KxKy/eps))))
+        Q = -eps*P
+        PQ = torch.kron(torch.eye(2), eps - self.Kx_norm_dn**2 - self.Ky_norm_dn**2)
 
+        self.P.append(P)
+        self.Q.append(Q)
+        self.PQ.append(PQ)
         self.kz_norm.append(torch.cat((kz_norm,kz_norm)))
         self.E_eigvec.append(torch.eye(2*self.order_N,dtype=self._dtype,device=self._device))
         self.H_eigvec.append(V)
@@ -385,10 +403,10 @@ class rcwa:
     def _eigen_decomposition(self):
         E = self.eps_conv[-1]
         Ei = torch.linalg.inv(E)
-        KxEiKy = torch.matmul(torch.matmul(self.Kx_norm, Ei), self.Ky_norm)
-        KyEiKx = torch.matmul(torch.matmul(self.Ky_norm, Ei), self.Kx_norm)
-        KxEiKx = torch.matmul(torch.matmul(self.Kx_norm, Ei), self.Kx_norm)
-        KyEiKy = torch.matmul(torch.matmul(self.Ky_norm, Ei), self.Ky_norm)
+        KxEiKy = self.Kx_norm@Ei@self.Ky_norm
+        KyEiKx = self.Ky_norm@Ei@self.Kx_norm
+        KxEiKx = self.Kx_norm@Ei@self.Kx_norm
+        KyEiKy = self.Ky_norm@Ei@self.Ky_norm
 
         KxKx = self.Kx_norm**2
         KxKy = self.Kx_norm*self.Ky_norm
@@ -397,43 +415,99 @@ class rcwa:
         I = torch.eye(self.order_N,dtype=self._dtype,device=self._device)
         P = torch.hstack((torch.vstack((KxEiKy, KyEiKy - I)), torch.vstack((I - KxEiKx, -KyEiKx))))
         Q = torch.hstack((torch.vstack((-KxKy, E - KyKy)), torch.vstack((KxKx - E, KxKy))))
-        PQ = torch.matmul(P,Q)
-
+        PQ = P@Q
         # Eigen-decomposition
         kz_norm, E_eigvec = torch.linalg.eig(PQ)
         
         kz_norm = torch.sqrt(kz_norm)
         kz_norm = torch.where(torch.imag(kz_norm)<0,-kz_norm,kz_norm)
+
+        self.P.append(P)
+        self.Q.append(Q)
+        self.PQ.append(PQ)
         self.kz_norm.append(kz_norm)
         self.E_eigvec.append(E_eigvec)
-        self.H_eigvec.append(torch.matmul(Q,torch.matmul(E_eigvec, torch.linalg.inv(torch.diag(kz_norm)))))
+        self.H_eigvec.append(Q@E_eigvec@torch.linalg.inv(torch.diag(kz_norm)))
 
     def _solve_layer_smatrix(self):
         phase = torch.diag(torch.exp(1.j*self.omega*self.kz_norm[-1]*self.thickness[-1]))
-
         W = self.E_eigvec[-1]
-        V0iV = torch.matmul(torch.linalg.inv(self.Vf), self.H_eigvec[-1])
+        V0iV = torch.linalg.inv(self.Vf)@self.H_eigvec[-1]
         A = W + V0iV
-        B = torch.matmul(W - V0iV, phase)
-        BAi = torch.matmul(B, torch.linalg.inv(A))
-        C1 = 2*torch.linalg.inv(A - torch.matmul(BAi, B))
-        C2 = -torch.matmul(C1, BAi)
-        S11 = torch.matmul(W, torch.matmul(phase, C1) + C2)
-        S12 = torch.matmul(W, torch.matmul(phase, C2) + C1) - torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+        B = (W - V0iV)@phase
+        BAi = B@torch.linalg.inv(A)
+        C1 = 2*torch.linalg.inv(A - (BAi@B))
+        C2 = -C1@BAi
+        S11 = W@((phase@C1) + C2)
+        S12 = W@((phase@C2) + C1) - torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+
         self.layer_S11.append(S11)
         self.layer_S12.append(S12)
         self.layer_S21.append(S12)
         self.layer_S22.append(S11)
 
+    def _update_layer_smatrix(self, layer_num=0, deps_conv=None):
+        E0 = self.eps_conv[layer_num]
+        E0i = torch.linalg.inv(E0)
+        Ed = deps_conv
+        Kx = self.Kx_norm
+        Ky = self.Ky_norm
+        O = torch.zeros_like(E0)
+        PQd11 = Ed + Kx@E0i@Ed@E0i@Kx@E0 - Kx@E0i@Kx@Ed
+        PQd12 = Kx@E0i@Ed@E0i@Ky@E0 - Kx@E0i@Ky@Ed
+        PQd21 = Ky@E0i@Ed@E0i@Kx@E0 - Ky@E0i@Kx@Ed
+        PQd22 = Ed + Ky@E0i@Ed@E0i@Ky@E0 - Ky@E0i@Ky@Ed
+        PQd = torch.hstack((torch.vstack((PQd11, PQd21)), torch.vstack((PQd12, PQd22))))
+        Qd = torch.hstack((torch.vstack((O, Ed)), torch.vstack((-Ed, O))))
+        Q0 = self.Q[layer_num]
+        PQ0 = self.PQ[layer_num]
+
+        Q = Q0 + Qd
+        PQ = PQ0 + PQd
+
+        #D0 = self.kz_norm[layer_num]**2
+        #phi = D0.unsqueeze(-2) - D0.unsqueeze(-1)
+        #WdW = W0i@PQd@W0
+        #Dd = torch.diagonal(WdW)
+        #Wd = -W0@(phi*WdW)
+
+        #kz_norm = D0 + Dd
+        #E_eigvec = W0 + Wd
+
+        kz_norm, E_eigvec = torch.linalg.eig(PQ)
+        kz_norm = torch.sqrt(kz_norm)
+        kz_norm = torch.where(torch.imag(kz_norm)<0,-kz_norm,kz_norm)
+
+        H_eigvec = Q@E_eigvec@torch.linalg.inv(torch.diag(kz_norm))
+        self.kz_norm[layer_num] = kz_norm
+        self.E_eigvec[layer_num] = E_eigvec
+        self.H_eigvec[layer_num] = H_eigvec
+
+        phase = torch.diag(torch.exp(1.j*self.omega*kz_norm*self.thickness[layer_num]))      
+        W = E_eigvec
+        V0iV = torch.linalg.inv(self.Vf)@H_eigvec
+        A = W + V0iV
+        B = (W - V0iV)@phase
+        BAi = B@torch.linalg.inv(A)
+        C1 = 2*torch.linalg.inv(A - BAi@B)
+        C2 = -C1@BAi
+        S11 = W@((phase@C1) + C2)
+        S12 = W@((phase@C2) + C1) - torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+
+        self.layer_S11[layer_num] = S11
+        self.layer_S12[layer_num] = S12
+        self.layer_S21[layer_num] = S12
+        self.layer_S22[layer_num] = S11
+
     def _RS_prod(self,Sm,Sn):
         # S11 = S[0] / S21 = S[1] / S12 = S[2] / S22 = S[3]
-        tmp1 = torch.linalg.inv(torch.eye(2*self.order_N,dtype=self._dtype,device=self._device) - torch.matmul(Sm[2],Sn[1]))
-        tmp2 = torch.linalg.inv(torch.eye(2*self.order_N,dtype=self._dtype,device=self._device) - torch.matmul(Sn[1],Sm[2]))
+        tmp1 = torch.linalg.inv(torch.eye(2*self.order_N,dtype=self._dtype,device=self._device) - (Sm[2]@Sn[1]))
+        tmp2 = torch.linalg.inv(torch.eye(2*self.order_N,dtype=self._dtype,device=self._device) - (Sn[1]@Sm[2]))
 
         # Layer S-matrix
-        S11 = torch.matmul(Sn[0],torch.matmul(tmp1,Sm[0]))
-        S21 = Sm[1] + torch.matmul(Sm[3],torch.matmul(tmp2,torch.matmul(Sn[1],Sm[0])))
-        S12 = Sn[2] + torch.matmul(Sn[0],torch.matmul(tmp1,torch.matmul(Sm[2],Sn[3])))
-        S22 = torch.matmul(Sm[3],torch.matmul(tmp2,Sn[3]))
+        S11 = Sn[0]@tmp1@Sm[0]
+        S21 = Sm[1] + (Sm[3]@tmp2@Sn[1]@Sm[0])
+        S12 = Sn[2] + (Sn[0]@tmp1@Sm[2]@Sn[3])
+        S22 = Sm[3]@tmp2@Sn[3]
 
         return S11, S21, S12, S22
