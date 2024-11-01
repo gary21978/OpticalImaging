@@ -447,44 +447,49 @@ class rcwa:
         self.layer_S22.append(S11)
 
     def _update_layer_smatrix(self, layer_num=0, deps_conv=None):
+        # baseline states
         E0 = self.eps_conv[layer_num]
+        Q0 = self.Q[layer_num]
+        PQ0 = self.PQ[layer_num]
+        W0 = self.E_eigvec[layer_num]
+        V0 = self.H_eigvec[layer_num]
+        D0 = self.kz_norm[layer_num]
         E0i = torch.linalg.inv(E0)
-        Ed = deps_conv
+        W0i = torch.linalg.inv(W0)
         Kx = self.Kx_norm
         Ky = self.Ky_norm
         O = torch.zeros_like(E0)
+
+        # First-order perturbation
+        Ed = deps_conv
         PQd11 = Ed + Kx@E0i@Ed@E0i@Kx@E0 - Kx@E0i@Kx@Ed
         PQd12 = Kx@E0i@Ed@E0i@Ky@E0 - Kx@E0i@Ky@Ed
         PQd21 = Ky@E0i@Ed@E0i@Kx@E0 - Ky@E0i@Kx@Ed
         PQd22 = Ed + Ky@E0i@Ed@E0i@Ky@E0 - Ky@E0i@Ky@Ed
         PQd = torch.hstack((torch.vstack((PQd11, PQd21)), torch.vstack((PQd12, PQd22))))
         Qd = torch.hstack((torch.vstack((O, Ed)), torch.vstack((-Ed, O))))
-        Q0 = self.Q[layer_num]
-        PQ0 = self.PQ[layer_num]
 
         Q = Q0 + Qd
-        PQ = PQ0 + PQd
 
-        #D0 = self.kz_norm[layer_num]**2
-        #phi = D0.unsqueeze(-2) - D0.unsqueeze(-1)
-        #WdW = W0i@PQd@W0
-        #Dd = torch.diagonal(WdW)
-        #Wd = -W0@(phi*WdW)
+        D0sq = D0**2
+        phi = D0sq.unsqueeze(-1) - D0sq.unsqueeze(-2)
+        phi = torch.where(phi == 0.0, 0.0, 1.0/phi)
+        WdW = W0i@PQd@W0
+        Dd = torch.diagonal(WdW)*torch.where(D0 == 0.0, 0.0, 0.5/D0)
+        Wd = -W0@(phi*WdW)
+        Vd = Q@Wd@torch.linalg.inv(torch.diag(D0))
 
-        #kz_norm = D0 + Dd
-        #E_eigvec = W0 + Wd
-
-        kz_norm, E_eigvec = torch.linalg.eig(PQ)
-        kz_norm = torch.sqrt(kz_norm)
-        kz_norm = torch.where(torch.imag(kz_norm)<0,-kz_norm,kz_norm)
-
-        H_eigvec = Q@E_eigvec@torch.linalg.inv(torch.diag(kz_norm))
+        kz_norm = D0 + Dd
+        E_eigvec = W0 + Wd
+        H_eigvec = V0 + Vd
+        
+        #H_eigvec = Q@E_eigvec@torch.linalg.inv(torch.diag(kz_norm))
         self.kz_norm[layer_num] = kz_norm
         self.E_eigvec[layer_num] = E_eigvec
         self.H_eigvec[layer_num] = H_eigvec
 
-        phase = torch.diag(torch.exp(1.j*self.omega*kz_norm*self.thickness[layer_num]))      
         W = E_eigvec
+        phase = torch.diag(torch.exp(1.j*self.omega*kz_norm*self.thickness[layer_num]))
         V0iV = torch.linalg.inv(self.Vf)@H_eigvec
         A = W + V0iV
         B = (W - V0iV)@phase
@@ -493,6 +498,13 @@ class rcwa:
         C2 = -C1@BAi
         S11 = W@((phase@C1) + C2)
         S12 = W@((phase@C2) + C1) - torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+
+        #V0iV0 = torch.linalg.inv(self.Vf)@V0
+        #V0iVd = torch.linalg.inv(self.Vf)@Vd
+        #phase0 = torch.diag(torch.exp(1.j*self.omega*D0*self.thickness[layer_num]))
+        #phased = torch.diag(1.j*self.omega*Dd*self.thickness[layer_num])*phase0
+        #Ad = Wd + V0iVd
+        #Bd = (Wd - V0iVd)@phase0 + (W0 - V0iV0)@phased
 
         self.layer_S11[layer_num] = S11
         self.layer_S12[layer_num] = S12
