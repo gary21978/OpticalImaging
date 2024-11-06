@@ -442,15 +442,29 @@ class rcwa:
 
     def _eigen_decomposition(self):
         E = self.eps_conv[-1]
-        Ei = torch.linalg.inv(E)
-        KxEiKy = self.Kx_norm@Ei@self.Ky_norm
-        KyEiKx = self.Ky_norm@Ei@self.Kx_norm
-        KxEiKx = self.Kx_norm@Ei@self.Kx_norm
-        KyEiKy = self.Ky_norm@Ei@self.Ky_norm
-
         KxKx = self.Kx_norm**2
         KxKy = self.Kx_norm*self.Ky_norm
         KyKy = self.Ky_norm**2
+
+        if self.stable_inverse:
+            try:
+                EiKx = torch.linalg.solve(E, self.Kx_norm)
+                EiKy = torch.linalg.solve(E, self.Ky_norm)
+                KxEiKy = self.Kx_norm@EiKy
+                KyEiKx = self.Ky_norm@EiKx
+                KxEiKx = self.Kx_norm@EiKx
+                KyEiKy = self.Ky_norm@EiKy
+            except RuntimeError:
+                KxEiKy = KxKy
+                KyEiKx = KxKy
+                KxEiKx = KxKx
+                KyEiKy = KyKy
+        else:
+            Ei = torch.linalg.inv(E)
+            KxEiKy = self.Kx_norm@Ei@self.Ky_norm
+            KyEiKx = self.Ky_norm@Ei@self.Kx_norm
+            KxEiKx = self.Kx_norm@Ei@self.Kx_norm
+            KyEiKy = self.Ky_norm@Ei@self.Ky_norm
 
         I = torch.eye(self.order_N,dtype=self._dtype,device=self._device)
         P = torch.hstack((torch.vstack((KxEiKy, KyEiKy - I)), torch.vstack((I - KxEiKx, -KyEiKx))))
@@ -467,7 +481,6 @@ class rcwa:
         self.PQ.append(PQ)
         self.kz_norm.append(kz_norm)
         self.E_eigvec.append(E_eigvec)
-        #H_eigvec = Q@E_eigvec@torch.linalg.inv(torch.diag(kz_norm))
         kz_normi = torch.where(kz_norm==0, 0, 1.0/kz_norm)
         H_eigvec = Q@E_eigvec@torch.diag(kz_normi)
         self.H_eigvec.append(H_eigvec)
@@ -483,10 +496,8 @@ class rcwa:
             except RuntimeError:
                 warnings.warn('Fail to invert free space!',UserWarning)
                 V0iV = torch.zeros(2*self.order_N,dtype=self._dtype,device=self._device)
-
             A = W + V0iV
             B = (W - V0iV)@phase
-
             try: # invert matrix A
                 BAi = torch.linalg.solve(A.t(), B.t()).t()
             except RuntimeError:
