@@ -453,7 +453,10 @@ class rcwa:
         self.PQ.append(PQ)
         self.kz_norm.append(kz_norm)
         self.E_eigvec.append(E_eigvec)
-        self.H_eigvec.append(Q@E_eigvec@torch.linalg.inv(torch.diag(kz_norm)))
+        #H_eigvec = Q@E_eigvec@torch.linalg.inv(torch.diag(kz_norm))
+        kz_normi = torch.where(kz_norm==0, 0, 1.0/kz_norm)
+        H_eigvec = Q@E_eigvec@torch.diag(kz_normi)
+        self.H_eigvec.append(H_eigvec)
 
     def _solve_layer_smatrix(self):
         phase = torch.diag(torch.exp(1.j*self.omega*self.kz_norm[-1]*self.thickness[-1]))
@@ -521,7 +524,8 @@ class rcwa:
         kz_norm = Kz0 + Kzd
         E_eigvec = W0 + Wd
         
-        H_eigvec = Q@E_eigvec@torch.linalg.inv(torch.diag(kz_norm))
+        kz_normi = torch.where(kz_norm==0, 0, 1.0/kz_norm)
+        H_eigvec = Q@E_eigvec@torch.diag(kz_normi)
         self.kz_norm[layer_num] = kz_norm
         self.E_eigvec[layer_num] = E_eigvec
         self.H_eigvec[layer_num] = H_eigvec
@@ -544,13 +548,22 @@ class rcwa:
 
     def _RS_prod(self,Sm,Sn):
         # S11 = S[0] / S21 = S[1] / S12 = S[2] / S22 = S[3]
-        tmp1 = torch.linalg.inv(torch.eye(2*self.order_N,dtype=self._dtype,device=self._device) - (Sm[2]@Sn[1]))
-        tmp2 = torch.linalg.inv(torch.eye(2*self.order_N,dtype=self._dtype,device=self._device) - (Sn[1]@Sm[2]))
-
-        # Layer S-matrix
-        S11 = Sn[0]@tmp1@Sm[0]
-        S21 = Sm[1] + (Sm[3]@tmp2@Sn[1]@Sm[0])
-        S12 = Sn[2] + (Sn[0]@tmp1@Sm[2]@Sn[3])
-        S22 = Sm[3]@tmp2@Sn[3]
+        I = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+        if self.stable_inverse:
+            T1 = I - Sm[2]@Sn[1]
+            T2 = I - Sn[1]@Sm[2]
+            # Layer S-matrix
+            S11 = Sn[0]@torch.linalg.solve(T1, Sm[0])
+            S21 = Sm[1] + Sm[3]@torch.linalg.solve(T2, Sn[1]@Sm[0])
+            S12 = Sn[2] + Sn[0]@torch.linalg.solve(T1, Sm[2]@Sn[3])
+            S22 = Sm[3]@torch.linalg.solve(T2, Sn[3])
+        else:
+            tmp1 = torch.linalg.inv(I - (Sm[2]@Sn[1]))
+            tmp2 = torch.linalg.inv(I - (Sn[1]@Sm[2]))
+            # Layer S-matrix
+            S11 = Sn[0]@tmp1@Sm[0]
+            S21 = Sm[1] + (Sm[3]@tmp2@Sn[1]@Sm[0])
+            S12 = Sn[2] + (Sn[0]@tmp1@Sm[2]@Sn[3])
+            S22 = Sm[3]@tmp2@Sn[3]
 
         return S11, S21, S12, S22
