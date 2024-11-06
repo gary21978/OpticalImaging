@@ -36,6 +36,7 @@ class rcwa:
         self.freq = torch.as_tensor(freq,dtype=self._dtype,device=self._device) # unit^-1
         self.omega = 2*torch.pi*freq
         self.L = torch.as_tensor(L,dtype=self._dtype,device=self._device)
+        self.stable_inverse = True
 
         # Fourier order
         self.order = order
@@ -333,14 +334,27 @@ class rcwa:
             tmp2 = torch.vstack((torch.diag(-Kz_norm_dn - self.Ky_norm_dn**2/Kz_norm_dn), torch.diag(self.Kx_norm_dn*self.Ky_norm_dn/Kz_norm_dn)))
             self.Vi = torch.hstack((tmp1, tmp2))
 
-            Vtmp1 = torch.linalg.inv(self.Vf+self.Vi)
-            Vtmp2 = self.Vf-self.Vi
+            if self.stable_inverse:
+                VfVi1 = self.Vf+self.Vi
+                VfVi2 = self.Vf-self.Vi
+                # Input layer S-matrix
+                S11 = 2*torch.linalg.solve(VfVi1, self.Vi)
+                S12 = torch.linalg.solve(VfVi1, VfVi2)
+                S21 = -S12
+                S22 = 2*torch.linalg.solve(VfVi1, self.Vf)
+                self.Sin.append(S11)
+                self.Sin.append(S21)
+                self.Sin.append(S12)
+                self.Sin.append(S22)
+            else:
+                Vtmp1 = torch.linalg.inv(self.Vf+self.Vi)
+                Vtmp2 = self.Vf-self.Vi
 
-            # Input layer S-matrix
-            self.Sin.append(2*Vtmp1@self.Vi)  # S11
-            self.Sin.append(-Vtmp1@Vtmp2)     # S21
-            self.Sin.append(Vtmp1@Vtmp2)      # S12
-            self.Sin.append(2*Vtmp1@self.Vf)  # S22
+                # Input layer S-matrix
+                self.Sin.append(2*Vtmp1@self.Vi)  # S11
+                self.Sin.append(-Vtmp1@Vtmp2)     # S21
+                self.Sin.append(Vtmp1@Vtmp2)      # S12
+                self.Sin.append(2*Vtmp1@self.Vf)  # S22
 
         if hasattr(self,'Sout'):
             # Output layer k-vectors and E to H transformation matrix
@@ -350,14 +364,27 @@ class rcwa:
             tmp2 = torch.vstack((torch.diag(-Kz_norm_dn - self.Ky_norm_dn**2/Kz_norm_dn), torch.diag(self.Kx_norm_dn*self.Ky_norm_dn/Kz_norm_dn)))
             self.Vo = torch.hstack((tmp1, tmp2))
 
-            Vtmp1 = torch.linalg.inv(self.Vf+self.Vo)
-            Vtmp2 = self.Vf-self.Vo
+            if self.stable_inverse:
+                VfVo1 = self.Vf+self.Vo
+                VfVo2 = self.Vf-self.Vo
+                # Output layer S-matrix
+                S11 = 2*torch.linalg.solve(VfVo1, self.Vf)
+                S12 = -torch.linalg.solve(VfVo1, VfVo2)
+                S21 = S12
+                S22 = 2*torch.linalg.solve(VfVo1, self.Vo)
+                self.Sout.append(S11)
+                self.Sout.append(S21)
+                self.Sout.append(S12)
+                self.Sout.append(S22)
+            else:
+                Vtmp1 = torch.linalg.inv(self.Vf+self.Vo)
+                Vtmp2 = self.Vf-self.Vo
 
-            # Output layer S-matrix
-            self.Sout.append(2*Vtmp1@self.Vf)  # S11
-            self.Sout.append(Vtmp1@Vtmp2)      # S21
-            self.Sout.append(-Vtmp1@Vtmp2)     # S12
-            self.Sout.append(2*Vtmp1@self.Vo)  # S22
+                # Output layer S-matrix
+                self.Sout.append(2*Vtmp1@self.Vf)  # S11
+                self.Sout.append(Vtmp1@Vtmp2)      # S21
+                self.Sout.append(-Vtmp1@Vtmp2)     # S12
+                self.Sout.append(2*Vtmp1@self.Vo)  # S22
 
     def _material_conv(self,material):
         material = material.to(self._dtype)
@@ -431,15 +458,31 @@ class rcwa:
     def _solve_layer_smatrix(self):
         phase = torch.diag(torch.exp(1.j*self.omega*self.kz_norm[-1]*self.thickness[-1]))
         W = self.E_eigvec[-1]
-        V0iV = torch.linalg.inv(self.Vf)@self.H_eigvec[-1]
-        A = W + V0iV
-        B = (W - V0iV)@phase
-        BAi = B@torch.linalg.inv(A)
-        C1 = 2*torch.linalg.inv(A - (BAi@B))
-        C2 = -C1@BAi
-        S11 = W@((phase@C1) + C2)
-        S12 = W@((phase@C2) + C1) - torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+        V = self.H_eigvec[-1]
 
+        if self.stable_inverse:
+            V0iV = torch.linalg.solve(self.Vf, V)
+            A = W + V0iV
+            B = (W - V0iV)@phase
+            BAi = torch.linalg.solve(A.t(), B.t()).t()
+            At_BAiBt = (A - BAi@B).t()
+            WX = W@phase
+            WXC1 = 2*torch.linalg.solve(At_BAiBt, WX.t()).t()
+            WXC2 = -WXC1@BAi
+            WC1 = 2*torch.linalg.solve(At_BAiBt, W.t()).t()
+            WC2 = -WC1@BAi
+            S11 = WXC1 + WC2
+            S12 = WXC2 + WC1 - torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+        else:
+            V0iV = torch.linalg.inv(self.Vf)@V
+            A = W + V0iV
+            B = (W - V0iV)@phase
+            BAi = B@torch.linalg.inv(A)
+            C1 = 2*torch.linalg.inv(A - (BAi@B))
+            C2 = -C1@BAi
+            S11 = W@((phase@C1) + C2)
+            S12 = W@((phase@C2) + C1) - torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+           
         self.layer_S11.append(S11)
         self.layer_S12.append(S12)
         self.layer_S21.append(S12)
