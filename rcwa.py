@@ -338,10 +338,17 @@ class rcwa:
                 VfVi1 = self.Vf+self.Vi
                 VfVi2 = self.Vf-self.Vi
                 # Input layer S-matrix
-                S11 = 2*torch.linalg.solve(VfVi1, self.Vi)
-                S12 = torch.linalg.solve(VfVi1, VfVi2)
-                S21 = -S12
-                S22 = 2*torch.linalg.solve(VfVi1, self.Vf)
+                try:
+                    S11 = 2*torch.linalg.solve(VfVi1, self.Vi)
+                    S12 = torch.linalg.solve(VfVi1, VfVi2)
+                    S21 = -S12
+                    S22 = 2*torch.linalg.solve(VfVi1, self.Vf)
+                except RuntimeError:
+                    S11 = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+                    S12 = torch.zeros(2*self.order_N,dtype=self._dtype,device=self._device)
+                    S21 = S12
+                    S22 = S11
+
                 self.Sin.append(S11)
                 self.Sin.append(S21)
                 self.Sin.append(S12)
@@ -368,10 +375,17 @@ class rcwa:
                 VfVo1 = self.Vf+self.Vo
                 VfVo2 = self.Vf-self.Vo
                 # Output layer S-matrix
-                S11 = 2*torch.linalg.solve(VfVo1, self.Vf)
-                S12 = -torch.linalg.solve(VfVo1, VfVo2)
-                S21 = S12
-                S22 = 2*torch.linalg.solve(VfVo1, self.Vo)
+                try:
+                    S11 = 2*torch.linalg.solve(VfVo1, self.Vf)
+                    S12 = -torch.linalg.solve(VfVo1, VfVo2)
+                    S21 = S12
+                    S22 = 2*torch.linalg.solve(VfVo1, self.Vo)
+                except RuntimeError:
+                    S11 = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+                    S12 = torch.zeros(2*self.order_N,dtype=self._dtype,device=self._device)
+                    S21 = S12
+                    S22 = S11
+
                 self.Sout.append(S11)
                 self.Sout.append(S21)
                 self.Sout.append(S12)
@@ -464,18 +478,54 @@ class rcwa:
         V = self.H_eigvec[-1]
 
         if self.stable_inverse:
-            V0iV = torch.linalg.solve(self.Vf, V)
+            try: # invert matrix Vf
+                V0iV = torch.linalg.solve(self.Vf, V)
+            except RuntimeError:
+                warnings.warn('Fail to invert free space!',UserWarning)
+                V0iV = torch.zeros(2*self.order_N,dtype=self._dtype,device=self._device)
+
             A = W + V0iV
             B = (W - V0iV)@phase
-            BAi = torch.linalg.solve(A.t(), B.t()).t()
-            At_BAiBt = (A - BAi@B).t()
-            WX = W@phase
-            WXC1 = 2*torch.linalg.solve(At_BAiBt, WX.t()).t()
-            WXC2 = -WXC1@BAi
-            WC1 = 2*torch.linalg.solve(At_BAiBt, W.t()).t()
-            WC2 = -WC1@BAi
-            S11 = WXC1 + WC2
-            S12 = WXC2 + WC1 - torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+
+            try: # invert matrix A
+                BAi = torch.linalg.solve(A.t(), B.t()).t()
+            except RuntimeError:
+                try: # invert matrix B
+                    ABi = torch.linalg.solve(B.t(), A.t()).t()
+                except RuntimeError:
+                    warnings.warn('Fail to compute the layer scattering matrix!',UserWarning)
+                    S11 = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+                    S12 = torch.zeros(2*self.order_N,dtype=self._dtype,device=self._device)
+                else:
+                    T = (B - ABi@A).t()
+                    WX = W@phase
+                    try:
+                        WXC2 = 2*torch.linalg.solve(T, WX.t()).t()
+                        WC2 = 2*torch.linalg.solve(T, W.t()).t()
+                    except RuntimeError:
+                        warnings.warn('Fail to compute the layer scattering matrix!',UserWarning)
+                        S11 = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+                        S12 = torch.zeros(2*self.order_N,dtype=self._dtype,device=self._device)
+                    else:
+                        WXC1 = -WXC2@ABi
+                        WC1 = -WC2@ABi
+                        S11 = WXC1 + WC2
+                        S12 = WXC2 + WC1 - torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+            else:
+                T = (A - BAi@B).t()
+                WX = W@phase
+                try:
+                    WXC1 = 2*torch.linalg.solve(T, WX.t()).t()
+                    WC1 = 2*torch.linalg.solve(T, W.t()).t()
+                except RuntimeError:
+                    warnings.warn('Fail to compute the layer scattering matrix!',UserWarning)
+                    S11 = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+                    S12 = torch.zeros(2*self.order_N,dtype=self._dtype,device=self._device)
+                else:
+                    WXC2 = -WXC1@BAi
+                    WC2 = -WC1@BAi
+                    S11 = WXC1 + WC2
+                    S12 = WXC2 + WC1 - torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
         else:
             V0iV = torch.linalg.inv(self.Vf)@V
             A = W + V0iV
@@ -483,8 +533,8 @@ class rcwa:
             BAi = B@torch.linalg.inv(A)
             C1 = 2*torch.linalg.inv(A - (BAi@B))
             C2 = -C1@BAi
-            S11 = W@((phase@C1) + C2)
-            S12 = W@((phase@C2) + C1) - torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+            S11 = W@(phase@C1 + C2)
+            S12 = W@(phase@C2 + C1) - torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
            
         self.layer_S11.append(S11)
         self.layer_S12.append(S12)
@@ -532,14 +582,38 @@ class rcwa:
 
         W = E_eigvec
         phase = torch.diag(torch.exp(1.j*self.omega*kz_norm*self.thickness[layer_num]))
-        V0iV = torch.linalg.inv(self.Vf)@H_eigvec
+
+        V0iV = torch.linalg.solve(self.Vf, H_eigvec)
         A = W + V0iV
         B = (W - V0iV)@phase
-        BAi = B@torch.linalg.inv(A)
-        C1 = 2*torch.linalg.inv(A - BAi@B)
-        C2 = -C1@BAi
-        S11 = W@((phase@C1) + C2)
-        S12 = W@((phase@C2) + C1) - torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+
+        try: # invert matrix A
+            BAi = torch.linalg.solve(A.t(), B.t()).t()
+        except RuntimeError:
+            try: # invert matrix B
+                ABi = torch.linalg.solve(B.t(), A.t()).t()
+            except RuntimeError:
+                print("Fail to compute the scattering matrix!")
+                S11 = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+                S12 = torch.zeros(2*self.order_N,dtype=self._dtype,device=self._device)
+            else:
+                T = (B - ABi@A).t()
+                WX = W@phase
+                WXC2 = 2*torch.linalg.solve(T, WX.t()).t()
+                WXC1 = -WXC2@ABi
+                WC2 = 2*torch.linalg.solve(T, W.t()).t()
+                WC1 = -WC2@ABi
+                S11 = WXC1 + WC2
+                S12 = WXC2 + WC1 - torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+        else:
+            T = (A - BAi@B).t()
+            WX = W@phase
+            WXC1 = 2*torch.linalg.solve(T, WX.t()).t()
+            WXC2 = -WXC1@BAi
+            WC1 = 2*torch.linalg.solve(T, W.t()).t()
+            WC2 = -WC1@BAi
+            S11 = WXC1 + WC2
+            S12 = WXC2 + WC1 - torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
 
         self.layer_S11[layer_num] = S11
         self.layer_S12[layer_num] = S12
@@ -549,14 +623,21 @@ class rcwa:
     def _RS_prod(self,Sm,Sn):
         # S11 = S[0] / S21 = S[1] / S12 = S[2] / S22 = S[3]
         I = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+        O = torch.zeros(2*self.order_N,dtype=self._dtype,device=self._device)
         if self.stable_inverse:
             T1 = I - Sm[2]@Sn[1]
             T2 = I - Sn[1]@Sm[2]
             # Layer S-matrix
-            S11 = Sn[0]@torch.linalg.solve(T1, Sm[0])
-            S21 = Sm[1] + Sm[3]@torch.linalg.solve(T2, Sn[1]@Sm[0])
-            S12 = Sn[2] + Sn[0]@torch.linalg.solve(T1, Sm[2]@Sn[3])
-            S22 = Sm[3]@torch.linalg.solve(T2, Sn[3])
+            try:
+                S11 = Sn[0]@torch.linalg.solve(T1, Sm[0])
+                S21 = Sm[1] + Sm[3]@torch.linalg.solve(T2, Sn[1]@Sm[0])
+                S12 = Sn[2] + Sn[0]@torch.linalg.solve(T1, Sm[2]@Sn[3])
+                S22 = Sm[3]@torch.linalg.solve(T2, Sn[3])
+            except RuntimeError:
+                S11 = I
+                S21 = O
+                S12 = O
+                S22 = I
         else:
             tmp1 = torch.linalg.inv(I - (Sm[2]@Sn[1]))
             tmp2 = torch.linalg.inv(I - (Sn[1]@Sm[2]))
