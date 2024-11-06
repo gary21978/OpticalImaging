@@ -43,7 +43,7 @@ class ImagingModel:
             ali, sp = CalculateOptimized(sr, sc, po, nm)
         else:
             raise ValueError('Unsupported Calculation Method')
-        return ali, sp
+        return ali
 
     def LoadGeometry(self):
         from PIL import Image, ImageDraw, ImageFont
@@ -89,14 +89,14 @@ class ImagingModel:
         sim.add_layer(thickness=5, eps=n_substrate**2)
 
         sim.solve_global_smatrix()
-        sim.source_planewave(amplitude=self.Source.PolarizationVector, direction='forward', notation='xy')
+        sim.source_planewave(amplitude=self.Source.PolarizationVector, direction='forward')
 
         n_scatter_x = self.Numerics.ScatterGrid_X
         n_scatter_y = self.Numerics.ScatterGrid_Y
 
         xs = (self.Scatter.Period_X/n_scatter_x)*(torch.arange(n_scatter_x)+0.5)
         ys = (self.Scatter.Period_Y/n_scatter_y)*(torch.arange(n_scatter_y)+0.5)
-        [Ex, Ey, Ez], [_, _, _] = sim.field_xy(xs, ys)
+        Ex, Ey, Ez = sim.field_xy(xs, ys)
         self.Scatter.ScatterField = torch.stack((Ex, Ey, Ez), 2)
 
         # Compute Floquet mode ONLY
@@ -104,17 +104,12 @@ class ImagingModel:
         self.Scatter.FloquetMode = torch.stack((Ex_mn, Ey_mn, Ez_mn), 2)
 
     def Imaging(self):
-        img, pupilimg = self.CalculateImage()
+        img = self.CalculateImage()
         self.Intensity = img.Intensity
         self.Illuminant = self.Source.source_data
-        self.PupilImage = pupilimg
-        # For cross check purpose
-        #self.Numerics.ImageCalculationMethod = 'abbe'
-        #img, pupilimg = self.CalculateImage()
-        #self.Intensity_abbe = img.Intensity
 
     def Visualizing(self):
-        plt.subplot(331)
+        plt.subplot(231)
         plt.imshow(1.0 - self.Geometry.cpu(), cmap='gray',
                    extent = (0, 1e-3*self.Scatter.Period_X, 0, 1e-3*self.Scatter.Period_Y))
         plt.xlabel('μm')
@@ -122,7 +117,7 @@ class ImagingModel:
         plt.title('Pattern')
         plt.colorbar()
 
-        plt.subplot(332)
+        plt.subplot(232)
         plt.imshow(self.Intensity[0,:,:].squeeze().cpu(),cmap='gray',
                    extent = (0, 1e-3*self.Projector.Magnification*self.Scatter.Period_X, \
                              0, 1e-3*self.Projector.Magnification*self.Scatter.Period_Y))
@@ -131,38 +126,20 @@ class ImagingModel:
         plt.title('Intensity')
         plt.colorbar()
         
-        plt.subplot(333)
+        plt.subplot(233)
         plt.scatter(self.Illuminant.X, self.Illuminant.Y, self.Illuminant.Value, c='r', alpha=0.5)
         plt.axis('square')
         plt.xlim(-1, 1)
         plt.ylim(-1, 1)
         plt.title('Source')
-        """
-        plt.subplot(333)
-        plt.imshow((self.Intensity_abbe[0,:,:] - self.Intensity[0,:,:]).squeeze().cpu(),cmap='jet',
-                   extent = (0, 1e-3*self.Projector.Magnification*self.Scatter.Period_X, \
-                             0, 1e-3*self.Projector.Magnification*self.Scatter.Period_Y))
-        plt.xlabel('μm')
-        plt.ylabel('μm')
-        plt.title('Intensity (diff)')
-        plt.colorbar()
-        """
         
         ExEyEz = ['Scatter |Ex|','Scatter |Ey|','Scatter |Ez|']
         for k in range(3):
-            plt.subplot(3, 3, k + 4)
+            plt.subplot(2, 3, k + 4)
             plt.imshow(torch.abs(self.Scatter.ScatterField[:,:,k].squeeze()).cpu(),cmap='jet',
                        extent = (0, 1e-3*self.Scatter.Period_X, 0, 1e-3*self.Scatter.Period_Y))
             plt.xlabel('μm')
             plt.ylabel('μm')
-            plt.title(ExEyEz[k])
-            plt.colorbar()
-
-        ExEyEz = ['Pupil |Ex|','Pupil |Ey|','Pupil |Ez|']
-        for k in range(3):
-            plt.subplot(3, 3, k + 7)
-            plt.imshow(torch.abs(self.PupilImage[:,:,k].squeeze()).cpu(),cmap='jet')
-            plt.axis('off')
             plt.title(ExEyEz[k])
             plt.colorbar()
         plt.show()

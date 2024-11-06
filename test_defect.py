@@ -34,7 +34,7 @@ def Scattering():
     ss.add_layer(thickness=20, eps=n_SIN**2)
     ss.solve_global_smatrix()
     ss.source_planewave(amplitude=[1,0], direction='forward')
-    [Ex, Ey, Ez], [_, _, _] = ss.field_xy(xs, ys)
+    Ex, Ey, Ez = ss.field_xy(xs, ys)
     normal_field = torch.stack((Ex, Ey, Ez), 2)
     direct_intensity = func(normal_field)
 
@@ -47,14 +47,14 @@ def Scattering():
     sim.add_layer(thickness=20, eps=n_SIN**2)
     sim.solve_global_smatrix()
     sim.source_planewave(amplitude=[1,0], direction='forward')
-    [Ex, Ey, Ez], [_, _, _] = sim.field_xy(xs, ys)
+    Ex, Ey, Ez = sim.field_xy(xs, ys)
     normal_field = torch.stack((Ex, Ey, Ez), 2)
     normal_intensity = func(normal_field)
     ####################################
     print('Perturbed result')
     sim.add_defect(layer_num=0, deps=defect_geometry*(n_OX**2 - 1))
     sim.solve_global_smatrix()
-    [Ex, Ey, Ez], [_, _, _] = sim.field_xy(xs, ys)
+    Ex, Ey, Ez = sim.field_xy(xs, ys)
     defective_field = torch.stack((Ex, Ey, Ez), 2)
     pert_intensity = func(defective_field)
 

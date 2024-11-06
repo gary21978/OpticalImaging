@@ -267,7 +267,7 @@ class rcwa:
         Ey = torch.sum(Ey_mn.reshape(1,1,-1)*xy_phase,dim=2)
         Ez = torch.sum(Ez_mn.reshape(1,1,-1)*xy_phase,dim=2)
 
-        return [Ex, Ey, Ez], [[], [], []]
+        return Ex, Ey, Ez
         
     def Floquet_mode(self):
         Kz_norm_dn = torch.sqrt(1.0 - self.Kx_norm_dn**2 - self.Ky_norm_dn**2)
