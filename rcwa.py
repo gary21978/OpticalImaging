@@ -495,11 +495,8 @@ class rcwa:
 
         if self.stable_inverse:
             alternative_form = False
-            try: # invert matrix Vf
-                V0iV = torch.linalg.solve(self.Vf, V)
-            except RuntimeError:
-                warnings.warn('Fail to invert free space!',UserWarning)
-                V0iV = torch.zeros(2*self.order_N,dtype=self._dtype,device=self._device)
+
+            V0iV = -self.Vf@V # inv(Vf)=-Vf
             A = W + V0iV
             B = (W - V0iV)@phase
             try: # invert matrix A
