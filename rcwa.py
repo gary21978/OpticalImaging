@@ -490,7 +490,11 @@ class rcwa:
         W = self.E_eigvec[-1]
         V = self.H_eigvec[-1]
 
+        S11 = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+        S12 = torch.zeros(2*self.order_N,dtype=self._dtype,device=self._device)
+
         if self.stable_inverse:
+            alternative_form = False
             try: # invert matrix Vf
                 V0iV = torch.linalg.solve(self.Vf, V)
             except RuntimeError:
@@ -503,20 +507,16 @@ class rcwa:
             except RuntimeError:
                 try: # invert matrix B
                     ABi = torch.linalg.solve(B.t(), A.t()).t()
-                except RuntimeError:
-                    warnings.warn('Fail to compute the layer scattering matrix!',UserWarning)
-                    S11 = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
-                    S12 = torch.zeros(2*self.order_N,dtype=self._dtype,device=self._device)
+                except RuntimeError: # Neither A nor B are invertible
+                    alternative_form = True
                 else:
                     T = (B - ABi@A).t()
                     WX = W@phase
                     try:
                         WXC2 = 2*torch.linalg.solve(T, WX.t()).t()
                         WC2 = 2*torch.linalg.solve(T, W.t()).t()
-                    except RuntimeError:
-                        warnings.warn('Fail to compute the layer scattering matrix!',UserWarning)
-                        S11 = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
-                        S12 = torch.zeros(2*self.order_N,dtype=self._dtype,device=self._device)
+                    except RuntimeError: # singular T
+                        alternative_form = True
                     else:
                         WXC1 = -WXC2@ABi
                         WC1 = -WC2@ABi
@@ -528,15 +528,30 @@ class rcwa:
                 try:
                     WXC1 = 2*torch.linalg.solve(T, WX.t()).t()
                     WC1 = 2*torch.linalg.solve(T, W.t()).t()
-                except RuntimeError:
-                    warnings.warn('Fail to compute the layer scattering matrix!',UserWarning)
-                    S11 = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
-                    S12 = torch.zeros(2*self.order_N,dtype=self._dtype,device=self._device)
+                except RuntimeError: # singular T
+                    alternative_form = True
                 else:
                     WXC2 = -WXC1@BAi
                     WC2 = -WC1@BAi
                     S11 = WXC1 + WC2
                     S12 = WXC2 + WC1 - torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+
+            if alternative_form:
+                try:
+                    Wi = torch.linalg.inv(W)
+                    ViV0 = torch.linalg.solve(V, self.Vf)
+                except RuntimeError:
+                    pass
+                else:
+                    C = Wi + ViV0
+                    D = Wi - ViV0
+                    try:
+                        E = torch.linalg.solve(C.t(), D.t()).t()
+                        G = C - phase@E@phase@D
+                        S11 = torch.linalg.solve(G, phase@(C - E@D))
+                        S12 = torch.linalg.solve(G, phase@E@phase@C - D)
+                    except RuntimeError:
+                        pass
         else:
             V0iV = torch.linalg.inv(self.Vf)@V
             A = W + V0iV
@@ -558,28 +573,29 @@ class rcwa:
         Q0 = self.Q[layer_num]
         W0 = self.E_eigvec[layer_num]
         Kz0 = self.kz_norm[layer_num]
-        E0i = torch.linalg.inv(E0)
-        W0i = torch.linalg.inv(W0)
         Kx = self.Kx_norm
         Ky = self.Ky_norm
         O = torch.zeros_like(E0)
 
-        # First-order perturbation
+        # PQ perturbation
         Ed = deps_conv
-        PQd11 = Ed + Kx@E0i@Ed@E0i@Kx@E0 - Kx@E0i@Kx@Ed
-        PQd12 = Kx@E0i@Ed@E0i@Ky@E0 - Kx@E0i@Ky@Ed
-        PQd21 = Ky@E0i@Ed@E0i@Kx@E0 - Ky@E0i@Kx@Ed
-        PQd22 = Ed + Ky@E0i@Ed@E0i@Ky@E0 - Ky@E0i@Ky@Ed
+        E0iEd = torch.linalg.solve(E0, Ed)
+        E0iKx = torch.linalg.solve(E0, self.Kx_norm)
+        E0iKy = torch.linalg.solve(E0, self.Ky_norm)
+        PQd11 = Ed + Kx@E0iEd@E0iKx@E0 - Kx@E0iKx@Ed
+        PQd12 = Kx@E0iEd@E0iKy@E0 - Kx@E0iKy@Ed
+        PQd21 = Ky@E0iEd@E0iKx@E0 - Ky@E0iKx@Ed
+        PQd22 = Ed + Ky@E0iEd@E0iKy@E0 - Ky@E0iKy@Ed
         PQd = torch.hstack((torch.vstack((PQd11, PQd21)), torch.vstack((PQd12, PQd22))))
         Qd = torch.hstack((torch.vstack((O, Ed)), torch.vstack((-Ed, O))))
-
         Q = Q0 + Qd
 
+        # Eigenvalue perturbation
         Kz0sq = Kz0**2
         phi = Kz0sq.unsqueeze(1) - Kz0sq.unsqueeze(0)
-        phi = torch.where(phi == 0.0, 0.0, 1.0/phi)
-        WdW = W0i@PQd@W0
-        Kzd = torch.diagonal(WdW)*torch.where(Kz0 == 0.0, 0.0, 0.5/Kz0)
+        phi = torch.where(phi==0, 0, 1.0/phi)
+        WdW = torch.linalg.solve(W0, PQd@W0)
+        Kzd = torch.diagonal(WdW)*torch.where(Kz0==0, 0, 0.5/Kz0)
         Wd = -W0@(phi*WdW)
 
         kz_norm = Kz0 + Kzd
