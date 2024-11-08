@@ -604,7 +604,7 @@ class rcwa:
             try: # invert matrix B
                 ABi = torch.linalg.solve(B.t(), A.t()).t()
             except RuntimeError:
-                print("Fail to compute the scattering matrix!")
+                warnings.warn('Fail to compute the scattering matrix.',UserWarning)
                 S11 = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
                 S12 = torch.zeros(2*self.order_N,dtype=self._dtype,device=self._device)
             else:
@@ -644,11 +644,11 @@ class rcwa:
                 S21 = Sm[1] + Sm[3]@torch.linalg.solve(T2, Sn[1]@Sm[0])
                 S12 = Sn[2] + Sn[0]@torch.linalg.solve(T1, Sm[2]@Sn[3])
                 S22 = Sm[3]@torch.linalg.solve(T2, Sn[3])
-            except RuntimeError:
-                S11 = I
-                S21 = O
-                S12 = O
-                S22 = I
+            except RuntimeError: # assuming zero u-
+                S11 = Sn[0]@Sm[0]
+                S21 = Sm[1]
+                S12 = Sn[2]
+                S22 = O
         else:
             tmp1 = torch.linalg.inv(I - (Sm[2]@Sn[1]))
             tmp2 = torch.linalg.inv(I - (Sn[1]@Sm[2]))
