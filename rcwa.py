@@ -564,7 +564,9 @@ class rcwa:
         self.layer_S21.append(S12)
         self.layer_S22.append(S11)
 
-    def _update_layer_smatrix(self, layer_num=0, deps_conv=None):
+    def _update_layer_smatrix(self, layer_num=0, deps_conv=None, eig_tol=1e-3, rel_tol=1e-2):
+        # eig_tol is the eigenvalue distinction tolerance
+        # rel_tol is the eigenvalue perturbation tolerance
         # baseline states
         E0 = self.eps_conv[layer_num]
         Q0 = self.Q[layer_num]
@@ -590,10 +592,26 @@ class rcwa:
         # Eigenvalue perturbation
         Kz0sq = Kz0**2
         phi = Kz0sq.unsqueeze(1) - Kz0sq.unsqueeze(0)
-        phi = torch.where(phi==0, 0, 1.0/phi)
+        #phi = torch.where(phi==0, 0, 1.0/phi)
+        phi = torch.where(torch.abs(phi) < eig_tol, 0, 1.0/phi) # Avoid numerical overflow
         WdW = torch.linalg.solve(W0, PQd@W0)
         Kzd = torch.diagonal(WdW)*torch.where(Kz0==0, 0, 0.5/Kz0)
         Wd = -W0@(phi*WdW)
+
+        # Compute F-norm
+        Fnorm = lambda X: torch.sum(torch.abs(X)**2)
+        FnKz0 = Fnorm(Kz0)
+        FnW0 = Fnorm(W0)
+        FnKzd = Fnorm(Kzd)
+        FnWd = Fnorm(Wd)
+        rel_Kzd = FnKzd/(FnKz0 + 1e-12)
+        rel_Wd = FnWd/(FnW0 + 1e-12)
+        
+        print('Relative norm of 1st order perturbation of eigenvalue = %f' % rel_Kzd)
+        print('Relative norm of 1st order perturbation of eigenvector = %f' % rel_Wd)
+        
+        if (rel_Kzd > rel_tol): # sensitivity parameter
+            warnings.warn('The perturbation method is infeasible!',UserWarning)
 
         kz_norm = Kz0 + Kzd
         E_eigvec = W0 + Wd
