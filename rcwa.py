@@ -564,11 +564,10 @@ class rcwa:
         self.layer_S21.append(S12)
         self.layer_S22.append(S11)
 
-    def _update_layer_smatrix(self, layer_num=0, deps_conv=None, eig_tol=1e-3, rel_tol=1e-2):
-        # eig_tol is the eigenvalue distinction tolerance
-        # rel_tol is the eigenvalue perturbation tolerance
+    def _update_layer_smatrix(self, layer_num=0, deps_conv=None, use_2ndorder=True):
         # baseline states
         E0 = self.eps_conv[layer_num]
+        PQ0 = self.PQ[layer_num]
         Q0 = self.Q[layer_num]
         W0 = self.E_eigvec[layer_num]
         Kz0 = self.kz_norm[layer_num]
@@ -589,32 +588,39 @@ class rcwa:
         Qd = torch.hstack((torch.vstack((O, Ed)), torch.vstack((-Ed, O))))
         Q = Q0 + Qd
 
-        # Eigenvalue perturbation
+        # Check validity
+        Fnorm = lambda X: torch.sqrt(torch.sum(torch.abs(X)**2)).item()
+        Anorm = Fnorm(PQ0)
+        Adnorm = Fnorm(PQd)
+        cond_num = torch.linalg.cond(W0).item()
+        if (Adnorm > Anorm/cond_num):
+        #if (Adnorm > 0.005*Anorm): # Practical constraint
+            warnings.warn('The perturbation method is invalid here!',UserWarning)
+
+        eig_tol = 1.0/Anorm
+        # First-order perturbation
         Kz0sq = Kz0**2
         phi = Kz0sq.unsqueeze(1) - Kz0sq.unsqueeze(0)
         #phi = torch.where(phi==0, 0, 1.0/phi)
         phi = torch.where(torch.abs(phi) < eig_tol, 0, 1.0/phi) # Avoid numerical overflow
         WdW = torch.linalg.solve(W0, PQd@W0)
-        Kzd = torch.diagonal(WdW)*torch.where(Kz0==0, 0, 0.5/Kz0)
+        ld = torch.diagonal(WdW)
+        Kzd = ld*torch.where(Kz0==0, 0, 0.5/Kz0)
         Wd = -W0@(phi*WdW)
-
-        # Compute F-norm
-        Fnorm = lambda X: torch.sum(torch.abs(X)**2)
-        FnKz0 = Fnorm(Kz0)
-        FnW0 = Fnorm(W0)
-        FnKzd = Fnorm(Kzd)
-        FnWd = Fnorm(Wd)
-        rel_Kzd = FnKzd/(FnKz0 + 1e-12)
-        rel_Wd = FnWd/(FnW0 + 1e-12)
-        
-        print('Relative norm of 1st order perturbation of eigenvalue = %f' % rel_Kzd)
-        print('Relative norm of 1st order perturbation of eigenvector = %f' % rel_Wd)
-        
-        if (rel_Kzd > rel_tol): # sensitivity parameter
-            warnings.warn('The perturbation method is infeasible!',UserWarning)
 
         kz_norm = Kz0 + Kzd
         E_eigvec = W0 + Wd
+
+        # Second-order perturbation
+        if use_2ndorder:
+            WdWd = torch.linalg.solve(W0, PQd@Wd)
+            ldd = torch.diagonal(WdWd)
+            Kzdd = ldd*torch.where(Kz0==0, 0, 0.5/Kz0)
+            secondorder = torch.linalg.solve(W0, Wd@ld-PQd@Wd)
+            Wdd = W0@(phi*secondorder)
+            
+            kz_norm += Kzdd
+            E_eigvec += Wdd
         
         kz_normi = torch.where(kz_norm==0, 0, 1.0/kz_norm)
         H_eigvec = Q@E_eigvec@torch.diag(kz_normi)
