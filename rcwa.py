@@ -37,6 +37,7 @@ class rcwa:
         self.omega = 2*torch.pi*freq
         self.L = torch.as_tensor(L,dtype=self._dtype,device=self._device)
         self.stable_inverse = True
+        self.inverse_rule = False
 
         # Fourier order
         self.order = order
@@ -124,7 +125,10 @@ class rcwa:
         if is_homogenous:
             E = eps*torch.eye(self.order_N,dtype=self._dtype,device=self._device)
         else:
-            E = self._material_conv(eps)
+            if self.inverse_rule:
+                E, A = self._material_inv_conv(eps)
+            else:
+                E = self._material_conv(eps)
         
         self.eps_conv.append(E)
 
@@ -134,7 +138,10 @@ class rcwa:
         if is_homogenous:
             self._eigen_decomposition_homogenous(eps)
         else:
-            self._eigen_decomposition()
+            if self.inverse_rule:
+                self._eigen_decomposition_inverse_rule(E, A)
+            else:
+                self._eigen_decomposition()
         self._solve_layer_smatrix()
 
     def add_defect(self, layer_num=0, deps=None):
@@ -417,6 +424,27 @@ class rcwa:
 
         return material_convmat
     
+    def _material_inv_conv(self,material):
+        material = material.to(self._dtype)
+        material_N = material.shape[0]*material.shape[1]
+
+        # Matching indices
+        order_x_grid, order_y_grid = torch.meshgrid(self.order_x,self.order_y,indexing='ij')
+        ox = order_x_grid.to(torch.int64).reshape([-1])
+        oy = order_y_grid.to(torch.int64).reshape([-1])
+
+        ind = torch.arange(len(self.order_x)*len(self.order_y),device=self._device)
+        indx, indy = torch.meshgrid(ind.to(torch.int64),ind.to(torch.int64),indexing='ij')
+
+        material_fft = torch.fft.fft2(material)/material_N
+        material_inv_fft = torch.fft.fft2(1.0/material)/material_N
+
+        material_convmat = material_fft[ox[indx]-ox[indy],oy[indx]-oy[indy]]
+        material_inv_convmat = material_inv_fft[ox[indx]-ox[indy],oy[indx]-oy[indy]]
+        material_inv_convmat = torch.linalg.inv(material_inv_convmat)
+
+        return material_convmat, material_inv_convmat
+    
     def _eigen_decomposition_homogenous(self,eps):
         kz_norm = torch.sqrt(eps - self.Kx_norm_dn**2 - self.Ky_norm_dn**2)
         kz_norm = torch.where(torch.imag(kz_norm)<0,torch.conj(kz_norm),kz_norm)
@@ -469,6 +497,47 @@ class rcwa:
         I = torch.eye(self.order_N,dtype=self._dtype,device=self._device)
         P = torch.hstack((torch.vstack((KxEiKy, KyEiKy - I)), torch.vstack((I - KxEiKx, -KyEiKx))))
         Q = torch.hstack((torch.vstack((-KxKy, E - KyKy)), torch.vstack((KxKx - E, KxKy))))
+        PQ = P@Q
+        # Eigen-decomposition
+        kz_norm, E_eigvec = torch.linalg.eig(PQ)
+        
+        kz_norm = torch.sqrt(kz_norm)
+        kz_norm = torch.where(torch.imag(kz_norm)<0,-kz_norm,kz_norm)
+
+        self.P.append(P)
+        self.Q.append(Q)
+        self.PQ.append(PQ)
+        self.kz_norm.append(kz_norm)
+        self.E_eigvec.append(E_eigvec)
+        kz_normi = torch.where(kz_norm==0, 0, 1.0/kz_norm)
+        H_eigvec = Q@E_eigvec@torch.diag(kz_normi)
+        self.H_eigvec.append(H_eigvec)
+
+    def _eigen_decomposition_inverse_rule(self, E, A):
+        KxKx = self.Kx_norm**2
+        KxKy = self.Kx_norm*self.Ky_norm
+        KyKy = self.Ky_norm**2
+
+        try:
+            EiKx = torch.linalg.solve(E, self.Kx_norm)
+            EiKy = torch.linalg.solve(E, self.Ky_norm)
+            KxEiKy = self.Kx_norm@EiKy
+            KyEiKx = self.Ky_norm@EiKx
+            KxEiKx = self.Kx_norm@EiKx
+            KyEiKy = self.Ky_norm@EiKy
+        except RuntimeError:
+            KxEiKy = KxKy
+            KyEiKx = KxKy
+            KxEiKx = KxKx
+            KyEiKy = KyKy
+
+        alpha = 0.5
+        E1 = alpha*A + (1 - alpha)*E
+        E2 = alpha*E + (1 - alpha)*A
+
+        I = torch.eye(self.order_N,dtype=self._dtype,device=self._device)
+        P = torch.hstack((torch.vstack((KxEiKy, KyEiKy - I)), torch.vstack((I - KxEiKx, -KyEiKx))))
+        Q = torch.hstack((torch.vstack((-KxKy, E1 - KyKy)), torch.vstack((KxKx - E2, KxKy))))
         PQ = P@Q
         # Eigen-decomposition
         kz_norm, E_eigvec = torch.linalg.eig(PQ)
