@@ -46,16 +46,10 @@ class ImagingModel:
         return ali
 
     def LoadGeometry(self):
-        from PIL import Image, ImageDraw, ImageFont
-        import numpy as np
-        image = np.zeros((200, 400), dtype=np.uint8)
-        image = Image.fromarray(image)
-        draw = ImageDraw.Draw(image)
-        font = ImageFont.truetype("arial.ttf", 150)
-        text = "SIOK"
-        draw.text((10, 5), text, fill=1, font=font)
-        P = np.array(image, dtype=np.int8)
-        self.Geometry = torch.from_numpy(P)
+        T = torch.zeros([200, 100], dtype=torch.float64)
+        T[:, 25:50] = 1
+        T[50:100, :] = 1
+        self.Geometry = T
 
     def Scattering(self):
         sim_dtype = torch.complex64
@@ -88,7 +82,11 @@ class ImagingModel:
         sim.add_layer(thickness=20, eps=n_SIN**2)
         sim.add_layer(thickness=5, eps=n_substrate**2)
 
-        sim.solve_global_smatrix()
+        if sim.fast_exp:
+            sim.solve_global_tmatrix()
+        else:
+            sim.solve_global_smatrix()
+
         sim.source_planewave(amplitude=self.Source.PolarizationVector, direction='forward')
 
         n_scatter_x = self.Numerics.ScatterGrid_X
@@ -100,8 +98,8 @@ class ImagingModel:
         self.Scatter.ScatterField = torch.stack((Ex, Ey, Ez), 2)
 
         # Compute Floquet mode ONLY
-        Ex_mn, Ey_mn, Ez_mn = sim.Floquet_mode()
-        self.Scatter.FloquetMode = torch.stack((Ex_mn, Ey_mn, Ez_mn), 2)
+        #Ex_mn, Ey_mn, Ez_mn = sim.Floquet_mode()
+        #self.Scatter.FloquetMode = torch.stack((Ex_mn, Ey_mn, Ez_mn), 2)
 
     def Imaging(self):
         img = self.CalculateImage()

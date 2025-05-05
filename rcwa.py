@@ -37,8 +37,7 @@ class rcwa:
         self.omega = 2*torch.pi*freq
         self.L = torch.as_tensor(L,dtype=self._dtype,device=self._device)
         self.stable_inverse = True
-        self.inverse_rule = False
-        self.PML = False
+        self.fast_exp = False
 
         # Fourier order
         self.order = order
@@ -68,6 +67,13 @@ class rcwa:
         # Single layer scattering matrices
         self.layer_S11, self.layer_S21, self.layer_S12, self.layer_S22 = [], [], [], []
 
+        self.exp_constant = torch.tensor([[                      0,-0.10036558103014462001, -0.00802924648241156960, -0.00089213849804572995,                       0],
+                                          [                      0, 0.39784974949964507614,  1.36783778460411719922,  0.49828962252538267755, -0.00063789819459472330],
+                                          [-10.9676396052962062593, 1.68015813878906197182,  0.05717798464788655127, -0.00698210122488052084,  0.00003349750170860705],
+                                          [ -0.0904316832390810561,-0.06764045190713819075,  0.06759613017704596460,  0.02955525704293155274, -0.00001391802575160607],
+                                          [                      0,                      0, -0.09233646193671185927, -0.01693649390020817171, -0.00001400867981820361]])
+        self.layer_exp = []
+
     def add_input_layer(self,eps=1.):
         '''
             Add input layer
@@ -92,7 +98,7 @@ class rcwa:
         self.eps_out = torch.as_tensor(eps,dtype=self._dtype,device=self._device)
         self.Sout = []
 
-    def set_incident_angle(self,inc_ang,azi_ang,angle_layer='input', gamma=0.0, margin=0.0):
+    def set_incident_angle(self,inc_ang,azi_ang,angle_layer='input'):
         '''
             Set incident angle
 
@@ -112,8 +118,6 @@ class rcwa:
             warnings.warn('Invalid angle layer. Set as input layer.',UserWarning)
             self.angle_layer = 'input'
         self._kvectors()
-        if self.PML:
-            self._PML(margin, gamma)
 
     def add_layer(self,thickness,eps=1.):
         '''
@@ -123,34 +127,24 @@ class rcwa:
             - thickness: layer thickness (unit: length)
             - eps: relative permittivity
         '''
-
         is_homogenous = (type(eps) == float) or (type(eps) == complex) or (eps.dim() == 0) or ((eps.dim() == 1) and eps.shape[0] == 1)
         if is_homogenous:
             E = eps*torch.eye(self.order_N,dtype=self._dtype,device=self._device)
         else:
-            if self.inverse_rule:
-                E, A = self._material_inv_conv(eps)
-            else:
-                E = self._material_conv(eps)
-        
+            E = self._material_conv(eps)
+            
         self.eps_conv.append(E)
-
         self.layer_N += 1
         self.thickness.append(thickness)
-
-        if is_homogenous:
-            self._eigen_decomposition_homogenous(eps)
+        
+        if self.fast_exp:
+            self._compute_layer_exp()
         else:
-            if self.inverse_rule:
-                self._eigen_decomposition_inverse_rule(E, A)
+            if is_homogenous:
+                self._eigen_decomposition_homogenous(eps)
             else:
-                if self.PML:
-                    #print('w/  PML')
-                    self._eigen_decomposition_PML()
-                else:
-                    #print('w/o PML')
-                    self._eigen_decomposition()
-        self._solve_layer_smatrix()
+                self._eigen_decomposition()
+            self._solve_layer_smatrix()
 
     def add_defect(self, layer_num=0, deps=None):
         deps_conv = self._material_conv(deps)
@@ -295,7 +289,6 @@ class rcwa:
             port = 0 if self.source_direction == 'forward' else 2
 
         Exy = self.S[port]@self.E_i
-        
         Ex_mn = Exy[:self.order_N]
         Ey_mn = Exy[self.order_N:]
         Ez_mn = (self.Kx_norm_dn.reshape((-1,1))*Ex_mn + self.Ky_norm_dn.reshape((-1,1))*Ey_mn)/Kz_norm_dn
@@ -415,47 +408,6 @@ class rcwa:
                 self.Sout.append(-Vtmp1@Vtmp2)     # S12
                 self.Sout.append(2*Vtmp1@self.Vo)  # S22
 
-    def PML_fourier(self, n, margin, gamma):
-        P = -0.5*torch.cos(n*torch.pi)*margin*((1+0.25*gamma)*torch.sinc(n*margin)\
-            +0.5*(torch.sinc(n*margin - 1)+torch.sinc(n*margin + 1))\
-            -0.125*gamma*(torch.sinc(n*margin - 2) + torch.sinc(n*margin + 2)))\
-            +torch.where(torch.abs(n) < 0.5, 1, 0)
-        return P
-
-    ### PML function ###
-    def _PML(self, margin, gamma):
-        order_x_grid, order_y_grid = torch.meshgrid(torch.fft.ifftshift(self.order_x),\
-                                                    torch.fft.ifftshift(self.order_y),indexing='ij')
-        ox = order_x_grid.to(torch.int64).reshape([-1])
-        oy = order_y_grid.to(torch.int64).reshape([-1])
-        ind = torch.arange(len(self.order_x)*len(self.order_y),device=self._device)
-        indx, indy = torch.meshgrid(ind.to(torch.int64),ind.to(torch.int64),indexing='ij')
-
-        Fnx = self.PML_fourier(order_x_grid, margin, gamma).to(self._dtype)
-        Fny = self.PML_fourier(order_y_grid, margin, gamma).to(self._dtype)
-
-        Fx = Fnx[ox[indx]-ox[indy], oy[indx]-oy[indy]]
-        Fy = Fny[ox[indx]-ox[indy], oy[indx]-oy[indy]]
-
-        import numpy as np
-        output = Fnx.real.numpy()
-        np.savetxt('Fnx.txt', output, delimiter=',', \
-                   fmt='%.2f')
-        output = Fx.real.numpy()
-        np.savetxt('Fx.txt', output, delimiter=',', \
-                   fmt='%.2f')
-        output = Fny.real.numpy()
-        np.savetxt('Fny.txt', output, delimiter=',', \
-                   fmt='%.2f')
-        output = Fy.real.numpy()
-        np.savetxt('Fy.txt', output, delimiter=',', \
-                   fmt='%.2f')
-        
-        # Fx = aa bb
-        # Fy = ab ab
-        self.FKx = Fx@self.Kx_norm
-        self.FKy = Fy@self.Ky_norm
-
     def _material_conv(self,material):
         material = material.to(self._dtype)
         material_N = material.shape[0]*material.shape[1]
@@ -472,27 +424,6 @@ class rcwa:
         material_convmat = material_fft[ox[indx]-ox[indy],oy[indx]-oy[indy]]
 
         return material_convmat
-    
-    def _material_inv_conv(self,material):
-        material = material.to(self._dtype)
-        material_N = material.shape[0]*material.shape[1]
-
-        # Matching indices
-        order_x_grid, order_y_grid = torch.meshgrid(self.order_x,self.order_y,indexing='ij')
-        ox = order_x_grid.to(torch.int64).reshape([-1])
-        oy = order_y_grid.to(torch.int64).reshape([-1])
-
-        ind = torch.arange(len(self.order_x)*len(self.order_y),device=self._device)
-        indx, indy = torch.meshgrid(ind.to(torch.int64),ind.to(torch.int64),indexing='ij')
-
-        material_fft = torch.fft.fft2(material)/material_N
-        material_inv_fft = torch.fft.fft2(1.0/material)/material_N
-
-        material_convmat = material_fft[ox[indx]-ox[indy],oy[indx]-oy[indy]]
-        material_inv_convmat = material_inv_fft[ox[indx]-ox[indy],oy[indx]-oy[indy]]
-        material_inv_convmat = torch.linalg.inv(material_inv_convmat)
-
-        return material_convmat, material_inv_convmat
     
     def _eigen_decomposition_homogenous(self,eps):
         kz_norm = torch.sqrt(eps - self.Kx_norm_dn**2 - self.Ky_norm_dn**2)
@@ -549,85 +480,6 @@ class rcwa:
         PQ = P@Q
         # Eigen-decomposition
         kz_norm, E_eigvec = torch.linalg.eig(PQ)
-        
-        kz_norm = torch.sqrt(kz_norm)
-        kz_norm = torch.where(torch.imag(kz_norm)<0,-kz_norm,kz_norm)
-
-        self.P.append(P)
-        self.Q.append(Q)
-        self.PQ.append(PQ)
-        self.kz_norm.append(kz_norm)
-        self.E_eigvec.append(E_eigvec)
-        kz_normi = torch.where(kz_norm==0, 0, 1.0/kz_norm)
-        H_eigvec = Q@E_eigvec@torch.diag(kz_normi)
-        self.H_eigvec.append(H_eigvec)
-
-    def _eigen_decomposition_PML(self):
-        E = self.eps_conv[-1]
-        KxKx = self.FKx**2
-        KxKy = self.FKx*self.FKy
-        KyKy = self.FKy**2
-        try:
-            EiKx = torch.linalg.solve(E, self.Kx_norm)
-            EiKy = torch.linalg.solve(E, self.Ky_norm)
-            KxEiKy = self.FKx@EiKy
-            KyEiKx = self.FKy@EiKx
-            KxEiKx = self.FKx@EiKx
-            KyEiKy = self.FKy@EiKy
-        except RuntimeError:
-            KxEiKy = KxKy
-            KyEiKx = KxKy
-            KxEiKx = KxKx
-            KyEiKy = KyKy
-
-        I = torch.eye(self.order_N,dtype=self._dtype,device=self._device)
-        P = torch.hstack((torch.vstack((KxEiKy, KyEiKy - I)), torch.vstack((I - KxEiKx, -KyEiKx))))
-        Q = torch.hstack((torch.vstack((-KxKy, E - KyKy)), torch.vstack((KxKx - E, KxKy))))
-        PQ = P@Q
-        # Eigen-decomposition
-        kz_norm, E_eigvec = torch.linalg.eig(PQ)
-        
-        kz_norm = torch.sqrt(kz_norm)
-        kz_norm = torch.where(torch.imag(kz_norm)<0,-kz_norm,kz_norm)
-
-        self.P.append(P)
-        self.Q.append(Q)
-        self.PQ.append(PQ)
-        self.kz_norm.append(kz_norm)
-        self.E_eigvec.append(E_eigvec)
-        kz_normi = torch.where(kz_norm==0, 0, 1.0/kz_norm)
-        H_eigvec = Q@E_eigvec@torch.diag(kz_normi)
-        self.H_eigvec.append(H_eigvec)
-        
-    def _eigen_decomposition_inverse_rule(self, E, A):
-        KxKx = self.Kx_norm**2
-        KxKy = self.Kx_norm*self.Ky_norm
-        KyKy = self.Ky_norm**2
-
-        try:
-            EiKx = torch.linalg.solve(E, self.Kx_norm)
-            EiKy = torch.linalg.solve(E, self.Ky_norm)
-            KxEiKy = self.Kx_norm@EiKy
-            KyEiKx = self.Ky_norm@EiKx
-            KxEiKx = self.Kx_norm@EiKx
-            KyEiKy = self.Ky_norm@EiKy
-        except RuntimeError:
-            KxEiKy = KxKy
-            KyEiKx = KxKy
-            KxEiKx = KxKx
-            KyEiKy = KyKy
-
-        alpha = 0.5
-        E1 = alpha*A + (1 - alpha)*E
-        E2 = alpha*E + (1 - alpha)*A
-
-        I = torch.eye(self.order_N,dtype=self._dtype,device=self._device)
-        P = torch.hstack((torch.vstack((KxEiKy, KyEiKy - I)), torch.vstack((I - KxEiKx, -KyEiKx))))
-        Q = torch.hstack((torch.vstack((-KxKy, E1 - KyKy)), torch.vstack((KxKx - E2, KxKy))))
-        PQ = P@Q
-        # Eigen-decomposition
-        kz_norm, E_eigvec = torch.linalg.eig(PQ)
-        
         kz_norm = torch.sqrt(kz_norm)
         kz_norm = torch.where(torch.imag(kz_norm)<0,-kz_norm,kz_norm)
 
@@ -756,7 +608,6 @@ class rcwa:
         # First-order perturbation
         Kz0sq = Kz0**2
         phi = Kz0sq.unsqueeze(1) - Kz0sq.unsqueeze(0)
-        #phi = torch.where(phi==0, 0, 1.0/phi)
         phi = torch.where(torch.abs(phi) < eig_tol, 0, 1.0/phi) # Avoid numerical overflow
         WdW = torch.linalg.solve(W0, PQd@W0)
         ld = torch.diagonal(WdW)
@@ -851,3 +702,104 @@ class rcwa:
             S22 = Sm[3]@tmp2@Sn[3]
 
         return S11, S21, S12, S22
+    
+########################################################################################
+#######################  Matrix exponential method   ###################################
+########################################################################################
+    def _compute_layer_exp(self):
+        if self.thickness[-1] < min(self.L[0]/self.order[0], self.L[1]/self.order[1]):
+            warnings.warn('Thick layer may impact accuracy!',UserWarning)
+
+        k0d = self.omega*self.thickness[-1]
+
+        E = self.eps_conv[-1]
+        KxKx = self.Kx_norm**2
+        KxKy = self.Kx_norm*self.Ky_norm
+        KyKy = self.Ky_norm**2
+        
+        try:
+            EiKx = torch.linalg.solve(E, self.Kx_norm)
+            EiKy = torch.linalg.solve(E, self.Ky_norm)
+            KxEiKy = self.Kx_norm@EiKy
+            KyEiKx = self.Ky_norm@EiKx
+            KxEiKx = self.Kx_norm@EiKx
+            KyEiKy = self.Ky_norm@EiKy
+        except RuntimeError:
+            KxEiKy = KxKy
+            KyEiKx = KxKy
+            KxEiKx = KxKx
+            KyEiKy = KyKy
+
+        I = torch.eye(self.order_N,dtype=self._dtype,device=self._device)
+        I2 = torch.eye(4*self.order_N,dtype=self._dtype,device=self._device)
+        O = torch.zeros([2*self.order_N, 2*self.order_N],dtype=self._dtype,device=self._device)
+        P = torch.hstack((torch.vstack((KxEiKy, KyEiKy - I)), torch.vstack((I - KxEiKx, -KyEiKx))))
+        Q = torch.hstack((torch.vstack((-KxKy, E - KyKy)), torch.vstack((KxKx - E, KxKy))))
+
+        PQ = P@Q
+        QP = Q@P
+        PQP = PQ@P
+        QPQ = QP@Q
+        PQPQPQ = PQP@QPQ
+        QPQPQP = QPQ@PQP
+
+        Pnorm = torch.max(torch.sum(torch.abs(P), dim=0))
+        Qnorm = torch.max(torch.sum(torch.abs(Q), dim=0))
+        Rnorm = torch.max(Pnorm, Qnorm)
+
+        m = int(torch.ceil(torch.log2(Rnorm*k0d)))
+        if m < 0:
+            m = 0
+
+        A = 2**(-m)*k0d*torch.vstack((torch.hstack((O,-P)),torch.hstack((Q,O))))
+        A2 = 2**(-2*m)*k0d**2*torch.vstack((torch.hstack((-PQ,O)),torch.hstack((O,-QP))))
+        A3 = 2**(-3*m)*k0d**3*torch.vstack((torch.hstack((O,PQP)),torch.hstack((-QPQ,O))))
+        A6 = 2**(-6*m)*k0d**6*torch.vstack((torch.hstack((-PQPQPQ,O)),torch.hstack((O,-QPQPQP))))
+
+        B = [[],[],[],[],[]]
+        for i in range(5):
+            B[i] = self.exp_constant[i, 0]*I2 + self.exp_constant[i, 1]*A \
+                 + self.exp_constant[i, 2]*A2 + self.exp_constant[i, 3]*A3 + self.exp_constant[i, 4]*A6
+
+        A9 = B[0]@B[4] + B[3]
+        expA = B[1] + (B[2] + A9)@A9
+
+        for k in range(m):
+            expA = expA@expA
+        appro_exp = expA
+
+        self.layer_exp.append(appro_exp)
+        return appro_exp
+    
+    def _compute_prod(self):
+        G = torch.eye(4*self.order_N,dtype=self._dtype,device=self._device)
+        # Layer connection
+        for i in range(self.layer_N):
+            G = G@self.layer_exp[i]
+        self.global_exp = G
+
+    def solve_global_tmatrix(self):
+        self._compute_prod()
+
+        A = self.global_exp[:2*self.order_N, :2*self.order_N]
+        B = self.global_exp[:2*self.order_N, 2*self.order_N:]
+        C = self.global_exp[2*self.order_N:, :2*self.order_N]
+        D = self.global_exp[2*self.order_N:, 2*self.order_N:]
+
+        V_trn = 1j*self.get_V(self.eps_out)
+        V_ref = 1j*self.get_V(self.eps_in)
+
+        A1 = A + B @ V_trn
+        C1 = C + D @ V_trn
+        St = 2.0 * torch.linalg.solve(C1 + V_ref @ A1, V_ref)
+        Sr = A1 @ St - torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+        self.S = [St, Sr] # TODO assuming port = 1
+
+    def get_V(self, eps):
+        kz_norm = torch.sqrt(eps - self.Kx_norm_dn**2 - self.Ky_norm_dn**2)
+        kz_norm = torch.where(torch.imag(kz_norm)<0,torch.conj(kz_norm),kz_norm)
+        KxKyKzi = self.Kx_norm*self.Ky_norm*torch.diag(1./kz_norm)
+        KzplusKxKxKzi = torch.diag(kz_norm) + self.Kx_norm**2*torch.diag(1./kz_norm)
+        KzplusKyKyKzi = torch.diag(kz_norm) + self.Ky_norm**2*torch.diag(1./kz_norm)
+        V = torch.hstack((torch.vstack((-KxKyKzi, KzplusKxKxKzi)), torch.vstack((-KzplusKyKyKzi, KxKyKzi))))
+        return V
