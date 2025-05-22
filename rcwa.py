@@ -37,7 +37,7 @@ class rcwa:
         self.omega = 2*torch.pi*freq
         self.L = torch.as_tensor(L,dtype=self._dtype,device=self._device)
         self.stable_inverse = True
-        self.fast_exp = False
+        self.fast_exp = True
 
         # Fourier order
         self.order = order
@@ -72,8 +72,8 @@ class rcwa:
                                           [-10.9676396052962062593, 1.68015813878906197182,  0.05717798464788655127, -0.00698210122488052084,  0.00003349750170860705],
                                           [ -0.0904316832390810561,-0.06764045190713819075,  0.06759613017704596460,  0.02955525704293155274, -0.00001391802575160607],
                                           [                      0,                      0, -0.09233646193671185927, -0.01693649390020817171, -0.00001400867981820361]])
+        #self.layer_exp_ref = []
         self.layer_exp = []
-        self.layer_exp_blk = []
 
     def add_input_layer(self,eps=1.):
         '''
@@ -139,8 +139,8 @@ class rcwa:
         self.thickness.append(thickness)
         
         if self.fast_exp:
+            #self._compute_layer_exp_ref()
             self._compute_layer_exp()
-            self._compute_layer_exp_blk()
         else:
             if is_homogenous:
                 self._eigen_decomposition_homogenous(eps)
@@ -708,8 +708,8 @@ class rcwa:
 ########################################################################################
 #######################  Matrix exponential method   ###################################
 ########################################################################################
-    def _compute_layer_exp(self):
-        if self.thickness[-1] < min(self.L[0]/self.order[0], self.L[1]/self.order[1]):
+    def _compute_layer_exp_ref(self):
+        if self.thickness[-1] > min(self.L[0]/self.order[0], self.L[1]/self.order[1]):
             warnings.warn('Thick layer may impact accuracy!',UserWarning)
 
         k0d = self.omega*self.thickness[-1]
@@ -770,11 +770,11 @@ class rcwa:
             expA = expA@expA
         appro_exp = expA
 
-        self.layer_exp.append(appro_exp)
+        self.layer_exp_ref.append(appro_exp)
         return appro_exp
 
-    def _compute_layer_exp_blk(self):
-        if self.thickness[-1] < min(self.L[0]/self.order[0], self.L[1]/self.order[1]):
+    def _compute_layer_exp(self):
+        if self.thickness[-1] > min(self.L[0]/self.order[0], self.L[1]/self.order[1]):
             warnings.warn('Thick layer may impact accuracy!',UserWarning)
 
         k0d = self.omega*self.thickness[-1]
@@ -808,23 +808,6 @@ class rcwa:
         m = int(torch.ceil(torch.log2(Rnorm*k0d)))
         if m < 0:
             m = 0
-
-        """
-        PQ = P@Q
-        QP = Q@P
-        PQP = PQ@P
-        QPQ = QP@Q
-        PQPQPQ = PQP@QPQ
-        QPQPQP = QPQ@PQP
-        A_12 = -2**(-m)*k0d*P
-        A_21 = 2**(-m)*k0d*Q
-        A2_11 = -2**(-2*m)*k0d**2*PQ
-        A2_22 = -2**(-2*m)*k0d**2*QP
-        A3_12 = 2**(-3*m)*k0d**3*PQP
-        A3_21 = -2**(-3*m)*k0d**3*QPQ
-        A6_11 = -2**(-6*m)*k0d**6*PQPQPQ
-        A6_22 = -2**(-6*m)*k0d**6*QPQPQP
-        """
 
         A_12 = -2**(-m)*k0d*P
         A_21 = 2**(-m)*k0d*Q
@@ -862,36 +845,36 @@ class rcwa:
                                                  expA_21 @ expA_12 + expA_22 @ expA_22
         appro_exp = [expA_11, expA_12, expA_21, expA_22]
 
-        self.layer_exp_blk.append(appro_exp)
+        self.layer_exp.append(appro_exp)
         return appro_exp
         
-    def _compute_prod(self):
+    def _compute_prod_ref(self):
         G = torch.eye(4*self.order_N,dtype=self._dtype,device=self._device)
         # Layer connection
         for i in range(self.layer_N):
-            G = G@self.layer_exp[i]
-        self.global_exp = G
+            G = G@self.layer_exp_ref[i]
+        self.global_exp_ref = G
 
-    def _compute_prod_blk(self):
+    def _compute_prod(self):
         G11 = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
         G12 = torch.zeros(2*self.order_N,dtype=self._dtype,device=self._device)
         G21 = torch.zeros(2*self.order_N,dtype=self._dtype,device=self._device)
         G22 = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
         # Layer connection
         for i in range(self.layer_N):
-            expA = self.layer_exp_opt[i]
+            expA = self.layer_exp[i]
             G11, G12, G21, G22 = G11 @ expA[0] + G12 @ expA[2],\
                                  G11 @ expA[1] + G12 @ expA[3],\
                                  G21 @ expA[0] + G22 @ expA[2],\
                                  G21 @ expA[1] + G22 @ expA[3]
-        self.global_exp_blk = [G11, G12, G21, G22]
+        self.global_exp = [G11, G12, G21, G22]
 
-    def solve_global_tmatrix(self):
-        self._compute_prod()
-        A = self.global_exp[:2*self.order_N, :2*self.order_N]
-        B = self.global_exp[:2*self.order_N, 2*self.order_N:]
-        C = self.global_exp[2*self.order_N:, :2*self.order_N]
-        D = self.global_exp[2*self.order_N:, 2*self.order_N:]
+    def solve_global_tmatrix_ref(self):
+        self._compute_prod_ref()
+        A = self.global_exp_ref[:2*self.order_N, :2*self.order_N]
+        B = self.global_exp_ref[:2*self.order_N, 2*self.order_N:]
+        C = self.global_exp_ref[2*self.order_N:, :2*self.order_N]
+        D = self.global_exp_ref[2*self.order_N:, 2*self.order_N:]
 
         V_trn = 1j*self.get_V(self.eps_out)
         V_ref = 1j*self.get_V(self.eps_in)
@@ -902,12 +885,12 @@ class rcwa:
         Sr = A1 @ St - torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
         self.S = [St, Sr] # TODO assuming port = 1
 
-    def solve_global_tmatrix_blk(self):
-        self._compute_prod_blk()
+    def solve_global_tmatrix(self):
+        self._compute_prod()
         V_trn = 1j*self.get_V(self.eps_out)
         V_ref = 1j*self.get_V(self.eps_in)
-        A1 = self.global_exp_blk[0] + self.global_exp_blk[1] @ V_trn
-        C1 = self.global_exp_blk[2] + self.global_exp_blk[3] @ V_trn
+        A1 = self.global_exp[0] + self.global_exp[1] @ V_trn
+        C1 = self.global_exp[2] + self.global_exp[3] @ V_trn
         St = 2.0 * torch.linalg.solve(C1 + V_ref @ A1, V_ref)
         Sr = A1 @ St - torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
         self.S = [St, Sr] # TODO assuming port = 1
@@ -920,3 +903,4 @@ class rcwa:
         KzplusKyKyKzi = torch.diag(kz_norm) + self.Ky_norm**2*torch.diag(1./kz_norm)
         V = torch.hstack((torch.vstack((-KxKyKzi, KzplusKxKxKzi)), torch.vstack((-KzplusKyKyKzi, KxKyKzi))))
         return V
+        
