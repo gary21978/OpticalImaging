@@ -73,6 +73,7 @@ class rcwa:
                                           [ -0.0904316832390810561,-0.06764045190713819075,  0.06759613017704596460,  0.02955525704293155274, -0.00001391802575160607],
                                           [                      0,                      0, -0.09233646193671185927, -0.01693649390020817171, -0.00001400867981820361]])
         self.layer_exp = []
+        self.layer_exp_blk = []
 
     def add_input_layer(self,eps=1.):
         '''
@@ -139,6 +140,7 @@ class rcwa:
         
         if self.fast_exp:
             self._compute_layer_exp()
+            self._compute_layer_exp_blk()
         else:
             if is_homogenous:
                 self._eigen_decomposition_homogenous(eps)
@@ -770,7 +772,99 @@ class rcwa:
 
         self.layer_exp.append(appro_exp)
         return appro_exp
-    
+
+    def _compute_layer_exp_blk(self):
+        if self.thickness[-1] < min(self.L[0]/self.order[0], self.L[1]/self.order[1]):
+            warnings.warn('Thick layer may impact accuracy!',UserWarning)
+
+        k0d = self.omega*self.thickness[-1]
+
+        E = self.eps_conv[-1]
+        KxKx = self.Kx_norm**2
+        KxKy = self.Kx_norm*self.Ky_norm
+        KyKy = self.Ky_norm**2
+        
+        try:
+            EiKx = torch.linalg.solve(E, self.Kx_norm)
+            EiKy = torch.linalg.solve(E, self.Ky_norm)
+            KxEiKy = self.Kx_norm@EiKy
+            KyEiKx = self.Ky_norm@EiKx
+            KxEiKx = self.Kx_norm@EiKx
+            KyEiKy = self.Ky_norm@EiKy
+        except RuntimeError:
+            KxEiKy = KxKy
+            KyEiKx = KxKy
+            KxEiKx = KxKx
+            KyEiKy = KyKy
+
+        I = torch.eye(self.order_N,dtype=self._dtype,device=self._device)
+        I2 = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+        P = torch.hstack((torch.vstack((KxEiKy, KyEiKy - I)), torch.vstack((I - KxEiKx, -KyEiKx))))
+        Q = torch.hstack((torch.vstack((-KxKy, E - KyKy)), torch.vstack((KxKx - E, KxKy))))
+
+        Pnorm = torch.max(torch.sum(torch.abs(P), dim=0))
+        Qnorm = torch.max(torch.sum(torch.abs(Q), dim=0))
+        Rnorm = torch.max(Pnorm, Qnorm)
+        m = int(torch.ceil(torch.log2(Rnorm*k0d)))
+        if m < 0:
+            m = 0
+
+        """
+        PQ = P@Q
+        QP = Q@P
+        PQP = PQ@P
+        QPQ = QP@Q
+        PQPQPQ = PQP@QPQ
+        QPQPQP = QPQ@PQP
+        A_12 = -2**(-m)*k0d*P
+        A_21 = 2**(-m)*k0d*Q
+        A2_11 = -2**(-2*m)*k0d**2*PQ
+        A2_22 = -2**(-2*m)*k0d**2*QP
+        A3_12 = 2**(-3*m)*k0d**3*PQP
+        A3_21 = -2**(-3*m)*k0d**3*QPQ
+        A6_11 = -2**(-6*m)*k0d**6*PQPQPQ
+        A6_22 = -2**(-6*m)*k0d**6*QPQPQP
+        """
+
+        A_12 = -2**(-m)*k0d*P
+        A_21 = 2**(-m)*k0d*Q
+        A2_11 = A_12 @ A_21
+        A2_22 = A_21 @ A_12
+        A3_12 = A_12 @ A2_22
+        A3_21 = A_21 @ A2_11
+        A6_11 = A3_12 @ A3_21
+        A6_22 = A3_21 @ A3_12
+
+        B_11 = [[],[],[],[],[]]
+        B_12 = [[],[],[],[],[]]
+        B_21 = [[],[],[],[],[]]
+        B_22 = [[],[],[],[],[]]
+        for i in range(5):
+            B_11[i] = self.exp_constant[i, 0]*I2 + self.exp_constant[i, 2]*A2_11 + self.exp_constant[i, 4]*A6_11
+            B_12[i] = self.exp_constant[i, 1]*A_12 + self.exp_constant[i, 3]*A3_12
+            B_21[i] = self.exp_constant[i, 1]*A_21 + self.exp_constant[i, 3]*A3_21
+            B_22[i] = self.exp_constant[i, 0]*I2 + self.exp_constant[i, 2]*A2_22 + self.exp_constant[i, 4]*A6_22
+
+        A9_11 = B_11[0] @ B_11[4] + B_12[0] @ B_21[4] + B_11[3]
+        A9_12 = B_11[0] @ B_12[4] + B_12[0] @ B_22[4] + B_12[3]
+        A9_21 = B_21[0] @ B_11[4] + B_22[0] @ B_21[4] + B_21[3]
+        A9_22 = B_21[0] @ B_12[4] + B_22[0] @ B_22[4] + B_22[3]
+        
+        expA_11 = B_11[1] + (B_11[2] + A9_11) @ A9_11 + (B_12[2] + A9_12) @ A9_21
+        expA_12 = B_12[1] + (B_11[2] + A9_11) @ A9_12 + (B_12[2] + A9_12) @ A9_22
+        expA_21 = B_21[1] + (B_21[2] + A9_21) @ A9_11 + (B_22[2] + A9_22) @ A9_21
+        expA_22 = B_22[1] + (B_21[2] + A9_21) @ A9_12 + (B_22[2] + A9_22) @ A9_22
+
+        for k in range(m):
+            expA_11, expA_12, expA_21, expA_22 = expA_11 @ expA_11 + expA_12 @ expA_21,\
+                                                 expA_11 @ expA_12 + expA_12 @ expA_22,\
+                                                 expA_21 @ expA_11 + expA_22 @ expA_21,\
+                                                 expA_21 @ expA_12 + expA_22 @ expA_22
+        appro_exp = [expA_11, expA_12, expA_21, expA_22]
+
+        self.layer_exp_blk.append(appro_exp)
+        return appro_exp
+        
     def _compute_prod(self):
         G = torch.eye(4*self.order_N,dtype=self._dtype,device=self._device)
         # Layer connection
@@ -778,9 +872,22 @@ class rcwa:
             G = G@self.layer_exp[i]
         self.global_exp = G
 
+    def _compute_prod_blk(self):
+        G11 = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+        G12 = torch.zeros(2*self.order_N,dtype=self._dtype,device=self._device)
+        G21 = torch.zeros(2*self.order_N,dtype=self._dtype,device=self._device)
+        G22 = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+        # Layer connection
+        for i in range(self.layer_N):
+            expA = self.layer_exp_opt[i]
+            G11, G12, G21, G22 = G11 @ expA[0] + G12 @ expA[2],\
+                                 G11 @ expA[1] + G12 @ expA[3],\
+                                 G21 @ expA[0] + G22 @ expA[2],\
+                                 G21 @ expA[1] + G22 @ expA[3]
+        self.global_exp_blk = [G11, G12, G21, G22]
+
     def solve_global_tmatrix(self):
         self._compute_prod()
-
         A = self.global_exp[:2*self.order_N, :2*self.order_N]
         B = self.global_exp[:2*self.order_N, 2*self.order_N:]
         C = self.global_exp[2*self.order_N:, :2*self.order_N]
@@ -791,6 +898,16 @@ class rcwa:
 
         A1 = A + B @ V_trn
         C1 = C + D @ V_trn
+        St = 2.0 * torch.linalg.solve(C1 + V_ref @ A1, V_ref)
+        Sr = A1 @ St - torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+        self.S = [St, Sr] # TODO assuming port = 1
+
+    def solve_global_tmatrix_blk(self):
+        self._compute_prod_blk()
+        V_trn = 1j*self.get_V(self.eps_out)
+        V_ref = 1j*self.get_V(self.eps_in)
+        A1 = self.global_exp_blk[0] + self.global_exp_blk[1] @ V_trn
+        C1 = self.global_exp_blk[2] + self.global_exp_blk[3] @ V_trn
         St = 2.0 * torch.linalg.solve(C1 + V_ref @ A1, V_ref)
         Sr = A1 @ St - torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
         self.S = [St, Sr] # TODO assuming port = 1
