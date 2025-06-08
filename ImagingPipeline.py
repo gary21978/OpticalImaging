@@ -6,6 +6,7 @@ from CalculateAerialImage import CalculateAbbeImage, CalculateHopkinsImage, Calc
 from rcwa import rcwa
 import matplotlib.pyplot as plt
 import torch
+import time
 
 class ImagingModel:
     def __init__(self):
@@ -63,7 +64,7 @@ class ImagingModel:
         #self.Numerics.ScatterOrder_Y = Ng
 
         sim = rcwa(freq=1/self.Source.Wavelength, order=[self.Numerics.ScatterOrder_X, self.Numerics.ScatterOrder_Y],
-                   L=[self.Scatter.Period_X, self.Scatter.Period_Y],dtype=sim_dtype)
+                   L=[self.Scatter.Period_X, self.Scatter.Period_Y],dtype=sim_dtype,fast=False)
         sim.add_input_layer(eps=1.0)
         sim.set_incident_angle(inc_ang=0, azi_ang=0)
 
@@ -74,7 +75,7 @@ class ImagingModel:
         n_SIN = 2.1222
         n_substrate = 6.5271 + 2.6672j
         ##################################################
-        thickness = [10, 21, 100]
+        thickness = [1e5, 21, 100]
         ns = [n_OX, n_TIN, n_TEOS]
         for t, n in zip(thickness, ns):
             layer_eps = self.Geometry*(n**2 - 1) + 1.0
@@ -145,4 +146,8 @@ class ImagingModel:
     
 if __name__ == '__main__':
     app = ImagingModel()
-    app.Run()
+    start_time = time.time()
+    with torch.no_grad():
+        app.Run()
+    end_time = time.time()
+    print("Cost : {:.2f} seconds".format(end_time - start_time))
