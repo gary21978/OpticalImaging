@@ -138,7 +138,10 @@ class rcwa:
         self.thickness.append(thickness)
         
         if self.fast_exp:
-            self._compute_layer_exp()
+            if is_homogenous:
+                self._compute_layer_exp_homogenous(eps, thickness)
+            else:
+                self._compute_layer_exp()
         else:
             if is_homogenous:
                 self._eigen_decomposition_homogenous(eps)
@@ -778,6 +781,24 @@ class rcwa:
             S11 = S11 @ torch.linalg.solve(R, S11)
             S12 = tmp
 
+        self.layer_S11.append(S11)
+        self.layer_S12.append(S12)
+        self.layer_S21.append(S12)
+        self.layer_S22.append(S11)
+
+    def _compute_layer_exp_homogenous(self, eps, thickness):
+        V, kz_norm = self.get_V(eps)
+        kz_norm = torch.cat((kz_norm,kz_norm))
+        phase = torch.diag(torch.exp(1.j*self.omega*kz_norm*thickness))
+        I = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+        V0iV = -self.Vf @ V
+        A = I + V0iV
+        B = (I - V0iV) @ phase
+        BAi = B @ torch.linalg.inv(A)
+        C1 = 2 * torch.linalg.inv(A - (BAi @ B))
+        C2 = -C1 @ BAi
+        S11 = phase @ C1 + C2
+        S12 = phase @ C2 + C1 - I
         self.layer_S11.append(S11)
         self.layer_S12.append(S12)
         self.layer_S21.append(S12)
