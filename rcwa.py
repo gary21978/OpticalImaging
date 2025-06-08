@@ -741,6 +741,8 @@ class rcwa:
         A6_11 = A3_12 @ A3_21
         A6_22 = A3_21 @ A3_12
 
+        del P, Q
+
         B_11 = [[],[],[],[],[]]
         B_12 = [[],[],[],[],[]]
         B_21 = [[],[],[],[],[]]
@@ -751,6 +753,8 @@ class rcwa:
             B_21[i] = self.exp_constant[i, 1] * A_21 + self.exp_constant[i, 3] * A3_21
             B_22[i] = self.exp_constant[i, 0] * I2 + self.exp_constant[i, 2] * A2_22 + self.exp_constant[i, 4] * A6_22
 
+        del A_12, A_21, A2_11, A2_22, A3_12, A3_21, A6_11, A6_22
+
         A9_11 = B_11[0] @ B_11[4] + B_12[0] @ B_21[4] + B_11[3]
         A9_12 = B_11[0] @ B_12[4] + B_12[0] @ B_22[4] + B_12[3]
         A9_21 = B_21[0] @ B_11[4] + B_22[0] @ B_21[4] + B_21[3]
@@ -760,6 +764,8 @@ class rcwa:
         expA_12 = B_12[1] + (B_11[2] + A9_11) @ A9_12 + (B_12[2] + A9_12) @ A9_22
         expA_21 = B_21[1] + (B_21[2] + A9_21) @ A9_11 + (B_22[2] + A9_22) @ A9_21
         expA_22 = B_22[1] + (B_21[2] + A9_21) @ A9_12 + (B_22[2] + A9_22) @ A9_22
+
+        del A9_11, A9_12, A9_21, A9_22, B_11, B_12, B_21, B_22
 
         for k in range(m):
             expA_11, expA_12, expA_21, expA_22 = expA_11 @ expA_11 + expA_12 @ expA_21,\
@@ -777,6 +783,8 @@ class rcwa:
         T21 = 0.5 * (E - F)
         S11 = torch.linalg.inv(T22)
         S12 = -S11 @ T21
+        
+        del expA_11, expA_12, expA_21, expA_22, E, F, T22, T21
 
         for i in range(n_repeatedSquaring):
             R = I2 - S12 @ S12
