@@ -72,8 +72,7 @@ class rcwa:
                                           [-10.9676396052962062593, 1.68015813878906197182,  0.05717798464788655127, -0.00698210122488052084,  0.00003349750170860705],
                                           [ -0.0904316832390810561,-0.06764045190713819075,  0.06759613017704596460,  0.02955525704293155274, -0.00001391802575160607],
                                           [                      0,                      0, -0.09233646193671185927, -0.01693649390020817171, -0.00001400867981820361]])
-        #self.layer_exp_ref = []
-        self.layer_exp = []
+        #self.layer_exp = []
 
     def add_input_layer(self,eps=1.):
         '''
@@ -139,7 +138,6 @@ class rcwa:
         self.thickness.append(thickness)
         
         if self.fast_exp:
-            #self._compute_layer_exp_ref()
             self._compute_layer_exp()
         else:
             if is_homogenous:
@@ -689,103 +687,16 @@ class rcwa:
 ########################################################################################
 #######################  Matrix exponential method   ###################################
 ########################################################################################
-    def _compute_layer_exp_ref(self):
-        if self.thickness[-1] > min(self.L[0]/self.order[0], self.L[1]/self.order[1]):
-            warnings.warn('Thick layer may impact accuracy!',UserWarning)
-
-        k0d = self.omega*self.thickness[-1]
-
-        E = self.eps_conv[-1]
-        KxKx = self.Kx_norm**2
-        KxKy = self.Kx_norm*self.Ky_norm
-        KyKy = self.Ky_norm**2
-        
-        try:
-            EiKx = torch.linalg.solve(E, self.Kx_norm)
-            EiKy = torch.linalg.solve(E, self.Ky_norm)
-            KxEiKy = self.Kx_norm@EiKy
-            KyEiKx = self.Ky_norm@EiKx
-            KxEiKx = self.Kx_norm@EiKx
-            KyEiKy = self.Ky_norm@EiKy
-        except RuntimeError:
-            KxEiKy = KxKy
-            KyEiKx = KxKy
-            KxEiKx = KxKx
-            KyEiKy = KyKy
-
-        I = torch.eye(self.order_N,dtype=self._dtype,device=self._device)
-        I2 = torch.eye(4*self.order_N,dtype=self._dtype,device=self._device)
-        O = torch.zeros([2*self.order_N, 2*self.order_N],dtype=self._dtype,device=self._device)
-        P = torch.hstack((torch.vstack((KxEiKy, KyEiKy - I)), torch.vstack((I - KxEiKx, -KyEiKx))))
-        Q = torch.hstack((torch.vstack((-KxKy, E - KyKy)), torch.vstack((KxKx - E, KxKy))))
-
-        PQ = P @ Q
-        QP = Q @ P
-        PQP = PQ @ P
-        QPQ = QP @ Q
-        PQPQPQ = PQP @ QPQ
-        QPQPQP = QPQ @ PQP
-
-        Pnorm = torch.max(torch.sum(torch.abs(P), dim=0))
-        Qnorm = torch.max(torch.sum(torch.abs(Q), dim=0))
-        Rnorm = torch.max(Pnorm, Qnorm)
-
-        m = int(torch.ceil(torch.log2(Rnorm*k0d)))
-        if m < 0:
-            m = 0
-
-        A = 2**(-m)*k0d*torch.vstack((torch.hstack((O,-P)),torch.hstack((Q,O))))
-        A2 = 2**(-2*m)*k0d**2*torch.vstack((torch.hstack((-PQ,O)),torch.hstack((O,-QP))))
-        A3 = 2**(-3*m)*k0d**3*torch.vstack((torch.hstack((O,PQP)),torch.hstack((-QPQ,O))))
-        A6 = 2**(-6*m)*k0d**6*torch.vstack((torch.hstack((-PQPQPQ,O)),torch.hstack((O,-QPQPQP))))
-
-        B = [[],[],[],[],[]]
-        for i in range(5):
-            B[i] = self.exp_constant[i, 0]*I2 + self.exp_constant[i, 1]*A \
-                 + self.exp_constant[i, 2]*A2 + self.exp_constant[i, 3]*A3 + self.exp_constant[i, 4]*A6
-
-        A9 = B[0] @ B[4] + B[3]
-        expA = B[1] + (B[2] + A9) @ A9
-
-        for k in range(m):
-            expA = expA @ expA
-        appro_exp = expA
-
-        self.layer_exp_ref.append(appro_exp)
-        return appro_exp
-    
-    def _compute_prod_ref(self):
-        G = torch.eye(4*self.order_N,dtype=self._dtype,device=self._device)
-        # Layer connection
-        for i in range(self.layer_N):
-            G = G @ self.layer_exp_ref[i]
-        self.global_exp_ref = G
-        
-    def solve_global_tmatrix_ref(self):
-        self._compute_prod_ref()
-        A = self.global_exp_ref[:2*self.order_N, :2*self.order_N]
-        B = self.global_exp_ref[:2*self.order_N, 2*self.order_N:]
-        C = self.global_exp_ref[2*self.order_N:, :2*self.order_N]
-        D = self.global_exp_ref[2*self.order_N:, 2*self.order_N:]
-        V_trn,_ = self.get_V(self.eps_out)
-        V_ref,_ = self.get_V(self.eps_in)
-        A1 = A + 1j*B @ V_trn
-        B1 = A - 1j*B @ V_trn
-        C1 = C + 1j*D @ V_trn
-        D1 = C - 1j*D @ V_trn
-        S11 = 2.0 * torch.linalg.solve(C1 + 1j*V_ref @ A1, 1j*V_ref)
-        S12 = -torch.linalg.solve(C1 + 1j*V_ref @ A1, D1 + 1j*V_ref @ B1)
-        S21 = A1 @ S11 - torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
-        S22 = A1 @ S12 + B1
-        # Save S-matrix
-        self.S = [S11, S21, S12, S22]
-
     def _compute_layer_exp(self):
-        if self.thickness[-1] > min(self.L[0]/self.order[0], self.L[1]/self.order[1]):
-            warnings.warn('Thick layer may impact accuracy!',UserWarning)
-
-        k0d = self.omega*self.thickness[-1]
-
+        thickness_thres = 2.0 * min(self.L[0] / self.order[0], self.L[1] / self.order[1])
+        if (self.thickness[-1] > thickness_thres):
+            n_repeatedSquaring = int(torch.ceil(torch.log2(torch.tensor(self.thickness[-1] / thickness_thres))))
+            d_block = self.thickness[-1] / 2**(n_repeatedSquaring)
+        else:
+            n_repeatedSquaring = 0
+            d_block = self.thickness[-1]
+        
+        k0d = self.omega * d_block
         E = self.eps_conv[-1]
         KxKx = self.Kx_norm**2
         KxKy = self.Kx_norm*self.Ky_norm
@@ -850,10 +761,27 @@ class rcwa:
                                                  expA_11 @ expA_12 + expA_12 @ expA_22,\
                                                  expA_21 @ expA_11 + expA_22 @ expA_21,\
                                                  expA_21 @ expA_12 + expA_22 @ expA_22
-        appro_exp = [expA_11, expA_12, expA_21, expA_22]
+        #appro_exp = [expA_11, expA_12, expA_21, expA_22]
+        #self.layer_exp.append(appro_exp) # append T matrix
 
-        self.layer_exp.append(appro_exp)
-        return appro_exp
+        # Convert to layer S-matrix
+        E = expA_11 + 1j * self.Vf @ expA_21
+        F = (1j * expA_12 - self.Vf @ expA_22) @ self.Vf
+        T22 = 0.5 * (E + F)
+        T21 = 0.5 * (E - F)
+        S11 = torch.linalg.inv(T22)
+        S12 = -S11 @ T21
+
+        for i in range(n_repeatedSquaring):
+            R = I2 - S12 @ S12
+            tmp = S12 + S11 @ torch.linalg.solve(R, S12 @ S11)
+            S11 = S11 @ torch.linalg.solve(R, S11)
+            S12 = tmp
+
+        self.layer_S11.append(S11)
+        self.layer_S12.append(S12)
+        self.layer_S21.append(S12)
+        self.layer_S22.append(S11)
 
     def _compute_prod(self):
         G11 = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
@@ -893,4 +821,3 @@ class rcwa:
         KzplusKyKyKzi = torch.diag(kz_norm) + self.Ky_norm**2*torch.diag(1./kz_norm)
         V = torch.hstack((torch.vstack((-KxKyKzi, KzplusKxKxKzi)), torch.vstack((-KzplusKyKyKzi, KxKyKzi))))
         return V, kz_norm
-        

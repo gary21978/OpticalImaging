@@ -52,7 +52,7 @@ class ImagingModel:
         self.Geometry = T
 
     def Scattering(self):
-        sim_dtype = torch.complex64
+        sim_dtype = torch.complex128
         normalized_xPitch = torch.tensor(self.Scatter.Period_X / (self.Source.Wavelength / self.Projector.NA))
         normalized_yPitch = torch.tensor(self.Scatter.Period_Y / (self.Source.Wavelength / self.Projector.NA))
         # TODO use recommended Fourier orders
@@ -74,19 +74,14 @@ class ImagingModel:
         n_SIN = 2.1222
         n_substrate = 6.5271 + 2.6672j
         ##################################################
-        thickness = [5, 21, 100]
+        thickness = [10, 21, 100]
         ns = [n_OX, n_TIN, n_TEOS]
         for t, n in zip(thickness, ns):
             layer_eps = self.Geometry*(n**2 - 1) + 1.0
             sim.add_layer(thickness=t, eps=layer_eps)
         sim.add_layer(thickness=20, eps=n_SIN**2)
         sim.add_layer(thickness=5, eps=n_substrate**2)
-
-        if sim.fast_exp:
-            sim.solve_global_tmatrix()
-        else:
-            sim.solve_global_smatrix()
-
+        sim.solve_global_smatrix()
         sim.source_planewave(amplitude=self.Source.PolarizationVector, direction='forward')
 
         n_scatter_x = self.Numerics.ScatterGrid_X
