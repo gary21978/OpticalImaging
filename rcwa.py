@@ -122,7 +122,7 @@ class rcwa:
             self.angle_layer = 'input'
         self._kvectors()
 
-    def add_layer(self,thickness,eps=1.):
+    def add_layer(self,thickness,eps=1.,repeat=1):
         '''
             Add internal layer
 
@@ -151,6 +151,10 @@ class rcwa:
             else:
                 self._eigen_decomposition()
             self._solve_layer_smatrix()
+
+        if (repeat > 1):
+            S = [self.layer_S11[-1], self.layer_S21[-1], self.layer_S12[-1], self.layer_S22[-1]]
+            self.layer_S11[-1], self.layer_S21[-1], self.layer_S12[-1], self.layer_S22[-1] = self._RS_power(S, repeat)
 
     def add_defect(self, layer_num=0, deps=None):
         deps_conv = self._material_conv(deps)
@@ -689,6 +693,17 @@ class rcwa:
 
         return S11, S21, S12, S22
     
+    def _RS_power(self, S, n):
+        I = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+        O = torch.zeros(2*self.order_N,dtype=self._dtype,device=self._device)
+        res = [I, O, O, I]
+        while n:
+            if n & 1:
+                res = self._RS_prod(res, S)
+            S = self._RS_prod(S, S)
+            n >>= 1
+        return res
+    
 ########################################################################################
 #######################  Matrix exponential method   ###################################
 ########################################################################################
@@ -768,10 +783,14 @@ class rcwa:
         del A9_11, A9_12, A9_21, A9_22, B_11, B_12, B_21, B_22
 
         for k in range(m):
-            expA_11, expA_12, expA_21, expA_22 = expA_11 @ expA_11 + expA_12 @ expA_21,\
-                                                 expA_11 @ expA_12 + expA_12 @ expA_22,\
-                                                 expA_21 @ expA_11 + expA_22 @ expA_21,\
-                                                 expA_21 @ expA_12 + expA_22 @ expA_22
+            tmp11 = expA_11 @ expA_11 + expA_12 @ expA_21
+            tmp12 = expA_11 @ expA_12 + expA_12 @ expA_22
+            tmp21 = expA_21 @ expA_11 + expA_22 @ expA_21
+            tmp22 = expA_21 @ expA_12 + expA_22 @ expA_22
+            expA_11 = tmp11
+            expA_12 = tmp12
+            expA_21 = tmp21
+            expA_22 = tmp22
 
         #appro_exp = [expA_11, expA_12, expA_21, expA_22]
         #self.layer_exp.append(appro_exp) # append T matrix
