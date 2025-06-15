@@ -122,7 +122,7 @@ class rcwa:
             self.angle_layer = 'input'
         self._kvectors()
 
-    def add_layer(self,thickness,eps=1.,repeat=1):
+    def add_layer(self,thickness,eps=1.):
         '''
             Add internal layer
 
@@ -151,10 +151,6 @@ class rcwa:
             else:
                 self._eigen_decomposition()
             self._solve_layer_smatrix()
-
-        if (repeat > 1):
-            S = [self.layer_S11[-1], self.layer_S21[-1], self.layer_S12[-1], self.layer_S22[-1]]
-            self.layer_S11[-1], self.layer_S21[-1], self.layer_S12[-1], self.layer_S22[-1] = self._RS_power(S, repeat)
 
     def add_defect(self, layer_num=0, deps=None):
         deps_conv = self._material_conv(deps)
@@ -193,6 +189,35 @@ class rcwa:
             S11, S21, S12, S22 = self._RS_prod(Sm=[S11, S21, S12, S22],
                 Sn=[self.Sout[0], self.Sout[1], self.Sout[2], self.Sout[3]])
         self.S = [S11, S21, S12, S22]
+
+    def solve_global_smatrix_enhanced(self, start_index, end_index, repeat_number):
+        I = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
+        O = torch.zeros(2*self.order_N,dtype=self._dtype,device=self._device)
+        S = [I, O, O, I]
+
+        for i in range(start_index):
+            S_layer = [self.layer_S11[i], self.layer_S21[i], self.layer_S12[i], self.layer_S22[i]]
+            S = self._RS_prod(S, S_layer)
+            
+        S_group = [I, O, O, I]
+        for i in range(start_index, end_index):
+            S_layer = [self.layer_S11[i], self.layer_S21[i], self.layer_S12[i], self.layer_S22[i]]
+            S_group = self._RS_prod(S_group, S_layer)
+        S_group = self._RS_power(S_group, repeat_number)
+        S = self._RS_prod(S, S_group)
+
+        for i in range(end_index, self.layer_N):
+            S_layer = [self.layer_S11[i], self.layer_S21[i], self.layer_S12[i], self.layer_S22[i]]
+            S = self._RS_prod(S, S_layer)
+        
+        if hasattr(self,'Sin'):
+            # input layer coupling
+            S= self._RS_prod([self.Sin[0], self.Sin[1], self.Sin[2], self.Sin[3]], S)
+
+        if hasattr(self,'Sout'):
+            # output layer coupling
+            S = self._RS_prod(S, [self.Sout[0], self.Sout[1], self.Sout[2], self.Sout[3]])
+        self.S = S
         
     def source_planewave(self,*,amplitude=[1.,0.],direction='forward'):
         '''
