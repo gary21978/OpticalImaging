@@ -75,7 +75,6 @@ class rcwa:
                                           [-10.9676396052962062593, 1.68015813878906197182,  0.05717798464788655127, -0.00698210122488052084,  0.00003349750170860705],
                                           [ -0.0904316832390810561,-0.06764045190713819075,  0.06759613017704596460,  0.02955525704293155274, -0.00001391802575160607],
                                           [                      0,                      0, -0.09233646193671185927, -0.01693649390020817171, -0.00001400867981820361]])
-        #self.layer_exp = []
 
     def add_input_layer(self,eps=1.):
         '''
@@ -189,6 +188,10 @@ class rcwa:
             S11, S21, S12, S22 = self._RS_prod(Sm=[S11, S21, S12, S22],
                 Sn=[self.Sout[0], self.Sout[1], self.Sout[2], self.Sout[3]])
         self.S = [S11, S21, S12, S22]
+
+    #################################################################################
+    ########(0,...,start - 1),(start,...,end-1)...(start,...,end-1),(end,...)########
+    #################################################################################
 
     def solve_global_smatrix_enhanced(self, start_index, end_index, repeat_number):
         I = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
@@ -817,9 +820,6 @@ class rcwa:
             expA_21 = tmp21
             expA_22 = tmp22
 
-        #appro_exp = [expA_11, expA_12, expA_21, expA_22]
-        #self.layer_exp.append(appro_exp) # append T matrix
-
         # Convert to layer S-matrix
         E = expA_11 + 1j * self.Vf @ expA_21
         F = (1j * expA_12 - self.Vf @ expA_22) @ self.Vf
@@ -870,33 +870,3 @@ class rcwa:
         KzplusKyKyKzi = torch.diag(kz_norm) + self.Ky_norm**2*torch.diag(1./kz_norm)
         V = torch.hstack((torch.vstack((-KxKyKzi, KzplusKxKxKzi)), torch.vstack((-KzplusKyKyKzi, KxKyKzi))))
         return V, kz_norm
-    
-    def _compute_prod(self):
-        G11 = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
-        G12 = torch.zeros(2*self.order_N,dtype=self._dtype,device=self._device)
-        G21 = torch.zeros(2*self.order_N,dtype=self._dtype,device=self._device)
-        G22 = torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
-        # Layer connection
-        for i in range(self.layer_N):
-            expA = self.layer_exp[i]
-            G11, G12, G21, G22 = G11 @ expA[0] + G12 @ expA[2],\
-                                 G11 @ expA[1] + G12 @ expA[3],\
-                                 G21 @ expA[0] + G22 @ expA[2],\
-                                 G21 @ expA[1] + G22 @ expA[3]
-        self.global_exp = [G11, G12, G21, G22]
-
-    def solve_global_tmatrix(self):
-        self._compute_prod()
-        V_trn, _ = self.get_V(self.eps_out)
-        V_ref, _ = self.get_V(self.eps_in)
-        A1 = self.global_exp[0] + 1j*self.global_exp[1] @ V_trn
-        B1 = self.global_exp[0] - 1j*self.global_exp[1] @ V_trn
-        C1 = self.global_exp[2] + 1j*self.global_exp[3] @ V_trn
-        D1 = self.global_exp[2] - 1j*self.global_exp[3] @ V_trn
-
-        S11 = 2.0 * torch.linalg.solve(C1 + 1j*V_ref @ A1, 1j*V_ref)
-        S12 = -torch.linalg.solve(C1 + 1j*V_ref @ A1, D1 + 1j*V_ref @ B1)
-        S21 = A1 @ S11 - torch.eye(2*self.order_N,dtype=self._dtype,device=self._device)
-        S22 = A1 @ S12 + B1
-        # Save S-matrix
-        self.S = [S11, S21, S12, S22]
