@@ -1,64 +1,82 @@
 #ifndef RCWA_CUH
 #define RCWA_CUH
 
-#include <iostream>
-#include <vector>
 #include <complex>
-#include <string>
+#include <iostream>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 // CUDA Headers
-#include <cuda_runtime.h>
-#include <cusolverDn.h>
 #include <cublas_v2.h>
+#include <cuda_runtime.h>
 #include <cufft.h>
+#include <cusolverDn.h>
 
 // Error Checking Macros
-#define CHECK_CUDA(call) do { \
-    cudaError_t err = call; \
-    if (err != cudaSuccess) { \
-        throw std::runtime_error(std::string("CUDA error: ") + cudaGetErrorString(err) + " at line " + std::to_string(__LINE__)); \
-    } \
-} while (0)
+#define CHECK_CUDA(call)                                                                           \
+    do                                                                                             \
+    {                                                                                              \
+        cudaError_t err = call;                                                                    \
+        if (err != cudaSuccess)                                                                    \
+        {                                                                                          \
+            throw std::runtime_error(std::string("CUDA error: ") + cudaGetErrorString(err) +       \
+                                     " at line " + std::to_string(__LINE__));                      \
+        }                                                                                          \
+    } while (0)
 
-#define CHECK_CUSOLVER(call) do { \
-    cusolverStatus_t status = call; \
-    if (status != CUSOLVER_STATUS_SUCCESS) { \
-        throw std::runtime_error(std::string("cuSOLVER error: ") + std::to_string(status) + " at line " + std::to_string(__LINE__)); \
-    } \
-} while (0)
+#define CHECK_CUSOLVER(call)                                                                       \
+    do                                                                                             \
+    {                                                                                              \
+        cusolverStatus_t status = call;                                                            \
+        if (status != CUSOLVER_STATUS_SUCCESS)                                                     \
+        {                                                                                          \
+            throw std::runtime_error(std::string("cuSOLVER error: ") + std::to_string(status) +    \
+                                     " at line " + std::to_string(__LINE__));                      \
+        }                                                                                          \
+    } while (0)
 
-#define CHECK_CUBLAS(call) do { \
-    cublasStatus_t status = call; \
-    if (status != CUBLAS_STATUS_SUCCESS) { \
-        throw std::runtime_error(std::string("cuBLAS error: ") + std::to_string(status) + " at line " + std::to_string(__LINE__)); \
-    } \
-} while (0)
+#define CHECK_CUBLAS(call)                                                                         \
+    do                                                                                             \
+    {                                                                                              \
+        cublasStatus_t status = call;                                                              \
+        if (status != CUBLAS_STATUS_SUCCESS)                                                       \
+        {                                                                                          \
+            throw std::runtime_error(std::string("cuBLAS error: ") + std::to_string(status) +      \
+                                     " at line " + std::to_string(__LINE__));                      \
+        }                                                                                          \
+    } while (0)
 
-#define CHECK_CUFFT(call) do { \
-    cufftResult status = call; \
-    if (status != CUFFT_SUCCESS) { \
-        throw std::runtime_error(std::string("cuFFT error: ") + std::to_string(status) + " at line " + std::to_string(__LINE__)); \
-    } \
-} while (0)
+#define CHECK_CUFFT(call)                                                                          \
+    do                                                                                             \
+    {                                                                                              \
+        cufftResult status = call;                                                                 \
+        if (status != CUFFT_SUCCESS)                                                               \
+        {                                                                                          \
+            throw std::runtime_error(std::string("cuFFT error: ") + std::to_string(status) +       \
+                                     " at line " + std::to_string(__LINE__));                      \
+        }                                                                                          \
+    } while (0)
 
 // Type Aliases (aligned with PyTorch complex types)
-using complexf = std::complex<float>;   // Corresponding to torch.complex64
-using complexd = std::complex<double>;  // Corresponding to torch.complex128
+using complexf = std::complex<float>;  // Corresponding to torch.complex64
+using complexd = std::complex<double>; // Corresponding to torch.complex128
 
 /**
  * @brief RCWA (Rigorous Coupled-Wave Analysis) Class (CUDA Accelerated Version)
- * @details Implements GPU-accelerated RCWA simulation using cuSOLVER/cuBLAS/cuFFT, 
+ * @details Implements GPU-accelerated RCWA simulation using cuSOLVER/cuBLAS/cuFFT,
  *          with interfaces aligned to the Python RCWA class
  */
-class RCWA {
-public:
+class RCWA
+{
+  public:
     /**
      * @brief Data precision enumeration
      */
-    enum class DType {
-        COMPLEX64,  // Single-precision complex (float complex)
-        COMPLEX128  // Double-precision complex (double complex)
+    enum class DType
+    {
+        COMPLEX64, // Single-precision complex (float complex)
+        COMPLEX128 // Double-precision complex (double complex)
     };
 
     /**
@@ -69,8 +87,11 @@ public:
      * @param dtype Data precision (default: COMPLEX64)
      * @param fast Enable fast mode (not implemented yet)
      */
-    RCWA(double freq, const std::vector<int>& order, const std::vector<double>& L,
-         DType dtype = DType::COMPLEX64, bool fast = false);
+    RCWA(double freq,
+         const std::vector<int>& order,
+         const std::vector<double>& L,
+         DType dtype = DType::COMPLEX64,
+         bool fast = false);
 
     /**
      * @brief Destructor (releases all CUDA resources)
@@ -93,7 +114,8 @@ public:
     /**
      * @brief Add internal layer
      * @param thickness Layer thickness (unit: length)
-     * @param eps Relative permittivity (nullptr = homogeneous medium 1.0, non-nullptr = inhomogeneous medium tensor)
+     * @param eps Relative permittivity (nullptr = homogeneous medium 1.0, non-nullptr =
+     * inhomogeneous medium tensor)
      */
     void addLayer(double thickness, const void* eps = nullptr);
 
@@ -112,7 +134,7 @@ public:
      * @param amplitude Amplitude [Ex_amp, Ey_amp] (default: [1.0, 0.0])
      * @param direction Incident direction ("forward"/"f" or "backward"/"b")
      */
-    void sourcePlanewave(const std::vector<complexf>& amplitude = {1.0, 0.0}, 
+    void sourcePlanewave(const std::vector<complexf>& amplitude = {1.0, 0.0},
                          const std::string& direction = "forward");
 
     /**
@@ -121,7 +143,7 @@ public:
      * @param orders Diffraction orders [[mx, my], ...]
      * @param direction Incident direction ("forward"/"f" or "backward"/"b")
      */
-    void sourceFourier(const std::vector<complexf>& amplitude, 
+    void sourceFourier(const std::vector<complexf>& amplitude,
                        const std::vector<std::vector<int>>& orders,
                        const std::string& direction = "forward");
 
@@ -140,8 +162,8 @@ public:
      * @param y_N Number of sampling points on Y-axis
      * @return Field components [Ex, Ey, Ez] (GPU pointers, need manual release)
      */
-    std::tuple<complexf*, complexf*, complexf*> fieldXY(const float* x_axis, const float* y_axis, 
-                                                        int x_N, int y_N);
+    std::tuple<complexf*, complexf*, complexf*>
+    fieldXY(const float* x_axis, const float* y_axis, int x_N, int y_N);
 
     /**
      * @brief Calculate Floquet mode field distribution
@@ -166,24 +188,25 @@ public:
      * @brief Release GPU tensor memory
      * @param ptr GPU tensor pointer
      */
-    void freeDeviceTensor(void* ptr) {
+    void freeDeviceTensor(void* ptr)
+    {
         if (ptr) CHECK_CUDA(cudaFree(ptr));
     }
 
-private:
+  private:
     // -------------------------- Core Member Variables --------------------------
     // Basic simulation parameters
-    double freq_;                  // Frequency
-    std::vector<int> order_;       // Fourier orders [order_x, order_y]
-    std::vector<double> L_;        // Lattice vectors [Lx, Ly]
-    DType dtype_;                  // Data precision
-    bool fast_;                    // Fast mode flag
-    double omega_;                 // Angular frequency (2πf)
-    int order_x_N_;                // Number of orders in X direction (2*order_x+1)
-    int order_y_N_;                // Number of orders in Y direction (2*order_y+1)
-    int order_N_;                  // Total number of orders (order_x_N * order_y_N)
-    double Gx_norm_;               // Normalized X component of reciprocal lattice vector
-    double Gy_norm_;               // Normalized Y component of reciprocal lattice vector
+    double freq_;            // Frequency
+    std::vector<int> order_; // Fourier orders [order_x, order_y]
+    std::vector<double> L_;  // Lattice vectors [Lx, Ly]
+    DType dtype_;            // Data precision
+    bool fast_;              // Fast mode flag
+    double omega_;           // Angular frequency (2πf)
+    int order_x_N_;          // Number of orders in X direction (2*order_x+1)
+    int order_y_N_;          // Number of orders in Y direction (2*order_y+1)
+    int order_N_;            // Total number of orders (order_x_N * order_y_N)
+    double Gx_norm_;         // Normalized X component of reciprocal lattice vector
+    double Gy_norm_;         // Normalized Y component of reciprocal lattice vector
 
     // Incident parameters
     std::string angle_layer_;      // Reference layer for angle calculation (input/output)
@@ -192,9 +215,9 @@ private:
     std::string source_direction_; // Source direction (forward/backward)
 
     // CUDA handles
-    cusolverDnHandle_t cusolver_handle_ = nullptr;  // cuSOLVER handle
-    cublasHandle_t cublas_handle_ = nullptr;        // cuBLAS handle
-    cufftHandle cufft_plan_ = nullptr;              // cuFFT handle
+    cusolverDnHandle_t cusolver_handle_ = nullptr; // cuSOLVER handle
+    cublasHandle_t cublas_handle_ = nullptr;       // cuBLAS handle
+    cufftHandle cufft_plan_ = nullptr;             // cuFFT handle
 
     // GPU device tensors (raw pointers, manual management required)
     void* eps_in_ = nullptr;       // Permittivity of input layer (scalar)
@@ -216,14 +239,14 @@ private:
     std::vector<void*> layer_S21_, layer_S22_; // Layer S-matrices
 
     // Global S-matrix
-    std::vector<void*> Sin_;       // Input layer S-matrix
-    std::vector<void*> Sout_;      // Output layer S-matrix
-    std::vector<void*> S_;         // Global S-matrix
-    bool need_update_Sin_ = false; // Input layer S-matrix update flag
-    bool need_update_Sout_ = false;// Output layer S-matrix update flag
+    std::vector<void*> Sin_;        // Input layer S-matrix
+    std::vector<void*> Sout_;       // Output layer S-matrix
+    std::vector<void*> S_;          // Global S-matrix
+    bool need_update_Sin_ = false;  // Input layer S-matrix update flag
+    bool need_update_Sout_ = false; // Output layer S-matrix update flag
 
     // Source-related
-    void* E_i_ = nullptr;          // Incident field vector
+    void* E_i_ = nullptr; // Incident field vector
 
     // -------------------------- Initialization Functions --------------------------
     /**
@@ -260,7 +283,7 @@ private:
      * @param Sn Next stage S-matrix [S11, S21, S12, S22]
      * @return Cascaded S-matrix [S11, S21, S12, S22]
      */
-    std::tuple<void*, void*, void*, void*> rsProd(const std::vector<void*>& Sm, 
+    std::tuple<void*, void*, void*, void*> rsProd(const std::vector<void*>& Sm,
                                                   const std::vector<void*>& Sn);
 
     /**

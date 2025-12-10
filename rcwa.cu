@@ -1,12 +1,16 @@
-#include "RCWA.cuh"
-#include <cmath>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
+#include "RCWA.cuh"
 
 // -------------------------- Constructor & Destructor --------------------------
-RCWA::RCWA(double freq, const std::vector<int>& order, const std::vector<double>& L,
-           DType dtype, bool fast)
-    : freq_(freq), order_(order), L_(L), dtype_(dtype), fast_(fast) {
+RCWA::RCWA(double freq,
+           const std::vector<int>& order,
+           const std::vector<double>& L,
+           DType dtype,
+           bool fast)
+    : freq_(freq), order_(order), L_(L), dtype_(dtype), fast_(fast)
+{
     // Initialize CUDA handles
     initCUDABindles();
 
@@ -34,7 +38,8 @@ RCWA::RCWA(double freq, const std::vector<int>& order, const std::vector<double>
     initExpConstant();
 }
 
-RCWA::~RCWA() {
+RCWA::~RCWA()
+{
     // Release CUDA handles
     if (cusolver_handle_) CHECK_CUSOLVER(cusolverDnDestroy(cusolver_handle_));
     if (cublas_handle_) CHECK_CUBLAS(cublasDestroy(cublas_handle_));
@@ -70,13 +75,15 @@ RCWA::~RCWA() {
 }
 
 // -------------------------- Initialization Functions --------------------------
-void RCWA::initCUDABindles() {
+void RCWA::initCUDABindles()
+{
     CHECK_CUSOLVER(cusolverDnCreate(&cusolver_handle_));
     CHECK_CUBLAS(cublasCreate(&cublas_handle_));
     CHECK_CUFFT(cufftCreate(&cufft_plan_));
 }
 
-void RCWA::initOrderGrid() {
+void RCWA::initOrderGrid()
+{
     // Generate order arrays on CPU
     std::vector<int> order_x_cpu, order_y_cpu;
     for (int i = -order_[0]; i <= order_[0]; ++i) order_x_cpu.push_back(i);
@@ -85,56 +92,74 @@ void RCWA::initOrderGrid() {
     // Copy to GPU
     order_x_ = createDeviceTensor(order_x_cpu.size(), 1, dtype_);
     order_y_ = createDeviceTensor(order_y_cpu.size(), 1, dtype_);
-    CHECK_CUDA(cudaMemcpy(order_x_, order_x_cpu.data(), 
-                          order_x_cpu.size() * sizeof(int), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(order_y_, order_y_cpu.data(), 
-                          order_y_cpu.size() * sizeof(int), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(
+        order_x_, order_x_cpu.data(), order_x_cpu.size() * sizeof(int), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(
+        order_y_, order_y_cpu.data(), order_y_cpu.size() * sizeof(int), cudaMemcpyHostToDevice));
 
     // Initialize K vector grid
     computeKvectors();
 }
 
-void RCWA::initExpConstant() {
+void RCWA::initExpConstant()
+{
     // Hard-coded exponential approximation constants
     double exp_constant_cpu[5][5] = {
         {0, -0.10036558103014462001, -0.00802924648241156960, -0.00089213849804572995, 0},
-        {0, 0.39784974949964507614, 1.36783778460411719922, 0.49828962252538267755, -0.00063789819459472330},
-        {-10.9676396052962062593, 1.68015813878906197182, 0.05717798464788655127, -0.00698210122488052084, 0.00003349750170860705},
-        {-0.0904316832390810561, -0.06764045190713819075, 0.06759613017704596460, 0.02955525704293155274, -0.00001391802575160607},
-        {0, 0, -0.09233646193671185927, -0.01693649390020817171, -0.00001400867981820361}
-    };
+        {0,
+         0.39784974949964507614,
+         1.36783778460411719922,
+         0.49828962252538267755,
+         -0.00063789819459472330},
+        {-10.9676396052962062593,
+         1.68015813878906197182,
+         0.05717798464788655127,
+         -0.00698210122488052084,
+         0.00003349750170860705},
+        {-0.0904316832390810561,
+         -0.06764045190713819075,
+         0.06759613017704596460,
+         0.02955525704293155274,
+         -0.00001391802575160607},
+        {0, 0, -0.09233646193671185927, -0.01693649390020817171, -0.00001400867981820361}};
 
     // Allocate and copy to GPU
     exp_constant_ = createDeviceTensor(5, 5, dtype_);
-    CHECK_CUDA(cudaMemcpy(exp_constant_, exp_constant_cpu, 
-                          5 * 5 * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(
+        exp_constant_, exp_constant_cpu, 5 * 5 * sizeof(double), cudaMemcpyHostToDevice));
 }
 
 // -------------------------- Layer Management --------------------------
-void RCWA::addInputLayer(double eps) {
+void RCWA::addInputLayer(double eps)
+{
     if (eps_in_) freeDeviceTensor(eps_in_);
     eps_in_ = createDeviceScalar(eps);
     Sin_.clear();
     need_update_Sin_ = true;
 }
 
-void RCWA::addOutputLayer(double eps) {
+void RCWA::addOutputLayer(double eps)
+{
     if (eps_out_) freeDeviceTensor(eps_out_);
     eps_out_ = createDeviceScalar(eps);
     Sout_.clear();
     need_update_Sout_ = true;
 }
 
-void RCWA::addLayer(double thickness, const void* eps) {
+void RCWA::addLayer(double thickness, const void* eps)
+{
     bool is_homogeneous = (eps == nullptr);
-    
+
     void* E = nullptr;
-    if (is_homogeneous) {
+    if (is_homogeneous)
+    {
         // Homogeneous medium: identity matrix * eps
         E = createDeviceTensor(order_N_, order_N_, dtype_);
         fillEye(E, order_N_, dtype_);
         E = scaleTensor(E, order_N_, order_N_, complexf(thickness), dtype_);
-    } else {
+    }
+    else
+    {
         // Inhomogeneous medium: permittivity convolution
         E = materialConv(static_cast<const complexf*>(eps));
     }
@@ -144,26 +169,36 @@ void RCWA::addLayer(double thickness, const void* eps) {
     layer_N_++;
 
     // Compute layer exponential matrix
-    if (is_homogeneous) {
+    if (is_homogeneous)
+    {
         double eps_val = (eps == nullptr) ? 1.0 : *static_cast<const double*>(eps);
         computeLayerExpHomogenous(createDeviceScalar(eps_val), thickness);
-    } else {
+    }
+    else
+    {
         computeLayerExp();
     }
 }
 
 // -------------------------- Incident Angle Configuration --------------------------
-void RCWA::setIncidentAngle(double inc_ang, double azi_ang, const std::string& angle_layer) {
+void RCWA::setIncidentAngle(double inc_ang, double azi_ang, const std::string& angle_layer)
+{
     inc_ang_ = inc_ang;
     azi_ang_ = azi_ang;
-    
+
     // Validate angle layer
-    if (angle_layer == "input" || angle_layer == "in" || angle_layer == "i") {
+    if (angle_layer == "input" || angle_layer == "in" || angle_layer == "i")
+    {
         angle_layer_ = "input";
-    } else if (angle_layer == "output" || angle_layer == "out" || angle_layer == "o") {
+    }
+    else if (angle_layer == "output" || angle_layer == "out" || angle_layer == "o")
+    {
         angle_layer_ = "output";
-    } else {
-        throw std::runtime_error("Invalid angle layer: " + angle_layer + " (using 'input' as default)");
+    }
+    else
+    {
+        throw std::runtime_error("Invalid angle layer: " + angle_layer +
+                                 " (using 'input' as default)");
     }
 
     // Recompute K vectors with new angles
@@ -171,21 +206,29 @@ void RCWA::setIncidentAngle(double inc_ang, double azi_ang, const std::string& a
 }
 
 // -------------------------- Source Configuration --------------------------
-void RCWA::sourcePlanewave(const std::vector<complexf>& amplitude, const std::string& direction) {
+void RCWA::sourcePlanewave(const std::vector<complexf>& amplitude, const std::string& direction)
+{
     std::vector<std::vector<int>> orders = {{0, 0}};
     sourceFourier(amplitude, orders, direction);
 }
 
-void RCWA::sourceFourier(const std::vector<complexf>& amplitude, 
+void RCWA::sourceFourier(const std::vector<complexf>& amplitude,
                          const std::vector<std::vector<int>>& orders,
-                         const std::string& direction) {
+                         const std::string& direction)
+{
     // Validate direction
-    if (direction == "forward" || direction == "f") {
+    if (direction == "forward" || direction == "f")
+    {
         source_direction_ = "forward";
-    } else if (direction == "backward" || direction == "b") {
+    }
+    else if (direction == "backward" || direction == "b")
+    {
         source_direction_ = "backward";
-    } else {
-        throw std::runtime_error("Invalid source direction: " + direction + " (using 'forward' as default)");
+    }
+    else
+    {
+        throw std::runtime_error("Invalid source direction: " + direction +
+                                 " (using 'forward' as default)");
     }
 
     // Match order indices
@@ -198,28 +241,37 @@ void RCWA::sourceFourier(const std::vector<complexf>& amplitude,
 
     // Set amplitudes
     size_t elem_size = (dtype_ == DType::COMPLEX64) ? sizeof(complexf) : sizeof(complexd);
-    for (size_t i = 0; i < amplitude.size() && i < order_indices.size(); ++i) {
+    for (size_t i = 0; i < amplitude.size() && i < order_indices.size(); ++i)
+    {
         // Set Ex amplitude
         CHECK_CUDA(cudaMemcpy(static_cast<char*>(E_i_) + order_indices[i] * elem_size,
-                              &amplitude[i], elem_size, cudaMemcpyHostToDevice));
+                              &amplitude[i],
+                              elem_size,
+                              cudaMemcpyHostToDevice));
         // Set Ey amplitude
         CHECK_CUDA(cudaMemcpy(static_cast<char*>(E_i_) + (order_indices[i] + order_N_) * elem_size,
-                              &amplitude[i], elem_size, cudaMemcpyHostToDevice));
+                              &amplitude[i],
+                              elem_size,
+                              cudaMemcpyHostToDevice));
     }
 }
 
 // -------------------------- Solver --------------------------
-void RCWA::solveGlobalSmatrix() {
+void RCWA::solveGlobalSmatrix()
+{
     int N = 2 * order_N_;
     void *S11, *S21, *S12, *S22;
 
     // Initialize with first layer or identity matrix
-    if (layer_N_ > 0) {
+    if (layer_N_ > 0)
+    {
         S11 = copyTensor(layer_S11_[0], N, N, dtype_);
         S21 = copyTensor(layer_S21_[0], N, N, dtype_);
         S12 = copyTensor(layer_S12_[0], N, N, dtype_);
         S22 = copyTensor(layer_S22_[0], N, N, dtype_);
-    } else {
+    }
+    else
+    {
         // Empty layer: identity + zero matrices
         S11 = createDeviceTensor(N, N, dtype_);
         S21 = createDeviceTensor(N, N, dtype_);
@@ -232,10 +284,11 @@ void RCWA::solveGlobalSmatrix() {
     }
 
     // Cascade layers
-    for (int i = 0; i < layer_N_ - 1; ++i) {
-        auto [new_S11, new_S21, new_S12, new_S22] = 
+    for (int i = 0; i < layer_N_ - 1; ++i)
+    {
+        auto [new_S11, new_S21, new_S12, new_S22] =
             rsProd({S11, S21, S12, S22},
-                   {layer_S11_[i+1], layer_S21_[i+1], layer_S12_[i+1], layer_S22_[i+1]});
+                   {layer_S11_[i + 1], layer_S21_[i + 1], layer_S12_[i + 1], layer_S22_[i + 1]});
 
         // Release old matrices
         freeDeviceTensor(S11);
@@ -250,11 +303,11 @@ void RCWA::solveGlobalSmatrix() {
     }
 
     // Input layer coupling
-    if (!Sin_.empty() && need_update_Sin_) {
+    if (!Sin_.empty() && need_update_Sin_)
+    {
         computeInputLayerSmatrix();
-        auto [new_S11, new_S21, new_S12, new_S22] = 
-            rsProd(Sin_, {S11, S21, S12, S22});
-        
+        auto [new_S11, new_S21, new_S12, new_S22] = rsProd(Sin_, {S11, S21, S12, S22});
+
         freeDeviceTensor(S11);
         freeDeviceTensor(S21);
         freeDeviceTensor(S12);
@@ -268,11 +321,11 @@ void RCWA::solveGlobalSmatrix() {
     }
 
     // Output layer coupling
-    if (!Sout_.empty() && need_update_Sout_) {
+    if (!Sout_.empty() && need_update_Sout_)
+    {
         computeOutputLayerSmatrix();
-        auto [new_S11, new_S21, new_S12, new_S22] = 
-            rsProd({S11, S21, S12, S22}, Sout_);
-        
+        auto [new_S11, new_S21, new_S12, new_S22] = rsProd({S11, S21, S12, S22}, Sout_);
+
         freeDeviceTensor(S11);
         freeDeviceTensor(S21);
         freeDeviceTensor(S12);
@@ -290,33 +343,38 @@ void RCWA::solveGlobalSmatrix() {
 }
 
 // -------------------------- Field Calculation --------------------------
-std::tuple<complexf*, complexf*, complexf*> RCWA::fieldXY(const float* x_axis, const float* y_axis, 
-                                                          int x_N, int y_N) {
+std::tuple<complexf*, complexf*, complexf*>
+RCWA::fieldXY(const float* x_axis, const float* y_axis, int x_N, int y_N)
+{
     // Validate input arrays
-    if (!x_axis || !y_axis || x_N <= 0 || y_N <= 0) {
+    if (!x_axis || !y_axis || x_N <= 0 || y_N <= 0)
+    {
         throw std::runtime_error("Invalid sampling coordinates or dimensions");
     }
 
     // Get permittivity of reference layer
     void* eps = (angle_layer_ == "input") ? eps_in_ : eps_out_;
-    
+
     // Calculate Kz_norm
     void* kz_norm = computeKzNorm(eps);
 
     // Select port based on angle layer and source direction
     int port = 0;
-    if (angle_layer_ == "input") {
+    if (angle_layer_ == "input")
+    {
         port = (source_direction_ == "forward") ? 1 : 3;
-    } else {
+    }
+    else
+    {
         port = (source_direction_ == "forward") ? 0 : 2;
     }
 
     // Calculate Exy = S[port] * E_i
-    void* Exy = matMul(S_[port], E_i_, 2*order_N_, 2*order_N_, 1, dtype_);
+    void* Exy = matMul(S_[port], E_i_, 2 * order_N_, 2 * order_N_, 1, dtype_);
 
     // Split Ex/Ey/Ez
     void* Ex_mn = sliceTensor(Exy, 0, order_N_, 0, 1, dtype_);
-    void* Ey_mn = sliceTensor(Exy, order_N_, 2*order_N_, 0, 1, dtype_);
+    void* Ey_mn = sliceTensor(Exy, order_N_, 2 * order_N_, 0, 1, dtype_);
     void* Ez_mn = nullptr; // To be implemented: compute Ez from Ex/Ey/Kz
 
     // Release temporary memory
@@ -324,30 +382,36 @@ std::tuple<complexf*, complexf*, complexf*> RCWA::fieldXY(const float* x_axis, c
     freeDeviceTensor(kz_norm);
 
     // Return field components (simplified - full implementation requires spatial expansion)
-    return {static_cast<complexf*>(Ex_mn), static_cast<complexf*>(Ey_mn), static_cast<complexf*>(Ez_mn)};
+    return {static_cast<complexf*>(Ex_mn),
+            static_cast<complexf*>(Ey_mn),
+            static_cast<complexf*>(Ez_mn)};
 }
 
-std::tuple<complexf*, complexf*, complexf*> RCWA::floquetMode() {
+std::tuple<complexf*, complexf*, complexf*> RCWA::floquetMode()
+{
     // Get permittivity of reference layer
     void* eps = (angle_layer_ == "input") ? eps_in_ : eps_out_;
-    
+
     // Calculate Kz_norm
     void* kz_norm = computeKzNorm(eps);
 
     // Select port
     int port = 0;
-    if (angle_layer_ == "input") {
+    if (angle_layer_ == "input")
+    {
         port = (source_direction_ == "forward") ? 1 : 3;
-    } else {
+    }
+    else
+    {
         port = (source_direction_ == "forward") ? 0 : 2;
     }
 
     // Calculate Exy = S[port] * E_i
-    void* Exy = matMul(S_[port], E_i_, 2*order_N_, 2*order_N_, 1, dtype_);
+    void* Exy = matMul(S_[port], E_i_, 2 * order_N_, 2 * order_N_, 1, dtype_);
 
     // Split and reshape field components
     void* Ex_mn = sliceTensor(Exy, 0, order_N_, 0, 1, dtype_);
-    void* Ey_mn = sliceTensor(Exy, order_N_, 2*order_N_, 0, 1, dtype_);
+    void* Ey_mn = sliceTensor(Exy, order_N_, 2 * order_N_, 0, 1, dtype_);
     void* Ez_mn = nullptr; // To be implemented
 
     Ex_mn = reshapeTensor(Ex_mn, order_N_, 1, order_x_N_, order_y_N_, dtype_);
@@ -357,16 +421,22 @@ std::tuple<complexf*, complexf*, complexf*> RCWA::floquetMode() {
     freeDeviceTensor(Exy);
     freeDeviceTensor(kz_norm);
 
-    return {static_cast<complexf*>(Ex_mn), static_cast<complexf*>(Ey_mn), static_cast<complexf*>(Ez_mn)};
+    return {static_cast<complexf*>(Ex_mn),
+            static_cast<complexf*>(Ey_mn),
+            static_cast<complexf*>(Ez_mn)};
 }
 
 // -------------------------- Core Calculation Functions --------------------------
-void RCWA::computeKvectors() {
+void RCWA::computeKvectors()
+{
     // Get permittivity of reference layer
     double eps_val = 1.0;
-    if (angle_layer_ == "input") {
+    if (angle_layer_ == "input")
+    {
         CHECK_CUDA(cudaMemcpy(&eps_val, eps_in_, sizeof(double), cudaMemcpyDeviceToHost));
-    } else {
+    }
+    else
+    {
         CHECK_CUDA(cudaMemcpy(&eps_val, eps_out_, sizeof(double), cudaMemcpyDeviceToHost));
     }
 
@@ -382,8 +452,10 @@ void RCWA::computeKvectors() {
 
     // Generate Kx/Ky norm vectors (flattened grid)
     std::vector<double> Kx_norm_dn_cpu, Ky_norm_dn_cpu;
-    for (int i = 0; i < order_x_N_; ++i) {
-        for (int j = 0; j < order_y_N_; ++j) {
+    for (int i = 0; i < order_x_N_; ++i)
+    {
+        for (int j = 0; j < order_y_N_; ++j)
+        {
             Kx_norm_dn_cpu.push_back(kx0_norm + order_x_cpu[i] * Gx_norm_);
             Ky_norm_dn_cpu.push_back(ky0_norm + order_y_cpu[j] * Gy_norm_);
         }
@@ -394,10 +466,10 @@ void RCWA::computeKvectors() {
     if (Ky_norm_dn_) freeDeviceTensor(Ky_norm_dn_);
     Kx_norm_dn_ = createDeviceTensor(order_N_, 1, dtype_);
     Ky_norm_dn_ = createDeviceTensor(order_N_, 1, dtype_);
-    CHECK_CUDA(cudaMemcpy(Kx_norm_dn_, Kx_norm_dn_cpu.data(), 
-                          order_N_ * sizeof(double), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(Ky_norm_dn_, Ky_norm_dn_cpu.data(), 
-                          order_N_ * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(
+        Kx_norm_dn_, Kx_norm_dn_cpu.data(), order_N_ * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(
+        Ky_norm_dn_, Ky_norm_dn_cpu.data(), order_N_ * sizeof(double), cudaMemcpyHostToDevice));
 
     // Create diagonal matrices for Kx/Ky
     if (Kx_norm_) freeDeviceTensor(Kx_norm_);
@@ -418,19 +490,23 @@ void RCWA::computeKvectors() {
     delete[] order_y_cpu;
 }
 
-void* RCWA::materialConv(const complexf* material) {
+void* RCWA::materialConv(const complexf* material)
+{
     int mat_H = order_x_N_;
     int mat_W = order_y_N_;
     int mat_size = mat_H * mat_W;
 
     // Allocate GPU memory for material
     void* d_material = createDeviceTensor(mat_H, mat_W, dtype_);
-    CHECK_CUDA(cudaMemcpy(d_material, material, mat_size * sizeof(complexf), cudaMemcpyHostToDevice));
+    CHECK_CUDA(
+        cudaMemcpy(d_material, material, mat_size * sizeof(complexf), cudaMemcpyHostToDevice));
 
     // FFT2 (forward)
     void* d_material_fft = createDeviceTensor(mat_H, mat_W, dtype_);
-    CHECK_CUFFT(cufftExecC2C(cufft_plan_, static_cast<cufftComplex*>(d_material),
-                             static_cast<cufftComplex*>(d_material_fft), CUFFT_FORWARD));
+    CHECK_CUFFT(cufftExecC2C(cufft_plan_,
+                             static_cast<cufftComplex*>(d_material),
+                             static_cast<cufftComplex*>(d_material_fft),
+                             CUFFT_FORWARD));
 
     // Scale FFT result
     d_material_fft = scaleTensor(d_material_fft, mat_H, mat_W, complexf(1.0 / mat_size), dtype_);
@@ -438,7 +514,8 @@ void* RCWA::materialConv(const complexf* material) {
     // Create convolution matrix (simplified - full implementation requires index matching)
     void* eps_conv = createDeviceTensor(order_N_, order_N_, dtype_);
     fillZero(eps_conv, order_N_, order_N_, dtype_);
-    CHECK_CUDA(cudaMemcpy(eps_conv, d_material_fft, mat_size * sizeof(complexf), cudaMemcpyDeviceToDevice));
+    CHECK_CUDA(cudaMemcpy(
+        eps_conv, d_material_fft, mat_size * sizeof(complexf), cudaMemcpyDeviceToDevice));
 
     // Cleanup
     freeDeviceTensor(d_material);
@@ -447,8 +524,9 @@ void* RCWA::materialConv(const complexf* material) {
     return eps_conv;
 }
 
-std::tuple<void*, void*, void*, void*> RCWA::rsProd(const std::vector<void*>& Sm, 
-                                                    const std::vector<void*>& Sn) {
+std::tuple<void*, void*, void*, void*> RCWA::rsProd(const std::vector<void*>& Sm,
+                                                    const std::vector<void*>& Sn)
+{
     int N = 2 * order_N_;
     void *S11, *S21, *S12, *S22;
 
@@ -458,7 +536,8 @@ std::tuple<void*, void*, void*, void*> RCWA::rsProd(const std::vector<void*>& Sm
     fillEye(I, N, dtype_);
     fillZero(O, N, N, dtype_);
 
-    try {
+    try
+    {
         // T1 = I - Sm[2] * Sn[1]
         void* Sm2_Sn1 = matMul(Sm[2], Sn[1], N, N, N, dtype_);
         void* T1 = subTensor(I, Sm2_Sn1, N, N, dtype_);
@@ -473,8 +552,28 @@ std::tuple<void*, void*, void*, void*> RCWA::rsProd(const std::vector<void*>& Sm
 
         // Calculate S-matrix components
         S11 = matMul(Sn[0], matMul(T1_inv, Sm[0], N, N, N, dtype_), N, N, N, dtype_);
-        S21 = addTensor(Sm[1], matMul(Sm[3], matMul(T2_inv, matMul(Sn[1], Sm[0], N, N, N, dtype_), N, N, N, dtype_), N, N, N, dtype_), N, N, dtype_);
-        S12 = addTensor(Sn[2], matMul(Sn[0], matMul(T1_inv, matMul(Sm[2], Sn[3], N, N, N, dtype_), N, N, N, dtype_), N, N, N, dtype_), N, N, dtype_);
+        S21 =
+            addTensor(Sm[1],
+                      matMul(Sm[3],
+                             matMul(T2_inv, matMul(Sn[1], Sm[0], N, N, N, dtype_), N, N, N, dtype_),
+                             N,
+                             N,
+                             N,
+                             dtype_),
+                      N,
+                      N,
+                      dtype_);
+        S12 =
+            addTensor(Sn[2],
+                      matMul(Sn[0],
+                             matMul(T1_inv, matMul(Sm[2], Sn[3], N, N, N, dtype_), N, N, N, dtype_),
+                             N,
+                             N,
+                             N,
+                             dtype_),
+                      N,
+                      N,
+                      dtype_);
         S22 = matMul(Sm[3], matMul(T2_inv, Sn[3], N, N, N, dtype_), N, N, N, dtype_);
 
         // Cleanup
@@ -484,7 +583,9 @@ std::tuple<void*, void*, void*, void*> RCWA::rsProd(const std::vector<void*>& Sm
         freeDeviceTensor(T2);
         freeDeviceTensor(T1_inv);
         freeDeviceTensor(T2_inv);
-    } catch (const std::runtime_error& e) {
+    }
+    catch (const std::runtime_error& e)
+    {
         // Fallback for singular matrices
         S11 = matMul(Sn[0], Sm[0], N, N, N, dtype_);
         S21 = copyTensor(Sm[1], N, N, dtype_);
@@ -499,20 +600,24 @@ std::tuple<void*, void*, void*, void*> RCWA::rsProd(const std::vector<void*>& Sm
     return {S11, S21, S12, S22};
 }
 
-void RCWA::computeLayerExp() {
-    // -------------------------- Step 1: Threshold Check for Repeated Squaring --------------------------
+void RCWA::computeLayerExp()
+{
+    // -------------------------- Step 1: Threshold Check for Repeated Squaring
+    // --------------------------
     double Lx = L_[0], Ly = L_[1];
     int order_x = order_[0], order_y = order_[1];
     double thickness_thres = 2.0 * std::min(Lx / order_x, Ly / order_y);
     double current_thickness;
-    
+
     // Get current layer thickness (GPU → CPU)
-    CHECK_CUDA(cudaMemcpy(&current_thickness, thickness_.back(), sizeof(double), cudaMemcpyDeviceToHost));
-    
+    CHECK_CUDA(
+        cudaMemcpy(&current_thickness, thickness_.back(), sizeof(double), cudaMemcpyDeviceToHost));
+
     int n_repeatedSquaring = 0;
     double d_block = current_thickness;
-    
-    if (current_thickness > thickness_thres) {
+
+    if (current_thickness > thickness_thres)
+    {
         double log2_val = log2(current_thickness / thickness_thres);
         n_repeatedSquaring = static_cast<int>(ceil(log2_val));
         d_block = current_thickness / pow(2.0, n_repeatedSquaring);
@@ -543,16 +648,19 @@ void RCWA::computeLayerExp() {
     // KxKy = Kx_norm ⊙ Ky_norm (element-wise product)
     void* KxKy = copyTensor(Kx_norm_dn_, N, 1, dtype_);
     std::vector<double> Kx_norm_cpu(N), Ky_norm_cpu(N);
-    CHECK_CUDA(cudaMemcpy(Kx_norm_cpu.data(), Kx_norm_dn_, N * sizeof(double), cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaMemcpy(Ky_norm_cpu.data(), Ky_norm_dn_, N * sizeof(double), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(
+        cudaMemcpy(Kx_norm_cpu.data(), Kx_norm_dn_, N * sizeof(double), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(
+        cudaMemcpy(Ky_norm_cpu.data(), Ky_norm_dn_, N * sizeof(double), cudaMemcpyDeviceToHost));
     for (int i = 0; i < N; ++i) KxKy_cpu[i] = Kx_norm_cpu[i] * Ky_norm_cpu[i];
     CHECK_CUDA(cudaMemcpy(KxKy, KxKy_cpu.data(), N * sizeof(double), cudaMemcpyDeviceToHost));
 
     // -------------------------- Step 3: Solve E⁻¹Kx/E⁻¹Ky --------------------------
     void *EiKx = nullptr, *EiKy = nullptr;
     void *KxEiKy = nullptr, *KyEiKx = nullptr, *KxEiKx = nullptr, *KyEiKy = nullptr;
-    
-    try {
+
+    try
+    {
         // EiKx = E⁻¹ * Kx_norm (solve E*X = Kx_norm)
         EiKx = matrixSolve(E, Kx_norm_dn_, N, dtype_);
         // EiKy = E⁻¹ * Ky_norm (solve E*X = Ky_norm)
@@ -566,13 +674,15 @@ void RCWA::computeLayerExp() {
         KxEiKx = matMul(Kx_norm_, EiKx, N, N, 1, dtype_);
         // KyEiKy = Ky_norm @ EiKy
         KyEiKy = matMul(Ky_norm_, EiKy, N, N, 1, dtype_);
-    } catch (const std::runtime_error& e) {
+    }
+    catch (const std::runtime_error& e)
+    {
         // Fallback to element-wise products
         KxEiKy = copyTensor(KxKy, N, 1, dtype_);
         KyEiKx = copyTensor(KxKy, N, 1, dtype_);
         KxEiKx = copyTensor(KxKx, N, 1, dtype_);
         KyEiKy = copyTensor(KyKy, N, 1, dtype_);
-        
+
         if (EiKx) freeDeviceTensor(EiKx);
         if (EiKy) freeDeviceTensor(EiKy);
     }
@@ -587,12 +697,12 @@ void RCWA::computeLayerExp() {
     // Part 1: vstack((KxEiKy, KyEiKy - I))
     void* KyEiKy_minus_I = subTensor(KyEiKy, I, N, N, dtype_);
     void* P_top = vstackTensor(KxEiKy, KyEiKy_minus_I, N, N, N, dtype_);
-    
+
     // Part 2: vstack((I - KxEiKx, -KyEiKx))
     void* I_minus_KxEiKx = subTensor(I, KxEiKx, N, N, dtype_);
     void* neg_KyEiKx = scaleTensor(KyEiKx, N, N, complexf(-1.0), dtype_);
     void* P_bot = vstackTensor(I_minus_KxEiKx, neg_KyEiKx, N, N, N, dtype_);
-    
+
     // P = hstack(P_top, P_bot)
     void* P = hstackTensor(P_top, P_bot, N2, N, N, dtype_);
 
@@ -601,11 +711,11 @@ void RCWA::computeLayerExp() {
     void* neg_KxKy = scaleTensor(KxKy, N, 1, complexf(-1.0), dtype_);
     void* E_minus_KyKy = subTensor(E, KyKy, N, N, dtype_);
     void* Q_top = vstackTensor(neg_KxKy, E_minus_KyKy, N, N, N, dtype_);
-    
+
     // Part 2: vstack((KxKx - E, KxKy))
     void* KxKx_minus_E = subTensor(KxKx, E, N, N, dtype_);
     void* Q_bot = vstackTensor(KxKx_minus_E, KxKy, N, N, N, dtype_);
-    
+
     // Q = hstack(Q_top, Q_bot)
     void* Q = hstackTensor(Q_top, Q_bot, N2, N, N, dtype_);
 
@@ -640,12 +750,14 @@ void RCWA::computeLayerExp() {
     freeDeviceTensor(P);
     freeDeviceTensor(Q);
 
-    // -------------------------- Step 9: Build B Matrices (Using exp_constant_) --------------------------
+    // -------------------------- Step 9: Build B Matrices (Using exp_constant_)
+    // --------------------------
     std::vector<void*> B_11(5), B_12(5), B_21(5), B_22(5);
     double exp_constant_cpu[5][5];
-    CHECK_CUDA(cudaMemcpy(exp_constant_cpu, exp_constant_, 5*5*sizeof(double), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(
+        exp_constant_cpu, exp_constant_, 5 * 5 * sizeof(double), cudaMemcpyDeviceToHost));
 
-    for (int i = 0; i < 5; ++i) 
+    for (int i = 0; i < 5; ++i)
     {
         // B_11[i] = exp_constant[i,0]*I2 + exp_constant[i,2]*A2_11 + exp_constant[i,4]*A6_11
         B_11[i] = scaleTensor(I2, N2, N2, complexf(exp_constant_cpu[i][0]), dtype_);
@@ -779,7 +891,8 @@ void RCWA::computeLayerExp() {
     freeDeviceTensor(A9_12);
     freeDeviceTensor(A9_21);
     freeDeviceTensor(A9_22);
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 5; ++i)
+    {
         freeDeviceTensor(B_11[i]);
         freeDeviceTensor(B_12[i]);
         freeDeviceTensor(B_21[i]);
@@ -787,7 +900,8 @@ void RCWA::computeLayerExp() {
     }
 
     // -------------------------- Step 12: Repeated Squaring (m times) --------------------------
-    for (int k = 0; k < m; ++k) {
+    for (int k = 0; k < m; ++k)
+    {
         // tmp11 = expA_11@expA_11 + expA_12@expA_21
         void* tmp11 = matMul(expA_11, expA_11, N2, N2, N2, dtype_);
         void* tmp = matMul(expA_12, expA_21, N2, N2, N2, dtype_);
@@ -864,8 +978,10 @@ void RCWA::computeLayerExp() {
     freeDeviceTensor(T22);
     freeDeviceTensor(T21);
 
-    // -------------------------- Step 14: Repeated Squaring (n_repeatedSquaring times) --------------------------
-    for (int i = 0; i < n_repeatedSquaring; ++i) {
+    // -------------------------- Step 14: Repeated Squaring (n_repeatedSquaring times)
+    // --------------------------
+    for (int i = 0; i < n_repeatedSquaring; ++i)
+    {
         // R = I2 - S12 @ S12
         void* S12_S12 = matMul(S12, S12, N2, N2, N2, dtype_);
         void* R = subTensor(I2, S12_S12, N2, N2, dtype_);
@@ -928,30 +1044,34 @@ void RCWA::computeLayerExp() {
     CHECK_CUDA(cudaDeviceReset()); // Optional: clears device cache
 }
 
-void RCWA::computeLayerExpHomogenous(void* eps, double thickness) {
+void RCWA::computeLayerExpHomogenous(void* eps, double thickness)
+{
     auto [V, kz_norm] = getV(thickness); // eps value passed as thickness for demo
-    
+
     // Create kz_norm vector (duplicated for 2N)
-    void* kz_norm_2N = createDeviceTensor(2*order_N_, 1, dtype_);
-    CHECK_CUDA(cudaMemcpy(kz_norm_2N, kz_norm, order_N_ * sizeof(double), cudaMemcpyDeviceToDevice));
+    void* kz_norm_2N = createDeviceTensor(2 * order_N_, 1, dtype_);
+    CHECK_CUDA(
+        cudaMemcpy(kz_norm_2N, kz_norm, order_N_ * sizeof(double), cudaMemcpyDeviceToDevice));
     CHECK_CUDA(cudaMemcpy(static_cast<char*>(kz_norm_2N) + order_N_ * sizeof(double),
-                          kz_norm, order_N_ * sizeof(double), cudaMemcpyDeviceToDevice));
+                          kz_norm,
+                          order_N_ * sizeof(double),
+                          cudaMemcpyDeviceToDevice));
 
     // Phase matrix: diag(exp(1j*omega*kz*thickness))
-    void* phase = createDeviceTensor(2*order_N_, 2*order_N_, dtype_);
-    fillEye(phase, 2*order_N_, dtype_);
+    void* phase = createDeviceTensor(2 * order_N_, 2 * order_N_, dtype_);
+    fillEye(phase, 2 * order_N_, dtype_);
     // To be implemented: apply phase factor
 
     // Calculate S-matrix (simplified)
-    void* S11 = createDeviceTensor(2*order_N_, 2*order_N_, dtype_);
-    void* S12 = createDeviceTensor(2*order_N_, 2*order_N_, dtype_);
-    fillEye(S11, 2*order_N_, dtype_);
-    fillZero(S12, 2*order_N_, 2*order_N_, dtype_);
+    void* S11 = createDeviceTensor(2 * order_N_, 2 * order_N_, dtype_);
+    void* S12 = createDeviceTensor(2 * order_N_, 2 * order_N_, dtype_);
+    fillEye(S11, 2 * order_N_, dtype_);
+    fillZero(S12, 2 * order_N_, 2 * order_N_, dtype_);
 
     layer_S11_.push_back(S11);
     layer_S12_.push_back(S12);
-    layer_S21_.push_back(copyTensor(S12, 2*order_N_, 2*order_N_, dtype_));
-    layer_S22_.push_back(copyTensor(S11, 2*order_N_, 2*order_N_, dtype_));
+    layer_S21_.push_back(copyTensor(S12, 2 * order_N_, 2 * order_N_, dtype_));
+    layer_S22_.push_back(copyTensor(S11, 2 * order_N_, 2 * order_N_, dtype_));
 
     // Cleanup
     freeDeviceTensor(V);
@@ -960,25 +1080,27 @@ void RCWA::computeLayerExpHomogenous(void* eps, double thickness) {
     freeDeviceTensor(phase);
 }
 
-std::tuple<void*, void*> RCWA::getV(double eps) {
+std::tuple<void*, void*> RCWA::getV(double eps)
+{
     int N = order_N_;
     void* kz_norm = computeKzNorm(createDeviceScalar(eps));
 
     // Create V matrix (simplified - full implementation requires E→H transformation)
-    void* V = createDeviceTensor(2*N, 2*N, dtype_);
-    fillEye(V, 2*N, dtype_);
+    void* V = createDeviceTensor(2 * N, 2 * N, dtype_);
+    fillEye(V, 2 * N, dtype_);
 
     return {V, kz_norm};
 }
 
-void RCWA::computeInputLayerSmatrix() {
+void RCWA::computeInputLayerSmatrix()
+{
     // Simplified input layer S-matrix calculation
     int N = 2 * order_N_;
     void* S11 = createDeviceTensor(N, N, dtype_);
     void* S12 = createDeviceTensor(N, N, dtype_);
     void* S21 = createDeviceTensor(N, N, dtype_);
     void* S22 = createDeviceTensor(N, N, dtype_);
-    
+
     fillEye(S11, N, dtype_);
     fillEye(S22, N, dtype_);
     fillZero(S12, N, N, dtype_);
@@ -987,14 +1109,15 @@ void RCWA::computeInputLayerSmatrix() {
     Sin_ = {S11, S21, S12, S22};
 }
 
-void RCWA::computeOutputLayerSmatrix() {
+void RCWA::computeOutputLayerSmatrix()
+{
     // Simplified output layer S-matrix calculation
     int N = 2 * order_N_;
     void* S11 = createDeviceTensor(N, N, dtype_);
     void* S12 = createDeviceTensor(N, N, dtype_);
     void* S21 = createDeviceTensor(N, N, dtype_);
     void* S22 = createDeviceTensor(N, N, dtype_);
-    
+
     fillEye(S11, N, dtype_);
     fillEye(S22, N, dtype_);
     fillZero(S12, N, N, dtype_);
@@ -1004,7 +1127,8 @@ void RCWA::computeOutputLayerSmatrix() {
 }
 
 // -------------------------- CUDA Utility Functions --------------------------
-void* RCWA::createDeviceTensor(int rows, int cols, DType dtype) {
+void* RCWA::createDeviceTensor(int rows, int cols, DType dtype)
+{
     size_t elem_size = (dtype == DType::COMPLEX64) ? sizeof(complexf) : sizeof(complexd);
     void* ptr = nullptr;
     CHECK_CUDA(cudaMalloc(&ptr, rows * cols * elem_size));
@@ -1012,50 +1136,67 @@ void* RCWA::createDeviceTensor(int rows, int cols, DType dtype) {
     return ptr;
 }
 
-void* RCWA::createDeviceScalar(double val) {
+void* RCWA::createDeviceScalar(double val)
+{
     void* ptr = createDeviceTensor(1, 1, dtype_);
     CHECK_CUDA(cudaMemcpy(ptr, &val, sizeof(double), cudaMemcpyHostToDevice));
     return ptr;
 }
 
-void RCWA::fillEye(void* ptr, int N, DType dtype) {
+void RCWA::fillEye(void* ptr, int N, DType dtype)
+{
     fillZero(ptr, N, N, dtype);
     size_t elem_size = (dtype == DType::COMPLEX64) ? sizeof(complexf) : sizeof(complexd);
-    
-    for (int i = 0; i < N; ++i) {
+
+    for (int i = 0; i < N; ++i)
+    {
         complexf val(1.0, 0.0);
         CHECK_CUDA(cudaMemcpy(static_cast<char*>(ptr) + (i * N + i) * elem_size,
-                              &val, elem_size, cudaMemcpyHostToDevice));
+                              &val,
+                              elem_size,
+                              cudaMemcpyHostToDevice));
     }
 }
 
-void RCWA::fillZero(void* ptr, int rows, int cols, DType dtype) {
+void RCWA::fillZero(void* ptr, int rows, int cols, DType dtype)
+{
     size_t elem_size = (dtype == DType::COMPLEX64) ? sizeof(complexf) : sizeof(complexd);
     CHECK_CUDA(cudaMemset(ptr, 0, rows * cols * elem_size));
 }
 
-void* RCWA::matrixInverse(void* A, int N, DType dtype) {
+void* RCWA::matrixInverse(void* A, int N, DType dtype)
+{
     void* A_copy = copyTensor(A, N, N, dtype);
     int* ipiv = new int[N];
     int info = 0;
 
-    if (dtype == DType::COMPLEX64) {
+    if (dtype == DType::COMPLEX64)
+    {
         // Single-precision complex inversion (to be implemented with cuSOLVER Zgetrf/Zgetri)
         throw std::runtime_error("Complex64 matrix inversion not implemented");
-    } else {
-        CHECK_CUSOLVER(cusolverDnDgetrf(cusolver_handle_, N, N,
-                                        static_cast<double*>(A_copy), N, ipiv, &info));
-        if (info != 0) throw std::runtime_error("LU decomposition failed (info=" + std::to_string(info) + ")");
+    }
+    else
+    {
+        CHECK_CUSOLVER(
+            cusolverDnDgetrf(cusolver_handle_, N, N, static_cast<double*>(A_copy), N, ipiv, &info));
+        if (info != 0)
+            throw std::runtime_error("LU decomposition failed (info=" + std::to_string(info) + ")");
 
         int lwork = 0;
-        CHECK_CUSOLVER(cusolverDnDgetri_bufferSize(cusolver_handle_, N,
-                                                   static_cast<double*>(A_copy), N, &lwork));
+        CHECK_CUSOLVER(cusolverDnDgetri_bufferSize(
+            cusolver_handle_, N, static_cast<double*>(A_copy), N, &lwork));
         void* work = createDeviceTensor(lwork, 1, dtype);
 
-        CHECK_CUSOLVER(cusolverDnDgetri(cusolver_handle_, N,
-                                        static_cast<double*>(A_copy), N, ipiv,
-                                        static_cast<double*>(work), lwork, &info));
-        if (info != 0) throw std::runtime_error("Matrix inversion failed (info=" + std::to_string(info) + ")");
+        CHECK_CUSOLVER(cusolverDnDgetri(cusolver_handle_,
+                                        N,
+                                        static_cast<double*>(A_copy),
+                                        N,
+                                        ipiv,
+                                        static_cast<double*>(work),
+                                        lwork,
+                                        &info));
+        if (info != 0)
+            throw std::runtime_error("Matrix inversion failed (info=" + std::to_string(info) + ")");
 
         freeDeviceTensor(work);
     }
@@ -1064,19 +1205,30 @@ void* RCWA::matrixInverse(void* A, int N, DType dtype) {
     return A_copy;
 }
 
-void* RCWA::matrixSolve(void* A, void* B, int N, DType dtype) {
+void* RCWA::matrixSolve(void* A, void* B, int N, DType dtype)
+{
     void* A_copy = copyTensor(A, N, N, dtype);
     void* B_copy = copyTensor(B, N, N, dtype);
     int* ipiv = new int[N];
     int info = 0;
 
-    if (dtype == DType::COMPLEX64) {
+    if (dtype == DType::COMPLEX64)
+    {
         throw std::runtime_error("Complex64 matrix solve not implemented");
-    } else {
-        CHECK_CUSOLVER(cusolverDnDgesv(cusolver_handle_, N, N,
-                                       static_cast<double*>(A_copy), N, ipiv,
-                                       static_cast<double*>(B_copy), N, &info));
-        if (info != 0) throw std::runtime_error("Linear solve failed (info=" + std::to_string(info) + ")");
+    }
+    else
+    {
+        CHECK_CUSOLVER(cusolverDnDgesv(cusolver_handle_,
+                                       N,
+                                       N,
+                                       static_cast<double*>(A_copy),
+                                       N,
+                                       ipiv,
+                                       static_cast<double*>(B_copy),
+                                       N,
+                                       &info));
+        if (info != 0)
+            throw std::runtime_error("Linear solve failed (info=" + std::to_string(info) + ")");
     }
 
     delete[] ipiv;
@@ -1084,43 +1236,63 @@ void* RCWA::matrixSolve(void* A, void* B, int N, DType dtype) {
     return B_copy;
 }
 
-void* RCWA::matMul(void* A, void* B, int m, int k, int n, DType dtype) {
+void* RCWA::matMul(void* A, void* B, int m, int k, int n, DType dtype)
+{
     void* C = createDeviceTensor(m, n, dtype);
     fillZero(C, m, n, dtype);
 
     const complexf alpha_f(1.0, 0.0), beta_f(0.0, 0.0);
     const complexd alpha_d(1.0, 0.0), beta_d(0.0, 0.0);
 
-    if (dtype == DType::COMPLEX64) {
-        CHECK_CUBLAS(cublasCgemm(cublas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
-                                 m, n, k,
+    if (dtype == DType::COMPLEX64)
+    {
+        CHECK_CUBLAS(cublasCgemm(cublas_handle_,
+                                 CUBLAS_OP_N,
+                                 CUBLAS_OP_N,
+                                 m,
+                                 n,
+                                 k,
                                  reinterpret_cast<const cuComplex*>(&alpha_f),
-                                 static_cast<cuComplex*>(A), m,
-                                 static_cast<cuComplex*>(B), k,
+                                 static_cast<cuComplex*>(A),
+                                 m,
+                                 static_cast<cuComplex*>(B),
+                                 k,
                                  reinterpret_cast<const cuComplex*>(&beta_f),
-                                 static_cast<cuComplex*>(C), m));
-    } else {
-        CHECK_CUBLAS(cublasZgemm(cublas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
-                                 m, n, k,
+                                 static_cast<cuComplex*>(C),
+                                 m));
+    }
+    else
+    {
+        CHECK_CUBLAS(cublasZgemm(cublas_handle_,
+                                 CUBLAS_OP_N,
+                                 CUBLAS_OP_N,
+                                 m,
+                                 n,
+                                 k,
                                  reinterpret_cast<const cuDoubleComplex*>(&alpha_d),
-                                 static_cast<cuDoubleComplex*>(A), m,
-                                 static_cast<cuDoubleComplex*>(B), k,
+                                 static_cast<cuDoubleComplex*>(A),
+                                 m,
+                                 static_cast<cuDoubleComplex*>(B),
+                                 k,
                                  reinterpret_cast<const cuDoubleComplex*>(&beta_d),
-                                 static_cast<cuDoubleComplex*>(C), m));
+                                 static_cast<cuDoubleComplex*>(C),
+                                 m));
     }
 
     return C;
 }
 
-std::vector<int> RCWA::matchingIndices(const std::vector<std::vector<int>>& orders) {
+std::vector<int> RCWA::matchingIndices(const std::vector<std::vector<int>>& orders)
+{
     std::vector<int> indices;
     int* order_x_cpu = new int[order_x_N_];
     int* order_y_cpu = new int[order_y_N_];
-    
+
     CHECK_CUDA(cudaMemcpy(order_x_cpu, order_x_, order_x_N_ * sizeof(int), cudaMemcpyDeviceToHost));
     CHECK_CUDA(cudaMemcpy(order_y_cpu, order_y_, order_y_N_ * sizeof(int), cudaMemcpyDeviceToHost));
 
-    for (const auto& ord : orders) {
+    for (const auto& ord : orders)
+    {
         int x = std::clamp(ord[0], -order_[0], order_[0]);
         int y = std::clamp(ord[1], -order_[1], order_[1]);
         int x_idx = x + order_[0];
@@ -1133,7 +1305,8 @@ std::vector<int> RCWA::matchingIndices(const std::vector<std::vector<int>>& orde
     return indices;
 }
 
-void* RCWA::computeKzNorm(void* eps) {
+void* RCWA::computeKzNorm(void* eps)
+{
     double eps_val;
     CHECK_CUDA(cudaMemcpy(&eps_val, eps, sizeof(double), cudaMemcpyDeviceToHost));
 
@@ -1144,113 +1317,98 @@ void* RCWA::computeKzNorm(void* eps) {
     return kz_norm;
 }
 
-void RCWA::computeKzNorm(void* eps, void* kz_norm) {
+void RCWA::computeKzNorm(void* eps, void* kz_norm)
+{
     double eps_val;
     CHECK_CUDA(cudaMemcpy(&eps_val, eps, sizeof(double), cudaMemcpyDeviceToHost));
     // To be implemented: fill kz_norm with sqrt(eps - Kx² - Ky²)
 }
 
 // -------------------------- Basic Matrix Operations --------------------------
-void* RCWA::addTensor(void* A, void* B, int rows, int cols, DType dtype) {
+void* RCWA::addTensor(void* A, void* B, int rows, int cols, DType dtype)
+{
     // Create output tensor (initialized as copy of A)
     void* C = copyTensor(A, rows, cols, dtype);
     const int N = rows * cols; // Total elements (vectorized for cuBLAS)
 
     // cuBLAS alpha/beta for AXPY: C = alpha*B + beta*C (beta=1 → C = A + B)
-    if (dtype == DType::COMPLEX64) {
+    if (dtype == DType::COMPLEX64)
+    {
         const cuComplex alpha = make_cuComplex(1.0f, 0.0f);
-        CHECK_CUBLAS(cublasCaxpy(
-            cublas_handle_,    // cuBLAS handle
-            N,                 // Number of elements
-            &alpha,            // Scalar multiplier for B
-            (cuComplex*)B,     // Input vector B
-            1,                 // Stride of B
-            (cuComplex*)C,     // Output vector C (initialized as A)
-            1                  // Stride of C
-        ));
-    } else { // COMPLEX128
+        CHECK_CUBLAS(cublasCaxpy(cublas_handle_, // cuBLAS handle
+                                 N,              // Number of elements
+                                 &alpha,         // Scalar multiplier for B
+                                 (cuComplex*)B,  // Input vector B
+                                 1,              // Stride of B
+                                 (cuComplex*)C,  // Output vector C (initialized as A)
+                                 1               // Stride of C
+                                 ));
+    }
+    else
+    { // COMPLEX128
         const cuDoubleComplex alpha = make_cuDoubleComplex(1.0, 0.0);
-        CHECK_CUBLAS(cublasZaxpy(
-            cublas_handle_,
-            N,
-            &alpha,
-            (cuDoubleComplex*)B,
-            1,
-            (cuDoubleComplex*)C,
-            1
-        ));
+        CHECK_CUBLAS(
+            cublasZaxpy(cublas_handle_, N, &alpha, (cuDoubleComplex*)B, 1, (cuDoubleComplex*)C, 1));
     }
 
     return C;
 }
 
-void* RCWA::subTensor(void* A, void* B, int rows, int cols, DType dtype) {
+void* RCWA::subTensor(void* A, void* B, int rows, int cols, DType dtype)
+{
     // Create output tensor (initialized as copy of A)
     void* C = copyTensor(A, rows, cols, dtype);
     const int N = rows * cols; // Total elements (vectorized for cuBLAS)
 
     // cuBLAS alpha/beta for AXPY: C = alpha*B + beta*C (alpha=-1 → C = A - B)
-    if (dtype == DType::COMPLEX64) {
+    if (dtype == DType::COMPLEX64)
+    {
         const cuComplex alpha = make_cuComplex(-1.0f, 0.0f);
-        CHECK_CUBLAS(cublasCaxpy(
-            cublas_handle_,
-            N,
-            &alpha,
-            (cuComplex*)B,
-            1,
-            (cuComplex*)C,
-            1
-        ));
-    } else { // COMPLEX128
+        CHECK_CUBLAS(cublasCaxpy(cublas_handle_, N, &alpha, (cuComplex*)B, 1, (cuComplex*)C, 1));
+    }
+    else
+    { // COMPLEX128
         const cuDoubleComplex alpha = make_cuDoubleComplex(-1.0, 0.0);
-        CHECK_CUBLAS(cublasZaxpy(
-            cublas_handle_,
-            N,
-            &alpha,
-            (cuDoubleComplex*)B,
-            1,
-            (cuDoubleComplex*)C,
-            1
-        ));
+        CHECK_CUBLAS(
+            cublasZaxpy(cublas_handle_, N, &alpha, (cuDoubleComplex*)B, 1, (cuDoubleComplex*)C, 1));
     }
 
     return C;
 }
 
-void* RCWA::scaleTensor(void* A, int rows, int cols, complexf val, DType dtype) {
+void* RCWA::scaleTensor(void* A, int rows, int cols, complexf val, DType dtype)
+{
     void* C = copyTensor(A, rows, cols, dtype);
     const int N = rows * cols;
 
-    if (dtype == DType::COMPLEX64) {
+    if (dtype == DType::COMPLEX64)
+    {
         const cuComplex alpha = make_cuComplex(val.real(), val.imag());
-        CHECK_CUBLAS(cublasCscal(
-            cublas_handle_,
-            N,
-            &alpha,
-            (cuComplex*)C,
-            1
-        ));
-    } else { // COMPLEX128
+        CHECK_CUBLAS(cublasCscal(cublas_handle_, N, &alpha, (cuComplex*)C, 1));
+    }
+    else
+    { // COMPLEX128
         const cuDoubleComplex alpha = make_cuDoubleComplex(val.real(), val.imag());
-        CHECK_CUBLAS(cublasZscal(
-            cublas_handle_,
-            N,
-            &alpha,
-            (cuDoubleComplex*)C,
-            1
-        ));
+        CHECK_CUBLAS(cublasZscal(cublas_handle_, N, &alpha, (cuDoubleComplex*)C, 1));
     }
     return C;
 }
 
-void* RCWA::copyTensor(void* A, int rows, int cols, DType dtype) {
+void* RCWA::copyTensor(void* A, int rows, int cols, DType dtype)
+{
     void* C = createDeviceTensor(rows, cols, dtype);
     size_t elem_size = (dtype == DType::COMPLEX64) ? sizeof(complexf) : sizeof(complexd);
     CHECK_CUDA(cudaMemcpy(C, A, rows * cols * elem_size, cudaMemcpyDeviceToDevice));
     return C;
 }
 
-void* RCWA::sliceTensor(void* A, int start_row, int end_row, int start_col, int end_col, DType dtype) {
+void* RCWA::sliceTensor(void* A,
+                        int start_row,
+                        int end_row,
+                        int start_col,
+                        int end_col,
+                        DType dtype)
+{
     int out_rows = end_row - start_row;
     int out_cols = end_col - start_col;
     void* C = createDeviceTensor(out_rows, out_cols, dtype);
@@ -1262,8 +1420,10 @@ void* RCWA::sliceTensor(void* A, int start_row, int end_row, int start_col, int 
     complexf* C_cpu = new complexf[out_rows * out_cols];
     CHECK_CUDA(cudaMemcpy(A_cpu, A, in_rows * (2 * order_N_) * elem_size, cudaMemcpyDeviceToHost));
 
-    for (int i = 0; i < out_rows; ++i) {
-        for (int j = 0; j < out_cols; ++j) {
+    for (int i = 0; i < out_rows; ++i)
+    {
+        for (int j = 0; j < out_cols; ++j)
+        {
             C_cpu[i * out_cols + j] = A_cpu[(start_row + i) * (2 * order_N_) + (start_col + j)];
         }
     }
@@ -1275,8 +1435,15 @@ void* RCWA::sliceTensor(void* A, int start_row, int end_row, int start_col, int 
     return C;
 }
 
-void* RCWA::reshapeTensor(void* A, int in_rows, int in_cols, int out_rows, int out_cols, DType dtype) {
-    if (in_rows * in_cols != out_rows * out_cols) {
+void* RCWA::reshapeTensor(void* A,
+                          int in_rows,
+                          int in_cols,
+                          int out_rows,
+                          int out_cols,
+                          DType dtype)
+{
+    if (in_rows * in_cols != out_rows * out_cols)
+    {
         throw std::runtime_error("Reshape error: input/output size mismatch");
     }
 
@@ -1288,7 +1455,8 @@ void* RCWA::reshapeTensor(void* A, int in_rows, int in_cols, int out_rows, int o
     complexf* C_cpu = new complexf[out_rows * out_cols];
     CHECK_CUDA(cudaMemcpy(A_cpu, A, in_rows * in_cols * elem_size, cudaMemcpyDeviceToHost));
 
-    for (int i = 0; i < in_rows * in_cols; ++i) {
+    for (int i = 0; i < in_rows * in_cols; ++i)
+    {
         C_cpu[i] = A_cpu[i];
     }
 
@@ -1300,7 +1468,8 @@ void* RCWA::reshapeTensor(void* A, int in_rows, int in_cols, int out_rows, int o
 }
 
 // -------------------------- Helper: Matrix Norm Calculation --------------------------
-double RCWA::computeMatrixNorm(void* A, int rows, int cols, DType dtype) {
+double RCWA::computeMatrixNorm(void* A, int rows, int cols, DType dtype)
+{
     size_t elem_size = (dtype == DType::COMPLEX64) ? sizeof(cuComplex) : sizeof(cuDoubleComplex);
     std::vector<double> col_norms(col, 0.0);
 
@@ -1308,21 +1477,28 @@ double RCWA::computeMatrixNorm(void* A, int rows, int cols, DType dtype) {
     void* A_cpu = malloc(rows * cols * elem_size);
     CHECK_CUDA(cudaMemcpy(A_cpu, A, rows * cols * elem_size, cudaMemcpyDeviceToHost));
 
-    if (dtype == DType::COMPLEX64) {
+    if (dtype == DType::COMPLEX64)
+    {
         cuComplex* A_cplx = static_cast<cuComplex*>(A_cpu);
-        for (int j = 0; j < cols; ++j) {
+        for (int j = 0; j < cols; ++j)
+        {
             double norm = 0.0;
-            for (int i = 0; i < rows; ++i) {
+            for (int i = 0; i < rows; ++i)
+            {
                 int idx = i * cols + j;
                 norm += sqrt(pow(A_cplx[idx].x, 2) + pow(A_cplx[idx].y, 2));
             }
             col_norms[j] = norm;
         }
-    } else {
+    }
+    else
+    {
         cuDoubleComplex* A_cplx = static_cast<cuDoubleComplex*>(A_cpu);
-        for (int j = 0; j < cols; ++j) {
+        for (int j = 0; j < cols; ++j)
+        {
             double norm = 0.0;
-            for (int i = 0; i < rows; ++i) {
+            for (int i = 0; i < rows; ++i)
+            {
                 int idx = i * cols + j;
                 norm += sqrt(pow(A_cplx[idx].x, 2) + pow(A_cplx[idx].y, 2));
             }
@@ -1335,55 +1511,48 @@ double RCWA::computeMatrixNorm(void* A, int rows, int cols, DType dtype) {
 }
 
 // -------------------------- Helper: Matrix Horizontal Stack --------------------------
-void* RCWA::hstackTensor(void* A, void* B, int rows, int colsA, int colsB, DType dtype) {
+void* RCWA::hstackTensor(void* A, void* B, int rows, int colsA, int colsB, DType dtype)
+{
     int cols_out = colsA + colsB;
     void* C = createDeviceTensor(rows, cols_out, dtype_);
     size_t elem_size = (dtype == DType::COMPLEX64) ? sizeof(cuComplex) : sizeof(cuDoubleComplex);
 
     // Copy A to left part of C
-    for (int i = 0; i < rows; ++i) {
-        CHECK_CUDA(cudaMemcpy(
-            static_cast<char*>(C) + i * cols_out * elem_size,
-            static_cast<char*>(A) + i * colsA * elem_size,
-            colsA * elem_size,
-            cudaMemcpyDeviceToDevice
-        ));
+    for (int i = 0; i < rows; ++i)
+    {
+        CHECK_CUDA(cudaMemcpy(static_cast<char*>(C) + i * cols_out * elem_size,
+                              static_cast<char*>(A) + i * colsA * elem_size,
+                              colsA * elem_size,
+                              cudaMemcpyDeviceToDevice));
     }
 
     // Copy B to right part of C
-    for (int i = 0; i < rows; ++i) {
-        CHECK_CUDA(cudaMemcpy(
-            static_cast<char*>(C) + i * cols_out * elem_size + colsA * elem_size,
-            static_cast<char*>(B) + i * colsB * elem_size,
-            colsB * elem_size,
-            cudaMemcpyDeviceToDevice
-        ));
+    for (int i = 0; i < rows; ++i)
+    {
+        CHECK_CUDA(cudaMemcpy(static_cast<char*>(C) + i * cols_out * elem_size + colsA * elem_size,
+                              static_cast<char*>(B) + i * colsB * elem_size,
+                              colsB * elem_size,
+                              cudaMemcpyDeviceToDevice));
     }
 
     return C;
 }
 
 // -------------------------- Helper: Matrix Vertical Stack --------------------------
-void* RCWA::vstackTensor(void* A, void* B, int rowsA, int rowsB, int cols, DType dtype) {
+void* RCWA::vstackTensor(void* A, void* B, int rowsA, int rowsB, int cols, DType dtype)
+{
     int rows_out = rowsA + rowsB;
     void* C = createDeviceTensor(rows_out, cols, dtype_);
     size_t elem_size = (dtype == DType::COMPLEX64) ? sizeof(cuComplex) : sizeof(cuDoubleComplex);
 
     // Copy A to top part of C
-    CHECK_CUDA(cudaMemcpy(
-        C,
-        A,
-        rowsA * cols * elem_size,
-        cudaMemcpyDeviceToDevice
-    ));
+    CHECK_CUDA(cudaMemcpy(C, A, rowsA * cols * elem_size, cudaMemcpyDeviceToDevice));
 
     // Copy B to bottom part of C
-    CHECK_CUDA(cudaMemcpy(
-        static_cast<char*>(C) + rowsA * cols * elem_size,
-        B,
-        rowsB * cols * elem_size,
-        cudaMemcpyDeviceToDevice
-    ));
+    CHECK_CUDA(cudaMemcpy(static_cast<char*>(C) + rowsA * cols * elem_size,
+                          B,
+                          rowsB * cols * elem_size,
+                          cudaMemcpyDeviceToDevice));
 
     return C;
 }
