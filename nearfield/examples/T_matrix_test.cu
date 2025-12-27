@@ -1,18 +1,14 @@
 #include <iostream>
 #include <vector>
 
-#include <cuda_runtime.h>
-#include <cuComplex.h>
-
-#include "complex_matrix_ops.cuh"
 #include "common_utils.h"
 #include "matrix_print_utils.h"
-#include "smatrix_from_pq.cuh"
+#include "layer_matrix.h"
 
 int main()
 {
     const int n = 2;
-    const int64_t elements = static_cast<int64_t>(n) * n;
+    const uint64_t elements = static_cast<int64_t>(n * n);
     const Real k0d = static_cast<Real>(0.25);
 
     std::vector<Complex> hP(elements);
@@ -36,34 +32,16 @@ int main()
     Complex* dP = nullptr;
     Complex* dQ = nullptr;
 
-    ExpAResult result;
+    TMatrix T{};
 
     auto cleanup = [&]()
     {
-        if (result.expA_11)
-        {
-            cudaFree(result.expA_11);
-        }
-        if (result.expA_12)
-        {
-            cudaFree(result.expA_12);
-        }
-        if (result.expA_21)
-        {
-            cudaFree(result.expA_21);
-        }
-        if (result.expA_22)
-        {
-            cudaFree(result.expA_22);
-        }
-        if (dQ)
-        {
-            cudaFree(dQ);
-        }
-        if (dP)
-        {
-            cudaFree(dP);
-        }
+        SAFEFREE(T.T_11);
+        SAFEFREE(T.T_12);
+        SAFEFREE(T.T_21);
+        SAFEFREE(T.T_22);
+        SAFEFREE(dQ);
+        SAFEFREE(dP);
     };
 
     if (!CheckCuda(cudaMalloc(&dP, elements * sizeof(Complex))) ||
@@ -82,38 +60,38 @@ int main()
         return 1;
     }
 
-    if (!CheckStatus(ComputeExpAFromPQ(dP, dQ, n, k0d, &result)))
+    if (!CheckStatus(ComputeTFromPQ(dP, dQ, n, k0d, &T)))
     {
         cleanup();
         return 1;
     }
 
-    std::vector<Complex> hExpA11(elements);
-    std::vector<Complex> hExpA12(elements);
-    std::vector<Complex> hExpA21(elements);
-    std::vector<Complex> hExpA22(elements);
+    std::vector<Complex> hT11(elements);
+    std::vector<Complex> hT12(elements);
+    std::vector<Complex> hT21(elements);
+    std::vector<Complex> hT22(elements);
 
-    if (!CheckCuda(cudaMemcpy(hExpA11.data(), result.expA_11,
+    if (!CheckCuda(cudaMemcpy(hT11.data(), T.T_11,
                               elements * sizeof(Complex), cudaMemcpyDeviceToHost)) ||
-        !CheckCuda(cudaMemcpy(hExpA12.data(), result.expA_12,
+        !CheckCuda(cudaMemcpy(hT12.data(), T.T_12,
                               elements * sizeof(Complex), cudaMemcpyDeviceToHost)) ||
-        !CheckCuda(cudaMemcpy(hExpA21.data(), result.expA_21,
+        !CheckCuda(cudaMemcpy(hT21.data(), T.T_21,
                               elements * sizeof(Complex), cudaMemcpyDeviceToHost)) ||
-        !CheckCuda(cudaMemcpy(hExpA22.data(), result.expA_22,
+        !CheckCuda(cudaMemcpy(hT22.data(), T.T_22,
                               elements * sizeof(Complex), cudaMemcpyDeviceToHost)))
     {
         cleanup();
         return 1;
     }
 
-    std::cout << "\n==== ComputeExpAFromPQ demo ====" << "\n";
+    std::cout << "\n==== ComputeTFromPQ demo ====" << "\n";
     std::cout << PRINT_PRECISION;
     PrintMatrix(hP, n, "P");
     PrintMatrix(hQ, n, "Q");
-    PrintMatrix(hExpA11, n, "expA_11");
-    PrintMatrix(hExpA12, n, "expA_12");
-    PrintMatrix(hExpA21, n, "expA_21");
-    PrintMatrix(hExpA22, n, "expA_22");
+    PrintMatrix(hT11, n, "T_11");
+    PrintMatrix(hT12, n, "T_12");
+    PrintMatrix(hT21, n, "T_21");
+    PrintMatrix(hT22, n, "T_22");
 
     cleanup();
     return 0;

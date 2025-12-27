@@ -2,11 +2,8 @@
 #include <iostream>
 #include <vector>
 
-#include <cuda_runtime.h>
-#include <cuComplex.h>
-
-#include "complex_matrix_ops.cuh"
 #include "common_utils.h"
+#include "complex_matrix_ops.h"
 #include "matrix_print_utils.h"
 
 namespace
@@ -46,30 +43,12 @@ void RunDemo(int k)
 
     auto cleanup = [&]()
     {
-        if (dX)
-        {
-            cudaFree(dX);
-        }
-        if (dSub)
-        {
-            cudaFree(dSub);
-        }
-        if (dAdd)
-        {
-            cudaFree(dAdd);
-        }
-        if (dC)
-        {
-            cudaFree(dC);
-        }
-        if (dB)
-        {
-            cudaFree(dB);
-        }
-        if (dA)
-        {
-            cudaFree(dA);
-        }
+        SAFEFREE(dX);
+        SAFEFREE(dSub);
+        SAFEFREE(dAdd);
+        SAFEFREE(dC);
+        SAFEFREE(dB);
+        SAFEFREE(dA);
     };
 
     if (!CheckCuda(cudaMalloc(&dA, elements * sizeof(Complex))) ||
@@ -129,19 +108,8 @@ void RunDemo(int k)
 
 } // namespace
 
-int main(int argc, char** argv)
+int main()
 {
-    int k = 0;
-    if (argc > 1)
-    {
-        char* end = nullptr;
-        const long parsed = std::strtol(argv[1], &end, 10);
-        if (end != argv[1] && parsed > 0)
-        {
-            k = static_cast<int>(parsed);
-        }
-    }
-
-    RunDemo(k);
+    RunDemo(0);
     return 0;
 }

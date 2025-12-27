@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-#include "complex_matrix_ops.cuh"
+#include "common_utils.h"
 
 inline std::string FormatComplex(const Complex& value, double eps)
 {
@@ -77,7 +77,7 @@ inline std::string FormatComplex(const Complex& value, double eps)
     return oss.str();
 }
 
-inline void PrintMatrix(const std::vector<Complex>& matrix, int n, int k, const char* name)
+inline void PrintMatrixInternal(const std::vector<Complex>& matrix, int n, int k, const char* name)
 {
     std::cout << name << " =\n";
     const int limit = k > 0 ? std::min(n, k) : n;
@@ -115,9 +115,16 @@ inline void PrintMatrix(const std::vector<Complex>& matrix, int n, int k, const 
     }
 }
 
-inline void PrintMatrix(const std::vector<Complex>& matrix, int n, const char* name)
+inline void PrintMatrixInternal(const std::vector<Complex>& matrix, int n, const char* name)
 {
-    PrintMatrix(matrix, n, 0, name);
+    PrintMatrixInternal(matrix, n, 0, name);
 }
+
+#define PRINT_MATRIX_GET_MACRO(_1, _2, _3, _4, NAME, ...) NAME
+#define PrintMatrix2(matrix, n) PrintMatrixInternal((matrix), (n), 0, #matrix)
+#define PrintMatrix3(matrix, n, name) PrintMatrixInternal((matrix), (n), 0, (name))
+#define PrintMatrix4(matrix, n, k, name) PrintMatrixInternal((matrix), (n), (k), (name))
+#define PrintMatrix(...)                                                                            \
+    PRINT_MATRIX_GET_MACRO(__VA_ARGS__, PrintMatrix4, PrintMatrix3, PrintMatrix2)(__VA_ARGS__)
 
 #endif  // MATRIX_PRINT_UTILS_H_

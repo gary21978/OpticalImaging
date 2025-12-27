@@ -1,4 +1,4 @@
-#include "complex_matrix_ops.cuh"
+#include "complex_matrix_ops.h"
 
 #include <limits>
 
@@ -42,25 +42,6 @@ bool CheckBlasSize(int64_t value) { return value > 0 && value <= std::numeric_li
 
 } // namespace
 
-const char* StatusToString(Status status)
-{
-    switch (status)
-    {
-    case Status::kSuccess:
-        return "success";
-    case Status::kInvalidValue:
-        return "invalid value";
-    case Status::kCudaError:
-        return "cuda error";
-    case Status::kCublasError:
-        return "cublas error";
-    case Status::kCusolverError:
-        return "cusolver error";
-    default:
-        return "unknown";
-    }
-}
-
 ComplexMatrixOps::ComplexMatrixOps() : ComplexMatrixOps(nullptr) {}
 
 ComplexMatrixOps::ComplexMatrixOps(cudaStream_t stream) : stream_(stream)
@@ -103,11 +84,11 @@ Status ComplexMatrixOps::SetStream(cudaStream_t stream)
     }
     stream_ = stream;
     Status status = StatusFromCublas(cublasSetStream(cublas_handle_, stream_));
-    if (status != Status::kSuccess)
+    if (status == Status::kSuccess)
     {
-        return status;
+        return StatusFromCusolver(cusolverDnSetStream(cusolver_handle_, stream_));
     }
-    return StatusFromCusolver(cusolverDnSetStream(cusolver_handle_, stream_));
+    return status;
 }
 
 Status ComplexMatrixOps::MatMul(const Complex* A,
