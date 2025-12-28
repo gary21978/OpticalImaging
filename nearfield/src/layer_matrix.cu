@@ -76,6 +76,106 @@ struct DeviceMatrix
     }
 };
 
+struct DeviceVector
+{
+    Real* ptr = nullptr;
+    size_t elements = 0;
+
+    DeviceVector() = default;
+    ~DeviceVector()
+    {
+        if (ptr)
+        {
+            cudaFree(ptr);
+        }
+    }
+
+    DeviceVector(const DeviceVector&) = delete;
+    DeviceVector& operator=(const DeviceVector&) = delete;
+
+    Real* get() const { return ptr; }
+};
+
+#if USE_DOUBLE_PRECISION
+__device__ inline Real ComplexAbs(Complex value)
+{
+    const Real real = complex_real(value);
+    const Real imag = complex_imag(value);
+    return sqrt(real * real + imag * imag);
+}
+#else
+__device__ inline Real ComplexAbs(Complex value)
+{
+    const Real real = complex_real(value);
+    const Real imag = complex_imag(value);
+    return sqrtf(real * real + imag * imag);
+}
+#endif
+
+constexpr int kReduceBlockSize = 256;
+
+__global__ void ColumnSumKernel(const Complex* A, int64_t n, Real* col_sums)
+{
+    const int64_t col = static_cast<int64_t>(blockIdx.x);
+    if (col >= n)
+    {
+        return;
+    }
+
+    Real sum = static_cast<Real>(0.0);
+    for (int64_t row = threadIdx.x; row < n; row += blockDim.x)
+    {
+        sum += ComplexAbs(A[col * n + row]);
+    }
+
+    __shared__ Real shared[kReduceBlockSize];
+    shared[threadIdx.x] = sum;
+    __syncthreads();
+
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1)
+    {
+        if (threadIdx.x < stride)
+        {
+            shared[threadIdx.x] += shared[threadIdx.x + stride];
+        }
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0)
+    {
+        col_sums[col] = shared[0];
+    }
+}
+
+__global__ void MaxReduceKernel(const Real* input, int64_t n, Real* output)
+{
+    const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    Real value = static_cast<Real>(0.0);
+    if (idx < n)
+    {
+        value = input[idx];
+    }
+
+    __shared__ Real shared[kReduceBlockSize];
+    shared[threadIdx.x] = value;
+    __syncthreads();
+
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1)
+    {
+        if (threadIdx.x < stride)
+        {
+            const Real other = shared[threadIdx.x + stride];
+            shared[threadIdx.x] = shared[threadIdx.x] > other ? shared[threadIdx.x] : other;
+        }
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0)
+    {
+        output[blockIdx.x] = shared[0];
+    }
+}
+
 __device__ inline Complex Multiply(Complex a, Complex b)
 {
     const Real ar = complex_real(a);
@@ -142,6 +242,35 @@ Status AllocateMatrix(int64_t rows, int64_t cols, DeviceMatrix* out)
     return Status::kSuccess;
 }
 
+Status AllocateVector(size_t count, DeviceVector* out)
+{
+    if (!out || count == 0)
+    {
+        return Status::kInvalidValue;
+    }
+    if (count > (std::numeric_limits<size_t>::max() / sizeof(Real)))
+    {
+        return Status::kInvalidValue;
+    }
+    if (out->ptr && out->elements == count)
+    {
+        return Status::kSuccess;
+    }
+    if (out->ptr)
+    {
+        cudaFree(out->ptr);
+        out->ptr = nullptr;
+    }
+    Real* ptr = nullptr;
+    if (cudaMalloc(&ptr, count * sizeof(Real)) != cudaSuccess)
+    {
+        return Status::kCudaError;
+    }
+    out->ptr = ptr;
+    out->elements = count;
+    return Status::kSuccess;
+}
+
 Status MakeIdentity(int64_t n, DeviceMatrix* out, cudaStream_t stream)
 {
     CHECK(AllocateMatrix(n, n, out));
@@ -191,33 +320,46 @@ Status ComputeMatrixNorm1(const Complex* A, int64_t n, double* out_norm, cudaStr
         return Status::kInvalidValue;
     }
 
-    const size_t count = static_cast<size_t>(n) * static_cast<size_t>(n);
-    std::vector<Complex> host(count);
-
-    CHECK(StatusFromCuda(
-        cudaMemcpyAsync(host.data(), A, count * sizeof(Complex), cudaMemcpyDeviceToHost, stream)));
-
-    CHECK(StatusFromCuda(cudaStreamSynchronize(stream)));
-
-    double max_norm = 0.0;
-    for (int64_t col = 0; col < n; ++col)
+    if (n > std::numeric_limits<int>::max())
     {
-        double sum = 0.0;
-        const size_t base = static_cast<size_t>(col) * static_cast<size_t>(n);
-        for (int64_t row = 0; row < n; ++row)
-        {
-            const Complex value = host[base + static_cast<size_t>(row)];
-            const double real = static_cast<double>(complex_real(value));
-            const double imag = static_cast<double>(complex_imag(value));
-            sum += std::hypot(real, imag);
-        }
-        if (sum > max_norm)
-        {
-            max_norm = sum;
-        }
+        return Status::kInvalidValue;
     }
 
-    *out_norm = max_norm;
+    const size_t count = static_cast<size_t>(n);
+    const int block = kReduceBlockSize;
+    const int grid = static_cast<int>(count);
+    const size_t temp_count = (count + block - 1) / block;
+
+    DeviceVector col_sums;
+    DeviceVector temp;
+    CHECK(AllocateVector(count, &col_sums));
+    CHECK(AllocateVector(temp_count, &temp));
+
+    ColumnSumKernel<<<grid, block, 0, stream>>>(A, n, col_sums.get());
+    CHECK(StatusFromCuda(cudaGetLastError()));
+
+    size_t current = count;
+    Real* input = col_sums.get();
+    Real* output = temp.get();
+
+    while (current > 1)
+    {
+        const size_t blocks = (current + block - 1) / block;
+        MaxReduceKernel<<<static_cast<int>(blocks), block, 0, stream>>>(
+            input, static_cast<int64_t>(current), output);
+        CHECK(StatusFromCuda(cudaGetLastError()));
+        current = blocks;
+        Real* swap = input;
+        input = output;
+        output = swap;
+    }
+
+    Real host_value = static_cast<Real>(0.0);
+    CHECK(StatusFromCuda(
+        cudaMemcpyAsync(&host_value, input, sizeof(Real), cudaMemcpyDeviceToHost, stream)));
+    CHECK(StatusFromCuda(cudaStreamSynchronize(stream)));
+
+    *out_norm = static_cast<double>(host_value);
     return Status::kSuccess;
 }
 

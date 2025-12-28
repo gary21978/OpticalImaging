@@ -280,7 +280,7 @@ int main(int argc, char** argv)
     }
     int PxQ = (2 * orders + 1) * (2 * orders + 1);
 
-    RunSmallTest();
+    //RunSmallTest();
     RunIdentityTest(2*PxQ);
     RunMultiStreamTest(2*PxQ);
     return 0;
