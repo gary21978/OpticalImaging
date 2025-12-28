@@ -1,15 +1,23 @@
-#include <cstdlib>
 #include <iostream>
 #include <vector>
 
-#include "common_utils.h"
 #include "complex_matrix_ops.h"
 #include "matrix_print_utils.h"
 
 namespace
 {
 
-void RunDemo(int k)
+struct DeviceBuffer
+{
+    Complex* ptr = nullptr;
+
+    ~DeviceBuffer() { SAFEFREE(ptr); }
+
+    Complex** address() { return &ptr; }
+    Complex* get() const { return ptr; }
+};
+
+Status RunDemo(int k)
 {
     const int n = 2;
     const int64_t elements = static_cast<int64_t>(n) * n;
@@ -34,65 +42,39 @@ void RunDemo(int k)
     hB[2] = make_complex(zero, zero);
     hB[3] = make_complex(one, zero);
 
-    Complex* dA = nullptr;
-    Complex* dB = nullptr;
-    Complex* dC = nullptr;
-    Complex* dAdd = nullptr;
-    Complex* dSub = nullptr;
-    Complex* dX = nullptr;
+    DeviceBuffer dA;
+    DeviceBuffer dB;
+    DeviceBuffer dC;
+    DeviceBuffer dAdd;
+    DeviceBuffer dSub;
+    DeviceBuffer dX;
 
-    auto cleanup = [&]()
-    {
-        SAFEFREE(dX);
-        SAFEFREE(dSub);
-        SAFEFREE(dAdd);
-        SAFEFREE(dC);
-        SAFEFREE(dB);
-        SAFEFREE(dA);
-    };
+    CHECK(cudaMalloc(dA.address(), elements * sizeof(Complex)));
+    CHECK(cudaMalloc(dB.address(), elements * sizeof(Complex)));
+    CHECK(cudaMalloc(dC.address(), elements * sizeof(Complex)));
+    CHECK(cudaMalloc(dAdd.address(), elements * sizeof(Complex)));
+    CHECK(cudaMalloc(dSub.address(), elements * sizeof(Complex)));
+    CHECK(cudaMalloc(dX.address(), elements * sizeof(Complex)));
 
-    if (!CheckCuda(cudaMalloc(&dA, elements * sizeof(Complex))) ||
-        !CheckCuda(cudaMalloc(&dB, elements * sizeof(Complex))) ||
-        !CheckCuda(cudaMalloc(&dC, elements * sizeof(Complex))) ||
-        !CheckCuda(cudaMalloc(&dAdd, elements * sizeof(Complex))) ||
-        !CheckCuda(cudaMalloc(&dSub, elements * sizeof(Complex))) ||
-        !CheckCuda(cudaMalloc(&dX, elements * sizeof(Complex))))
-    {
-        cleanup();
-        return;
-    }
-
-    if (!CheckCuda(cudaMemcpy(
-            dA, hA.data(), elements * sizeof(Complex), cudaMemcpyHostToDevice)) ||
-        !CheckCuda(cudaMemcpy(
-            dB, hB.data(), elements * sizeof(Complex), cudaMemcpyHostToDevice)))
-    {
-        cleanup();
-        return;
-    }
+    CHECK(cudaMemcpy(
+        dA.get(), hA.data(), elements * sizeof(Complex), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(
+        dB.get(), hB.data(), elements * sizeof(Complex), cudaMemcpyHostToDevice));
 
     ComplexMatrixOps ops;
-    if (!CheckStatus(ops.MatMul(dA, dB, dC, n)) ||
-        !CheckStatus(ops.MatAdd(dA, dB, dAdd, n)) ||
-        !CheckStatus(ops.MatSub(dA, dB, dSub, n)) ||
-        !CheckStatus(ops.Solve(dA, dB, dX, n)))
-    {
-        cleanup();
-        return;
-    }
+    CHECK(ops.MatMul(dA.get(), dB.get(), dC.get(), n));
+    CHECK(ops.MatAdd(dA.get(), dB.get(), dAdd.get(), n));
+    CHECK(ops.MatSub(dA.get(), dB.get(), dSub.get(), n));
+    CHECK(ops.Solve(dA.get(), dB.get(), dX.get(), n));
 
-    if (!CheckCuda(cudaMemcpy(
-            hC.data(), dC, elements * sizeof(Complex), cudaMemcpyDeviceToHost)) ||
-        !CheckCuda(cudaMemcpy(
-            hAdd.data(), dAdd, elements * sizeof(Complex), cudaMemcpyDeviceToHost)) ||
-        !CheckCuda(cudaMemcpy(
-            hSub.data(), dSub, elements * sizeof(Complex), cudaMemcpyDeviceToHost)) ||
-        !CheckCuda(cudaMemcpy(
-            hX.data(), dX, elements * sizeof(Complex), cudaMemcpyDeviceToHost)))
-    {
-        cleanup();
-        return;
-    }
+    CHECK(cudaMemcpy(
+        hC.data(), dC.get(), elements * sizeof(Complex), cudaMemcpyDeviceToHost));
+    CHECK(cudaMemcpy(
+        hAdd.data(), dAdd.get(), elements * sizeof(Complex), cudaMemcpyDeviceToHost));
+    CHECK(cudaMemcpy(
+        hSub.data(), dSub.get(), elements * sizeof(Complex), cudaMemcpyDeviceToHost));
+    CHECK(cudaMemcpy(
+        hX.data(), dX.get(), elements * sizeof(Complex), cudaMemcpyDeviceToHost));
 
     std::cout << "\n==== demo ====" << "\n";
     std::cout << PRINT_PRECISION;
@@ -103,13 +85,12 @@ void RunDemo(int k)
     PrintMatrix(hSub, n, k, "A - B");
     PrintMatrix(hX, n, k, "Solve(A, B) -> A^{-1}");
 
-    cleanup();
+    return Status::kSuccess;
 }
 
 } // namespace
 
 int main()
 {
-    RunDemo(0);
-    return 0;
+    return RunDemo(0) == Status::kSuccess ? 0 : 1;
 }

@@ -1,20 +1,10 @@
-#include "layer_matrix.h"
 #include "complex_matrix_ops.h"
+#include "layer_matrix.h"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <vector>
-
-#define RETURN_IF_ERROR(expr)                                                                      \
-    do                                                                                             \
-    {                                                                                              \
-        Status status_ = (expr);                                                                   \
-        if (status_ != Status::kSuccess)                                                           \
-        {                                                                                          \
-            return status_;                                                                        \
-        }                                                                                          \
-    } while (false)
 
 namespace
 {
@@ -41,6 +31,7 @@ constexpr double kExpConstant[5][5] = {
 struct DeviceMatrix
 {
     Complex* ptr = nullptr;
+    size_t elements = 0;
 
     DeviceMatrix() = default;
     ~DeviceMatrix()
@@ -56,20 +47,32 @@ struct DeviceMatrix
 
     Complex* get() const { return ptr; }
 
-    void Reset(Complex* p = nullptr)
+    void Reset(Complex* p = nullptr, size_t count = 0)
     {
         if (ptr)
         {
             cudaFree(ptr);
         }
         ptr = p;
+        elements = count;
     }
 
     Complex* Release()
     {
         Complex* out = ptr;
         ptr = nullptr;
+        elements = 0;
         return out;
+    }
+
+    void Swap(DeviceMatrix& other)
+    {
+        Complex* tmp_ptr = ptr;
+        ptr = other.ptr;
+        other.ptr = tmp_ptr;
+        size_t tmp_elements = elements;
+        elements = other.elements;
+        other.elements = tmp_elements;
     }
 };
 
@@ -126,18 +129,22 @@ Status AllocateMatrix(int64_t rows, int64_t cols, DeviceMatrix* out)
     {
         return Status::kInvalidValue;
     }
+    if (out->ptr && out->elements == count)
+    {
+        return Status::kSuccess;
+    }
     Complex* ptr = nullptr;
     if (cudaMalloc(&ptr, count * sizeof(Complex)) != cudaSuccess)
     {
         return Status::kCudaError;
     }
-    out->Reset(ptr);
+    out->Reset(ptr, count);
     return Status::kSuccess;
 }
 
 Status MakeIdentity(int64_t n, DeviceMatrix* out, cudaStream_t stream)
 {
-    RETURN_IF_ERROR(AllocateMatrix(n, n, out));
+    CHECK(AllocateMatrix(n, n, out));
 
     int64_t total = n * n;
     int threads = 256;
@@ -149,7 +156,7 @@ Status MakeIdentity(int64_t n, DeviceMatrix* out, cudaStream_t stream)
 Status
 ScaleMatrix(const Complex* A, int64_t n, Complex scalar, DeviceMatrix* out, cudaStream_t stream)
 {
-    RETURN_IF_ERROR(AllocateMatrix(n, n, out));
+    CHECK(AllocateMatrix(n, n, out));
 
     int64_t count = n * n;
     int threads = 256;
@@ -161,7 +168,7 @@ ScaleMatrix(const Complex* A, int64_t n, Complex scalar, DeviceMatrix* out, cuda
 Status
 AddMatrix(ComplexMatrixOps& ops, const Complex* A, const Complex* B, int64_t n, DeviceMatrix* out)
 {
-    RETURN_IF_ERROR(AllocateMatrix(n, n, out));
+    CHECK(AllocateMatrix(n, n, out));
     return ops.MatAdd(A, B, out->get(), n, n);
 }
 
@@ -173,7 +180,7 @@ Status AddInPlace(ComplexMatrixOps& ops, Complex* A, const Complex* B, int64_t n
 Status
 MatMul(ComplexMatrixOps& ops, const Complex* A, const Complex* B, int64_t n, DeviceMatrix* out)
 {
-    RETURN_IF_ERROR(AllocateMatrix(n, n, out));
+    CHECK(AllocateMatrix(n, n, out));
     return ops.MatMul(A, B, out->get(), n, n, n);
 }
 
@@ -187,10 +194,10 @@ Status ComputeMatrixNorm1(const Complex* A, int64_t n, double* out_norm, cudaStr
     const size_t count = static_cast<size_t>(n) * static_cast<size_t>(n);
     std::vector<Complex> host(count);
 
-    RETURN_IF_ERROR(StatusFromCuda(
+    CHECK(StatusFromCuda(
         cudaMemcpyAsync(host.data(), A, count * sizeof(Complex), cudaMemcpyDeviceToHost, stream)));
 
-    RETURN_IF_ERROR(StatusFromCuda(cudaStreamSynchronize(stream)));
+    CHECK(StatusFromCuda(cudaStreamSynchronize(stream)));
 
     double max_norm = 0.0;
     for (int64_t col = 0; col < n; ++col)
@@ -217,11 +224,11 @@ Status ComputeMatrixNorm1(const Complex* A, int64_t n, double* out_norm, cudaStr
 } // namespace
 
 Status ComputeTFromPQ(const Complex* P,
-                         const Complex* Q,
-                         int64_t n,
-                         Real k0d,
-                         TMatrix* out,
-                         cudaStream_t stream)
+                      const Complex* Q,
+                      int64_t n,
+                      Real k0d,
+                      TMatrix* out,
+                      cudaStream_t stream)
 {
     if (!P || !Q || !out || n <= 0)
     {
@@ -234,12 +241,12 @@ Status ComputeTFromPQ(const Complex* P,
     out->T_22 = nullptr;
 
     ComplexMatrixOps ops(stream);
-    RETURN_IF_ERROR(ops.SetStream(stream));
+    CHECK(ops.SetStream(stream));
 
     double Pnorm = 0.0;
     double Qnorm = 0.0;
-    RETURN_IF_ERROR(ComputeMatrixNorm1(P, n, &Pnorm, stream));
-    RETURN_IF_ERROR(ComputeMatrixNorm1(Q, n, &Qnorm, stream));
+    CHECK(ComputeMatrixNorm1(P, n, &Pnorm, stream));
+    CHECK(ComputeMatrixNorm1(Q, n, &Qnorm, stream));
 
     const double Rnorm = std::max(Pnorm, Qnorm);
     const double scaled = Rnorm * static_cast<double>(k0d);
@@ -258,31 +265,33 @@ Status ComputeTFromPQ(const Complex* P,
     const Complex scale_neg = make_complex(static_cast<Real>(-scale_A), static_cast<Real>(0.0));
 
     DeviceMatrix I2;
-    RETURN_IF_ERROR(MakeIdentity(n, &I2, stream));
+    CHECK(MakeIdentity(n, &I2, stream));
 
     DeviceMatrix A_12;
-    RETURN_IF_ERROR(ScaleMatrix(P, n, scale_neg, &A_12, stream));
+    CHECK(ScaleMatrix(P, n, scale_neg, &A_12, stream));
 
     DeviceMatrix A_21;
-    RETURN_IF_ERROR(ScaleMatrix(Q, n, scale_pos, &A_21, stream));
+    CHECK(ScaleMatrix(Q, n, scale_pos, &A_21, stream));
 
     DeviceMatrix A2_11;
-    RETURN_IF_ERROR(MatMul(ops, A_12.get(), A_21.get(), n, &A2_11));
+    CHECK(MatMul(ops, A_12.get(), A_21.get(), n, &A2_11));
 
     DeviceMatrix A2_22;
-    RETURN_IF_ERROR(MatMul(ops, A_21.get(), A_12.get(), n, &A2_22));
+    CHECK(MatMul(ops, A_21.get(), A_12.get(), n, &A2_22));
 
     DeviceMatrix A3_12;
-    RETURN_IF_ERROR(MatMul(ops, A_12.get(), A2_22.get(), n, &A3_12));
+    CHECK(MatMul(ops, A_12.get(), A2_22.get(), n, &A3_12));
 
     DeviceMatrix A3_21;
-    RETURN_IF_ERROR(MatMul(ops, A_21.get(), A2_11.get(), n, &A3_21));
+    CHECK(MatMul(ops, A_21.get(), A2_11.get(), n, &A3_21));
 
     DeviceMatrix A6_11;
-    RETURN_IF_ERROR(MatMul(ops, A3_12.get(), A3_21.get(), n, &A6_11));
+    CHECK(MatMul(ops, A3_12.get(), A3_21.get(), n, &A6_11));
 
     DeviceMatrix A6_22;
-    RETURN_IF_ERROR(MatMul(ops, A3_21.get(), A3_12.get(), n, &A6_22));
+    CHECK(MatMul(ops, A3_21.get(), A3_12.get(), n, &A6_22));
+
+    DeviceMatrix scratch;
 
     DeviceMatrix B_11[5];
     DeviceMatrix B_12[5];
@@ -302,155 +311,124 @@ Status ComputeTFromPQ(const Complex* P,
         const Complex c4 =
             make_complex(static_cast<Real>(kExpConstant[i][4]), static_cast<Real>(0.0));
 
-        {
-            DeviceMatrix temp;
-            RETURN_IF_ERROR(ScaleMatrix(I2.get(), n, c0, &B_11[i], stream));
-            RETURN_IF_ERROR(ScaleMatrix(A2_11.get(), n, c2, &temp, stream));
-            RETURN_IF_ERROR(AddInPlace(ops, B_11[i].get(), temp.get(), n));
-            RETURN_IF_ERROR(ScaleMatrix(A6_11.get(), n, c4, &temp, stream));
-            RETURN_IF_ERROR(AddInPlace(ops, B_11[i].get(), temp.get(), n));
-        }
+        CHECK(ScaleMatrix(I2.get(), n, c0, &B_11[i], stream));
+        CHECK(ScaleMatrix(A2_11.get(), n, c2, &scratch, stream));
+        CHECK(AddInPlace(ops, B_11[i].get(), scratch.get(), n));
+        CHECK(ScaleMatrix(A6_11.get(), n, c4, &scratch, stream));
+        CHECK(AddInPlace(ops, B_11[i].get(), scratch.get(), n));
 
-        {
-            DeviceMatrix temp;
-            RETURN_IF_ERROR(ScaleMatrix(A_12.get(), n, c1, &B_12[i], stream));
-            RETURN_IF_ERROR(ScaleMatrix(A3_12.get(), n, c3, &temp, stream));
-            RETURN_IF_ERROR(AddInPlace(ops, B_12[i].get(), temp.get(), n));
-        }
+        CHECK(ScaleMatrix(A_12.get(), n, c1, &B_12[i], stream));
+        CHECK(ScaleMatrix(A3_12.get(), n, c3, &scratch, stream));
+        CHECK(AddInPlace(ops, B_12[i].get(), scratch.get(), n));
 
-        {
-            DeviceMatrix temp;
-            RETURN_IF_ERROR(ScaleMatrix(A_21.get(), n, c1, &B_21[i], stream));
-            RETURN_IF_ERROR(ScaleMatrix(A3_21.get(), n, c3, &temp, stream));
-            RETURN_IF_ERROR(AddInPlace(ops, B_21[i].get(), temp.get(), n));
-        }
+        CHECK(ScaleMatrix(A_21.get(), n, c1, &B_21[i], stream));
+        CHECK(ScaleMatrix(A3_21.get(), n, c3, &scratch, stream));
+        CHECK(AddInPlace(ops, B_21[i].get(), scratch.get(), n));
 
-        {
-            DeviceMatrix temp;
-            RETURN_IF_ERROR(ScaleMatrix(I2.get(), n, c0, &B_22[i], stream));
-            RETURN_IF_ERROR(ScaleMatrix(A2_22.get(), n, c2, &temp, stream));
-            RETURN_IF_ERROR(AddInPlace(ops, B_22[i].get(), temp.get(), n));
-            RETURN_IF_ERROR(ScaleMatrix(A6_22.get(), n, c4, &temp, stream));
-            RETURN_IF_ERROR(AddInPlace(ops, B_22[i].get(), temp.get(), n));
-        }
+        CHECK(ScaleMatrix(I2.get(), n, c0, &B_22[i], stream));
+        CHECK(ScaleMatrix(A2_22.get(), n, c2, &scratch, stream));
+        CHECK(AddInPlace(ops, B_22[i].get(), scratch.get(), n));
+        CHECK(ScaleMatrix(A6_22.get(), n, c4, &scratch, stream));
+        CHECK(AddInPlace(ops, B_22[i].get(), scratch.get(), n));
     }
+
+    A2_11.Reset();
+    A2_22.Reset();
+    A3_12.Reset();
+    A3_21.Reset();
+    A6_11.Reset();
+    A6_22.Reset();
 
     DeviceMatrix A9_11;
-    RETURN_IF_ERROR(MatMul(ops, B_11[0].get(), B_11[4].get(), n, &A9_11));
-    {
-        DeviceMatrix term;
-        RETURN_IF_ERROR(MatMul(ops, B_12[0].get(), B_21[4].get(), n, &term));
-        RETURN_IF_ERROR(AddInPlace(ops, A9_11.get(), term.get(), n));
-    }
-    RETURN_IF_ERROR(AddInPlace(ops, A9_11.get(), B_11[3].get(), n));
+    CHECK(MatMul(ops, B_11[0].get(), B_11[4].get(), n, &A9_11));
+    CHECK(MatMul(ops, B_12[0].get(), B_21[4].get(), n, &scratch));
+    CHECK(AddInPlace(ops, A9_11.get(), scratch.get(), n));
+    CHECK(AddInPlace(ops, A9_11.get(), B_11[3].get(), n));
 
     DeviceMatrix A9_12;
-    RETURN_IF_ERROR(MatMul(ops, B_11[0].get(), B_12[4].get(), n, &A9_12));
-    {
-        DeviceMatrix term;
-        RETURN_IF_ERROR(MatMul(ops, B_12[0].get(), B_22[4].get(), n, &term));
-        RETURN_IF_ERROR(AddInPlace(ops, A9_12.get(), term.get(), n));
-    }
-    RETURN_IF_ERROR(AddInPlace(ops, A9_12.get(), B_12[3].get(), n));
+    CHECK(MatMul(ops, B_11[0].get(), B_12[4].get(), n, &A9_12));
+    CHECK(MatMul(ops, B_12[0].get(), B_22[4].get(), n, &scratch));
+    CHECK(AddInPlace(ops, A9_12.get(), scratch.get(), n));
+    CHECK(AddInPlace(ops, A9_12.get(), B_12[3].get(), n));
 
     DeviceMatrix A9_21;
-    RETURN_IF_ERROR(MatMul(ops, B_21[0].get(), B_11[4].get(), n, &A9_21));
-    {
-        DeviceMatrix term;
-        RETURN_IF_ERROR(MatMul(ops, B_22[0].get(), B_21[4].get(), n, &term));
-        RETURN_IF_ERROR(AddInPlace(ops, A9_21.get(), term.get(), n));
-    }
-    RETURN_IF_ERROR(AddInPlace(ops, A9_21.get(), B_21[3].get(), n));
+    CHECK(MatMul(ops, B_21[0].get(), B_11[4].get(), n, &A9_21));
+    CHECK(MatMul(ops, B_22[0].get(), B_21[4].get(), n, &scratch));
+    CHECK(AddInPlace(ops, A9_21.get(), scratch.get(), n));
+    CHECK(AddInPlace(ops, A9_21.get(), B_21[3].get(), n));
 
     DeviceMatrix A9_22;
-    RETURN_IF_ERROR(MatMul(ops, B_21[0].get(), B_12[4].get(), n, &A9_22));
-    {
-        DeviceMatrix term;
-        RETURN_IF_ERROR(MatMul(ops, B_22[0].get(), B_22[4].get(), n, &term));
-        RETURN_IF_ERROR(AddInPlace(ops, A9_22.get(), term.get(), n));
-    }
-    RETURN_IF_ERROR(AddInPlace(ops, A9_22.get(), B_22[3].get(), n));
+    CHECK(MatMul(ops, B_21[0].get(), B_12[4].get(), n, &A9_22));
+    CHECK(MatMul(ops, B_22[0].get(), B_22[4].get(), n, &scratch));
+    CHECK(AddInPlace(ops, A9_22.get(), scratch.get(), n));
+    CHECK(AddInPlace(ops, A9_22.get(), B_22[3].get(), n));
+
+    DeviceMatrix temp1;
+    DeviceMatrix temp2;
+    DeviceMatrix temp3;
 
     DeviceMatrix T_11;
     {
-        DeviceMatrix temp1;
-        DeviceMatrix temp2;
-        DeviceMatrix temp3;
-
-        RETURN_IF_ERROR(AddMatrix(ops, B_11[2].get(), A9_11.get(), n, &temp1));
-        RETURN_IF_ERROR(MatMul(ops, temp1.get(), A9_11.get(), n, &temp2));
-        RETURN_IF_ERROR(AddMatrix(ops, B_12[2].get(), A9_12.get(), n, &temp1));
-        RETURN_IF_ERROR(MatMul(ops, temp1.get(), A9_21.get(), n, &temp3));
-        RETURN_IF_ERROR(AddMatrix(ops, B_11[1].get(), temp2.get(), n, &T_11));
-        RETURN_IF_ERROR(AddInPlace(ops, T_11.get(), temp3.get(), n));
+        CHECK(AddMatrix(ops, B_11[2].get(), A9_11.get(), n, &temp1));
+        CHECK(MatMul(ops, temp1.get(), A9_11.get(), n, &temp2));
+        CHECK(AddMatrix(ops, B_12[2].get(), A9_12.get(), n, &temp1));
+        CHECK(MatMul(ops, temp1.get(), A9_21.get(), n, &temp3));
+        CHECK(AddMatrix(ops, B_11[1].get(), temp2.get(), n, &T_11));
+        CHECK(AddInPlace(ops, T_11.get(), temp3.get(), n));
     }
 
     DeviceMatrix T_12;
     {
-        DeviceMatrix temp1;
-        DeviceMatrix temp2;
-        DeviceMatrix temp3;
-
-        RETURN_IF_ERROR(AddMatrix(ops, B_11[2].get(), A9_11.get(), n, &temp1));
-        RETURN_IF_ERROR(MatMul(ops, temp1.get(), A9_12.get(), n, &temp2));
-        RETURN_IF_ERROR(AddMatrix(ops, B_12[2].get(), A9_12.get(), n, &temp1));
-        RETURN_IF_ERROR(MatMul(ops, temp1.get(), A9_22.get(), n, &temp3));
-        RETURN_IF_ERROR(AddMatrix(ops, B_12[1].get(), temp2.get(), n, &T_12));
-        RETURN_IF_ERROR(AddInPlace(ops, T_12.get(), temp3.get(), n));
+        CHECK(AddMatrix(ops, B_11[2].get(), A9_11.get(), n, &temp1));
+        CHECK(MatMul(ops, temp1.get(), A9_12.get(), n, &temp2));
+        CHECK(AddMatrix(ops, B_12[2].get(), A9_12.get(), n, &temp1));
+        CHECK(MatMul(ops, temp1.get(), A9_22.get(), n, &temp3));
+        CHECK(AddMatrix(ops, B_12[1].get(), temp2.get(), n, &T_12));
+        CHECK(AddInPlace(ops, T_12.get(), temp3.get(), n));
     }
 
     DeviceMatrix T_21;
     {
-        DeviceMatrix temp1;
-        DeviceMatrix temp2;
-        DeviceMatrix temp3;
-
-        RETURN_IF_ERROR(AddMatrix(ops, B_21[2].get(), A9_21.get(), n, &temp1));
-        RETURN_IF_ERROR(MatMul(ops, temp1.get(), A9_11.get(), n, &temp2));
-        RETURN_IF_ERROR(AddMatrix(ops, B_22[2].get(), A9_22.get(), n, &temp1));
-        RETURN_IF_ERROR(MatMul(ops, temp1.get(), A9_21.get(), n, &temp3));
-        RETURN_IF_ERROR(AddMatrix(ops, B_21[1].get(), temp2.get(), n, &T_21));
-        RETURN_IF_ERROR(AddInPlace(ops, T_21.get(), temp3.get(), n));
+        CHECK(AddMatrix(ops, B_21[2].get(), A9_21.get(), n, &temp1));
+        CHECK(MatMul(ops, temp1.get(), A9_11.get(), n, &temp2));
+        CHECK(AddMatrix(ops, B_22[2].get(), A9_22.get(), n, &temp1));
+        CHECK(MatMul(ops, temp1.get(), A9_21.get(), n, &temp3));
+        CHECK(AddMatrix(ops, B_21[1].get(), temp2.get(), n, &T_21));
+        CHECK(AddInPlace(ops, T_21.get(), temp3.get(), n));
     }
 
     DeviceMatrix T_22;
     {
-        DeviceMatrix temp1;
-        DeviceMatrix temp2;
-        DeviceMatrix temp3;
-
-        RETURN_IF_ERROR(AddMatrix(ops, B_21[2].get(), A9_21.get(), n, &temp1));
-        RETURN_IF_ERROR(MatMul(ops, temp1.get(), A9_12.get(), n, &temp2));
-        RETURN_IF_ERROR(AddMatrix(ops, B_22[2].get(), A9_22.get(), n, &temp1));
-        RETURN_IF_ERROR(MatMul(ops, temp1.get(), A9_22.get(), n, &temp3));
-        RETURN_IF_ERROR(AddMatrix(ops, B_22[1].get(), temp2.get(), n, &T_22));
-        RETURN_IF_ERROR(AddInPlace(ops, T_22.get(), temp3.get(), n));
+        CHECK(AddMatrix(ops, B_21[2].get(), A9_21.get(), n, &temp1));
+        CHECK(MatMul(ops, temp1.get(), A9_12.get(), n, &temp2));
+        CHECK(AddMatrix(ops, B_22[2].get(), A9_22.get(), n, &temp1));
+        CHECK(MatMul(ops, temp1.get(), A9_22.get(), n, &temp3));
+        CHECK(AddMatrix(ops, B_22[1].get(), temp2.get(), n, &T_22));
+        CHECK(AddInPlace(ops, T_22.get(), temp3.get(), n));
     }
 
+    DeviceMatrix tmp11;
+    DeviceMatrix tmp12;
+    DeviceMatrix tmp21;
+    DeviceMatrix tmp22;
     for (int i = 0; i < m; ++i)
     {
-        DeviceMatrix tmp11;
-        DeviceMatrix tmp12;
-        DeviceMatrix tmp21;
-        DeviceMatrix tmp22;
-        DeviceMatrix term;
-
-        RETURN_IF_ERROR(MatMul(ops, T_11.get(), T_11.get(), n, &tmp11));
-        RETURN_IF_ERROR(MatMul(ops, T_12.get(), T_21.get(), n, &term));
-        RETURN_IF_ERROR(AddInPlace(ops, tmp11.get(), term.get(), n));
-        RETURN_IF_ERROR(MatMul(ops, T_11.get(), T_12.get(), n, &tmp12));
-        RETURN_IF_ERROR(MatMul(ops, T_12.get(), T_22.get(), n, &term));
-        RETURN_IF_ERROR(AddInPlace(ops, tmp12.get(), term.get(), n));
-        RETURN_IF_ERROR(MatMul(ops, T_21.get(), T_11.get(), n, &tmp21));
-        RETURN_IF_ERROR(MatMul(ops, T_22.get(), T_21.get(), n, &term));
-        RETURN_IF_ERROR(AddInPlace(ops, tmp21.get(), term.get(), n));
-        RETURN_IF_ERROR(MatMul(ops, T_21.get(), T_12.get(), n, &tmp22));
-        RETURN_IF_ERROR(MatMul(ops, T_22.get(), T_22.get(), n, &term));
-        RETURN_IF_ERROR(AddInPlace(ops, tmp22.get(), term.get(), n));
-        T_11.Reset(tmp11.Release());
-        T_12.Reset(tmp12.Release());
-        T_21.Reset(tmp21.Release());
-        T_22.Reset(tmp22.Release());
+        CHECK(MatMul(ops, T_11.get(), T_11.get(), n, &tmp11));
+        CHECK(MatMul(ops, T_12.get(), T_21.get(), n, &scratch));
+        CHECK(AddInPlace(ops, tmp11.get(), scratch.get(), n));
+        CHECK(MatMul(ops, T_11.get(), T_12.get(), n, &tmp12));
+        CHECK(MatMul(ops, T_12.get(), T_22.get(), n, &scratch));
+        CHECK(AddInPlace(ops, tmp12.get(), scratch.get(), n));
+        CHECK(MatMul(ops, T_21.get(), T_11.get(), n, &tmp21));
+        CHECK(MatMul(ops, T_22.get(), T_21.get(), n, &scratch));
+        CHECK(AddInPlace(ops, tmp21.get(), scratch.get(), n));
+        CHECK(MatMul(ops, T_21.get(), T_12.get(), n, &tmp22));
+        CHECK(MatMul(ops, T_22.get(), T_22.get(), n, &scratch));
+        CHECK(AddInPlace(ops, tmp22.get(), scratch.get(), n));
+        T_11.Swap(tmp11);
+        T_12.Swap(tmp12);
+        T_21.Swap(tmp21);
+        T_22.Swap(tmp22);
     }
 
     out->T_11 = T_11.Release();

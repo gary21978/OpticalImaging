@@ -2,8 +2,8 @@
 
 #include <cuComplex.h>
 #include <cuda_runtime.h>
+#include <cstdio>
 #include <iomanip>
-#include <iostream>
 
 #ifndef USE_DOUBLE_PRECISION
 #define USE_DOUBLE_PRECISION 1
@@ -78,22 +78,31 @@ inline const char* StatusToString(Status status)
     } while (false)
 #endif
 
-inline bool CheckCuda(cudaError_t error)
+inline Status CheckResult(Status status, const char* file, int line)
 {
-    if (error == cudaSuccess)
+    if (status != Status::kSuccess)
     {
-        return true;
+        std::fprintf(stderr, "ERROR: %s(%d), %s\n", file, line, StatusToString(status));
     }
-    std::cerr << "cuda error: " << cudaGetErrorString(error) << "\n";
-    return false;
+    return status;
 }
 
-inline bool CheckStatus(Status status)
+inline Status CheckResult(cudaError_t error, const char* file, int line)
 {
-    if (status == Status::kSuccess)
+    if (error != cudaSuccess)
     {
-        return true;
+        std::fprintf(stderr, "ERROR: %s(%d), %s\n", file, line, cudaGetErrorString(error));
+        return Status::kCudaError;
     }
-    std::cerr << "status: " << StatusToString(status) << "\n";
-    return false;
+    return Status::kSuccess;
 }
+
+#define CHECK(call)                                                                                \
+    do                                                                                             \
+    {                                                                                              \
+        Status status_ = CheckResult((call), __FILE__, __LINE__);                                   \
+        if (status_ != Status::kSuccess)                                                           \
+        {                                                                                          \
+            return status_;                                                                        \
+        }                                                                                          \
+    } while (false)

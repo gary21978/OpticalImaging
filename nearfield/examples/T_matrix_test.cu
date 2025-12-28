@@ -1,14 +1,40 @@
+#include <cstdint>
 #include <iostream>
 #include <vector>
 
-#include "common_utils.h"
-#include "matrix_print_utils.h"
 #include "layer_matrix.h"
+#include "matrix_print_utils.h"
 
-int main()
+namespace
+{
+
+struct DeviceBuffer
+{
+    Complex* ptr = nullptr;
+
+    ~DeviceBuffer() { SAFEFREE(ptr); }
+
+    Complex** address() { return &ptr; }
+    Complex* get() const { return ptr; }
+};
+
+struct TMatrixHolder
+{
+    TMatrix value{};
+
+    ~TMatrixHolder()
+    {
+        SAFEFREE(value.T_11);
+        SAFEFREE(value.T_12);
+        SAFEFREE(value.T_21);
+        SAFEFREE(value.T_22);
+    }
+};
+
+Status RunTest()
 {
     const int n = 2;
-    const uint64_t elements = static_cast<int64_t>(n * n);
+    const int64_t elements = static_cast<int64_t>(n) * n;
     const Real k0d = static_cast<Real>(0.25);
 
     std::vector<Complex> hP(elements);
@@ -29,60 +55,31 @@ int main()
     set(hQ, 0, 1, -0.1, 0.05);
     set(hQ, 1, 1, 0.7, 0.0);
 
-    Complex* dP = nullptr;
-    Complex* dQ = nullptr;
+    DeviceBuffer dP;
+    DeviceBuffer dQ;
+    TMatrixHolder T;
 
-    TMatrix T{};
+    CHECK(cudaMalloc(dP.address(), elements * sizeof(Complex)));
+    CHECK(cudaMalloc(dQ.address(), elements * sizeof(Complex)));
 
-    auto cleanup = [&]()
-    {
-        SAFEFREE(T.T_11);
-        SAFEFREE(T.T_12);
-        SAFEFREE(T.T_21);
-        SAFEFREE(T.T_22);
-        SAFEFREE(dQ);
-        SAFEFREE(dP);
-    };
+    CHECK(cudaMemcpy(dP.get(), hP.data(), elements * sizeof(Complex), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(dQ.get(), hQ.data(), elements * sizeof(Complex), cudaMemcpyHostToDevice));
 
-    if (!CheckCuda(cudaMalloc(&dP, elements * sizeof(Complex))) ||
-        !CheckCuda(cudaMalloc(&dQ, elements * sizeof(Complex))))
-    {
-        cleanup();
-        return 1;
-    }
-
-    if (!CheckCuda(cudaMemcpy(dP, hP.data(), elements * sizeof(Complex),
-                              cudaMemcpyHostToDevice)) ||
-        !CheckCuda(cudaMemcpy(dQ, hQ.data(), elements * sizeof(Complex),
-                              cudaMemcpyHostToDevice)))
-    {
-        cleanup();
-        return 1;
-    }
-
-    if (!CheckStatus(ComputeTFromPQ(dP, dQ, n, k0d, &T)))
-    {
-        cleanup();
-        return 1;
-    }
+    CHECK(ComputeTFromPQ(dP.get(), dQ.get(), n, k0d, &T.value));
 
     std::vector<Complex> hT11(elements);
     std::vector<Complex> hT12(elements);
     std::vector<Complex> hT21(elements);
     std::vector<Complex> hT22(elements);
 
-    if (!CheckCuda(cudaMemcpy(hT11.data(), T.T_11,
-                              elements * sizeof(Complex), cudaMemcpyDeviceToHost)) ||
-        !CheckCuda(cudaMemcpy(hT12.data(), T.T_12,
-                              elements * sizeof(Complex), cudaMemcpyDeviceToHost)) ||
-        !CheckCuda(cudaMemcpy(hT21.data(), T.T_21,
-                              elements * sizeof(Complex), cudaMemcpyDeviceToHost)) ||
-        !CheckCuda(cudaMemcpy(hT22.data(), T.T_22,
-                              elements * sizeof(Complex), cudaMemcpyDeviceToHost)))
-    {
-        cleanup();
-        return 1;
-    }
+    CHECK(cudaMemcpy(
+        hT11.data(), T.value.T_11, elements * sizeof(Complex), cudaMemcpyDeviceToHost));
+    CHECK(cudaMemcpy(
+        hT12.data(), T.value.T_12, elements * sizeof(Complex), cudaMemcpyDeviceToHost));
+    CHECK(cudaMemcpy(
+        hT21.data(), T.value.T_21, elements * sizeof(Complex), cudaMemcpyDeviceToHost));
+    CHECK(cudaMemcpy(
+        hT22.data(), T.value.T_22, elements * sizeof(Complex), cudaMemcpyDeviceToHost));
 
     std::cout << "\n==== ComputeTFromPQ demo ====" << "\n";
     std::cout << PRINT_PRECISION;
@@ -93,6 +90,12 @@ int main()
     PrintMatrix(hT21, n, "T_21");
     PrintMatrix(hT22, n, "T_22");
 
-    cleanup();
-    return 0;
+    return Status::kSuccess;
+}
+
+} // namespace
+
+int main()
+{
+    return RunTest() == Status::kSuccess ? 0 : 1;
 }
