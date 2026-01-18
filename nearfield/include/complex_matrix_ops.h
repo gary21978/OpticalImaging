@@ -35,6 +35,21 @@ class ComplexMatrixOps
                   cublasOperation_t transA = CUBLAS_OP_N,
                   cublasOperation_t transB = CUBLAS_OP_N);
 
+    Status DiagLeftMatMul(const Complex* diag,
+                          const Complex* B,
+                          Complex* C,
+                          int64_t m,
+                          int64_t n);
+    Status DiagLeftMatMul(const Complex* diag, const Complex* B, Complex* C, int64_t n);
+
+    Status DiagRightMatMul(const Complex* A,
+                           const Complex* diag,
+                           Complex* C,
+                           int64_t m,
+                           int64_t n);
+                           
+    Status DiagRightMatMul(const Complex* A, const Complex* diag, Complex* C, int64_t n);
+
     Status MatAdd(const Complex* A, const Complex* B, Complex* C, int64_t m, int64_t n);
     Status MatAdd(const Complex* A, const Complex* B, Complex* C, int64_t n);
 

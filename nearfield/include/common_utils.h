@@ -1,8 +1,8 @@
 #pragma once
 
+#include <cstdio>
 #include <cuComplex.h>
 #include <cuda_runtime.h>
-#include <cstdio>
 #include <iomanip>
 
 #ifndef USE_DOUBLE_PRECISION
@@ -67,14 +67,14 @@ inline const char* StatusToString(Status status)
 }
 
 #ifndef SAFEFREE
-#define SAFEFREE(ptr)             \
-    do                            \
-    {                             \
-        if (ptr)                  \
-        {                         \
-            cudaFree(ptr);        \
-            (ptr) = nullptr;      \
-        }                         \
+#define SAFEFREE(ptr)                                                                              \
+    do                                                                                             \
+    {                                                                                              \
+        if (ptr)                                                                                   \
+        {                                                                                          \
+            cudaFree(ptr);                                                                         \
+            (ptr) = nullptr;                                                                       \
+        }                                                                                          \
     } while (false)
 #endif
 
@@ -100,7 +100,7 @@ inline Status CheckResult(cudaError_t error, const char* file, int line)
 #define CHECK(call)                                                                                \
     do                                                                                             \
     {                                                                                              \
-        Status status_ = CheckResult((call), __FILE__, __LINE__);                                   \
+        Status status_ = CheckResult((call), __FILE__, __LINE__);                                  \
         if (status_ != Status::kSuccess)                                                           \
         {                                                                                          \
             return status_;                                                                        \

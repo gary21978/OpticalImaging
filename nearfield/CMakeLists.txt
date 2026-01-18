@@ -26,6 +26,9 @@ target_link_libraries(basic_arithm_test PRIVATE complex_ops)
 add_executable(T_matrix_test ${CMAKE_CURRENT_SOURCE_DIR}/examples/T_matrix_test.cu)
 target_link_libraries(T_matrix_test PRIVATE complex_ops)
 
+add_executable(S_matrix_test ${CMAKE_CURRENT_SOURCE_DIR}/examples/S_matrix_test.cu)
+target_link_libraries(S_matrix_test PRIVATE complex_ops)
+
 if(USE_DOUBLE_PRECISION)
   set(PRECISION_DEF USE_DOUBLE_PRECISION=1)
 else()
@@ -35,6 +38,7 @@ endif()
 target_compile_definitions(complex_ops PUBLIC ${PRECISION_DEF})
 target_compile_definitions(basic_arithm_test PRIVATE ${PRECISION_DEF})
 target_compile_definitions(T_matrix_test PRIVATE ${PRECISION_DEF})
+target_compile_definitions(S_matrix_test PRIVATE ${PRECISION_DEF})
 
 # Optimization
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -march=native -ffast-math -funroll-loops")

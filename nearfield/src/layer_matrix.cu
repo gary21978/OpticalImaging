@@ -185,6 +185,62 @@ __device__ inline Complex Multiply(Complex a, Complex b)
     return make_complex(ar * br - ai * bi, ar * bi + ai * br);
 }
 
+__global__ void V0LeftMulKernel(const Complex* v11,
+                                const Complex* v12,
+                                const Complex* v21,
+                                const Complex* v22,
+                                const Complex* b,
+                                Complex* c,
+                                int64_t n,
+                                int64_t n2)
+{
+    int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    int64_t total = n2 * n;
+    if (idx >= total)
+    {
+        return;
+    }
+    int64_t row = idx % n2;
+    int64_t col = idx / n2;
+    int64_t top_index = col * n + row;
+    int64_t bottom_index = top_index + n2;
+
+    const Complex b_top = b[top_index];
+    const Complex b_bottom = b[bottom_index];
+    c[top_index] =
+        complex_add(Multiply(v11[row], b_top), Multiply(v12[row], b_bottom));
+    c[bottom_index] =
+        complex_add(Multiply(v21[row], b_top), Multiply(v22[row], b_bottom));
+}
+
+__global__ void V0RightMulKernel(const Complex* v11,
+                                 const Complex* v12,
+                                 const Complex* v21,
+                                 const Complex* v22,
+                                 const Complex* b,
+                                 Complex* c,
+                                 int64_t n,
+                                 int64_t n2)
+{
+    int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    int64_t total = n2 * n;
+    if (idx >= total)
+    {
+        return;
+    }
+    int64_t row = idx % n;
+    int64_t col = idx / n;
+    int64_t left_index = col * n + row;
+    int64_t right_index = left_index + n2 * n;
+
+    const Complex b_left = b[left_index];
+    const Complex b_right = b[right_index];
+    c[left_index] =
+        complex_add(Multiply(b_left, v11[col]), Multiply(b_right, v21[col]));
+    c[right_index] =
+        complex_add(Multiply(b_left, v12[col]), Multiply(b_right, v22[col]));
+}
+
 __global__ void ScaleKernel(const Complex* A, Complex* C, int64_t count, Complex scalar)
 {
     int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -294,6 +350,19 @@ ScaleMatrix(const Complex* A, int64_t n, Complex scalar, DeviceMatrix* out, cuda
     return StatusFromCuda(cudaGetLastError());
 }
 
+Status ScaleInPlace(Complex* A, int64_t n, Complex scalar, cudaStream_t stream)
+{
+    if (!A || n <= 0)
+    {
+        return Status::kInvalidValue;
+    }
+    int64_t count = n * n;
+    int threads = 256;
+    int blocks = static_cast<int>((count + threads - 1) / threads);
+    ScaleKernel<<<blocks, threads, 0, stream>>>(A, A, count, scalar);
+    return StatusFromCuda(cudaGetLastError());
+}
+
 Status
 AddMatrix(ComplexMatrixOps& ops, const Complex* A, const Complex* B, int64_t n, DeviceMatrix* out)
 {
@@ -301,9 +370,21 @@ AddMatrix(ComplexMatrixOps& ops, const Complex* A, const Complex* B, int64_t n, 
     return ops.MatAdd(A, B, out->get(), n, n);
 }
 
+Status
+SubMatrix(ComplexMatrixOps& ops, const Complex* A, const Complex* B, int64_t n, DeviceMatrix* out)
+{
+    CHECK(AllocateMatrix(n, n, out));
+    return ops.MatSub(A, B, out->get(), n, n);
+}
+
 Status AddInPlace(ComplexMatrixOps& ops, Complex* A, const Complex* B, int64_t n)
 {
     return ops.MatAdd(A, B, A, n, n);
+}
+
+Status SubInPlace(ComplexMatrixOps& ops, Complex* A, const Complex* B, int64_t n)
+{
+    return ops.MatSub(A, B, A, n, n);
 }
 
 Status
@@ -311,6 +392,57 @@ MatMul(ComplexMatrixOps& ops, const Complex* A, const Complex* B, int64_t n, Dev
 {
     CHECK(AllocateMatrix(n, n, out));
     return ops.MatMul(A, B, out->get(), n, n, n);
+}
+
+Status CopyMatrix(const Complex* src, Complex* dst, int64_t n, cudaStream_t stream)
+{
+    if (!src || !dst || n <= 0)
+    {
+        return Status::kInvalidValue;
+    }
+    const size_t count = static_cast<size_t>(n) * static_cast<size_t>(n);
+    return StatusFromCuda(
+        cudaMemcpyAsync(dst, src, count * sizeof(Complex), cudaMemcpyDeviceToDevice, stream));
+}
+
+Status ApplyV0Left(const VMatrix& V,
+                   const Complex* B,
+                   int64_t n,
+                   DeviceMatrix* out,
+                   cudaStream_t stream)
+{
+    if (!B || !out || !V.V_11 || !V.V_12 || !V.V_21 || !V.V_22 || n <= 0 || (n % 2) != 0)
+    {
+        return Status::kInvalidValue;
+    }
+    CHECK(AllocateMatrix(n, n, out));
+    int64_t n2 = n / 2;
+    int64_t total = n2 * n;
+    int threads = 256;
+    int blocks = static_cast<int>((total + threads - 1) / threads);
+    V0LeftMulKernel<<<blocks, threads, 0, stream>>>(
+        V.V_11, V.V_12, V.V_21, V.V_22, B, out->get(), n, n2);
+    return StatusFromCuda(cudaGetLastError());
+}
+
+Status ApplyV0Right(const VMatrix& V,
+                    const Complex* B,
+                    int64_t n,
+                    DeviceMatrix* out,
+                    cudaStream_t stream)
+{
+    if (!B || !out || !V.V_11 || !V.V_12 || !V.V_21 || !V.V_22 || n <= 0 || (n % 2) != 0)
+    {
+        return Status::kInvalidValue;
+    }
+    CHECK(AllocateMatrix(n, n, out));
+    int64_t n2 = n / 2;
+    int64_t total = n2 * n;
+    int threads = 256;
+    int blocks = static_cast<int>((total + threads - 1) / threads);
+    V0RightMulKernel<<<blocks, threads, 0, stream>>>(
+        V.V_11, V.V_12, V.V_21, V.V_22, B, out->get(), n, n2);
+    return StatusFromCuda(cudaGetLastError());
 }
 
 Status ComputeMatrixNorm1(const Complex* A, int64_t n, double* out_norm, cudaStream_t stream)
@@ -369,18 +501,18 @@ Status ComputeTFromPQ(const Complex* P,
                       const Complex* Q,
                       int64_t n,
                       Real k0d,
-                      TMatrix* out,
+                      TMatrix* T,
                       cudaStream_t stream)
 {
-    if (!P || !Q || !out || n <= 0)
+    if (!P || !Q || !T || n <= 0)
     {
         return Status::kInvalidValue;
     }
 
-    out->T_11 = nullptr;
-    out->T_12 = nullptr;
-    out->T_21 = nullptr;
-    out->T_22 = nullptr;
+    T->T_11 = nullptr;
+    T->T_12 = nullptr;
+    T->T_21 = nullptr;
+    T->T_22 = nullptr;
 
     ComplexMatrixOps ops(stream);
     CHECK(ops.SetStream(stream));
@@ -434,7 +566,6 @@ Status ComputeTFromPQ(const Complex* P,
     CHECK(MatMul(ops, A3_21.get(), A3_12.get(), n, &A6_22));
 
     DeviceMatrix scratch;
-
     DeviceMatrix B_11[5];
     DeviceMatrix B_12[5];
     DeviceMatrix B_21[5];
@@ -553,6 +684,7 @@ Status ComputeTFromPQ(const Complex* P,
     DeviceMatrix tmp12;
     DeviceMatrix tmp21;
     DeviceMatrix tmp22;
+    
     for (int i = 0; i < m; ++i)
     {
         CHECK(MatMul(ops, T_11.get(), T_11.get(), n, &tmp11));
@@ -573,9 +705,94 @@ Status ComputeTFromPQ(const Complex* P,
         T_22.Swap(tmp22);
     }
 
-    out->T_11 = T_11.Release();
-    out->T_12 = T_12.Release();
-    out->T_21 = T_21.Release();
-    out->T_22 = T_22.Release();
+    T->T_11 = T_11.Release();
+    T->T_12 = T_12.Release();
+    T->T_21 = T_21.Release();
+    T->T_22 = T_22.Release();
+    return Status::kSuccess;
+}
+
+Status ComputeSFromT(const TMatrix& T,
+                     const VMatrix& V,
+                     int64_t n,
+                     SMatrix* S,
+                     cudaStream_t stream)
+{
+    if (!S || !T.T_11 || !T.T_12 || !T.T_21 || !T.T_22 || !V.V_11 || !V.V_12 || !V.V_21 ||
+        !V.V_22 || n <= 0 || (n % 2) != 0)
+    {
+        return Status::kInvalidValue;
+    }
+
+    S->S_11 = nullptr;
+    S->S_12 = nullptr;
+    S->S_21 = nullptr;
+    S->S_22 = nullptr;
+
+    ComplexMatrixOps ops(stream);
+    CHECK(ops.SetStream(stream));
+
+    const Complex imag = make_complex(static_cast<Real>(0.0), static_cast<Real>(1.0));
+    const Complex half = make_complex(static_cast<Real>(0.5), static_cast<Real>(0.0));
+    const Complex neg_one = make_complex(static_cast<Real>(-1.0), static_cast<Real>(0.0));
+
+    DeviceMatrix tmp_left;
+    DeviceMatrix tmp_right;
+    DeviceMatrix A;
+    DeviceMatrix D;
+
+    CHECK(ApplyV0Left(V, T.T_21, n, &tmp_left, stream));
+    CHECK(ScaleInPlace(tmp_left.get(), n, imag, stream));
+
+    CHECK(AllocateMatrix(n, n, &A));
+    CHECK(CopyMatrix(T.T_11, A.get(), n, stream));
+    CHECK(AddInPlace(ops, A.get(), tmp_left.get(), n));
+
+    CHECK(ApplyV0Left(V, T.T_22, n, &tmp_left, stream));
+
+    CHECK(AllocateMatrix(n, n, &tmp_right));
+    CHECK(CopyMatrix(T.T_12, tmp_right.get(), n, stream));
+    CHECK(ScaleInPlace(tmp_right.get(), n, imag, stream));
+    CHECK(SubInPlace(ops, tmp_right.get(), tmp_left.get(), n));
+
+    CHECK(ApplyV0Right(V, tmp_right.get(), n, &tmp_right, stream));
+
+    CHECK(SubMatrix(ops, A.get(), tmp_right.get(), n, &D));
+    CHECK(ScaleInPlace(D.get(), n, half, stream));
+
+    CHECK(AddInPlace(ops, A.get(), tmp_right.get(), n));
+    CHECK(ScaleInPlace(A.get(), n, half, stream));
+
+    CHECK(MakeIdentity(n, &tmp_right, stream));
+
+    DeviceMatrix S11;
+    CHECK(AllocateMatrix(n, n, &S11));
+    CHECK(ops.Solve(A.get(), tmp_right.get(), S11.get(), n));
+
+    CHECK(MatMul(ops, S11.get(), D.get(), n, &tmp_right));
+    CHECK(ScaleInPlace(tmp_right.get(), n, neg_one, stream));
+
+    DeviceMatrix S21;
+    CHECK(AllocateMatrix(n, n, &S21));
+    CHECK(StatusFromCuda(cudaMemcpyAsync(
+        S21.get(),
+        tmp_right.get(),
+        static_cast<size_t>(n) * static_cast<size_t>(n) * sizeof(Complex),
+        cudaMemcpyDeviceToDevice,
+        stream)));
+
+    DeviceMatrix S22;
+    CHECK(AllocateMatrix(n, n, &S22));
+    CHECK(StatusFromCuda(cudaMemcpyAsync(
+        S22.get(),
+        S11.get(),
+        static_cast<size_t>(n) * static_cast<size_t>(n) * sizeof(Complex),
+        cudaMemcpyDeviceToDevice,
+        stream)));
+
+    S->S_11 = S11.Release();
+    S->S_12 = tmp_right.Release();
+    S->S_21 = S21.Release();
+    S->S_22 = S22.Release();
     return Status::kSuccess;
 }

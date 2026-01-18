@@ -38,6 +38,43 @@ __global__ void SubKernel(const Complex* A, const Complex* B, Complex* C, int64_
     }
 }
 
+__device__ inline Complex Multiply(Complex a, Complex b)
+{
+    const Real ar = complex_real(a);
+    const Real ai = complex_imag(a);
+    const Real br = complex_real(b);
+    const Real bi = complex_imag(b);
+    return make_complex(ar * br - ai * bi, ar * bi + ai * br);
+}
+
+__global__ void LeftDiagMulKernel(const Complex* diag,
+                                 const Complex* B,
+                                 Complex* C,
+                                 int64_t rows,
+                                 int64_t count)
+{
+    int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (idx < count)
+    {
+        int64_t row = idx % rows;
+        C[idx] = Multiply(diag[row], B[idx]);
+    }
+}
+
+__global__ void RightDiagMulKernel(const Complex* A,
+                                  const Complex* diag,
+                                  Complex* C,
+                                  int64_t rows,
+                                  int64_t count)
+{
+    int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (idx < count)
+    {
+        int64_t col = idx / rows;
+        C[idx] = Multiply(A[idx], diag[col]);
+    }
+}
+
 bool CheckBlasSize(int64_t value) { return value > 0 && value <= std::numeric_limits<int>::max(); }
 
 } // namespace
@@ -144,6 +181,64 @@ Status ComplexMatrixOps::MatMul(const Complex* A,
                                 cublasOperation_t transB)
 {
     return MatMul(A, B, C, n, n, n, transA, transB);
+}
+
+Status ComplexMatrixOps::DiagLeftMatMul(const Complex* diag,
+                                        const Complex* B,
+                                        Complex* C,
+                                        int64_t m,
+                                        int64_t n)
+{
+    if (!diag || !B || !C)
+    {
+        return Status::kInvalidValue;
+    }
+    if (m <= 0 || n <= 0 || m > (std::numeric_limits<int64_t>::max() / n))
+    {
+        return Status::kInvalidValue;
+    }
+    int64_t count = m * n;
+    int threads = 256;
+    int blocks = static_cast<int>((count + threads - 1) / threads);
+    LeftDiagMulKernel<<<blocks, threads, 0, stream_>>>(diag, B, C, m, count);
+    return StatusFromCuda(cudaGetLastError());
+}
+
+Status ComplexMatrixOps::DiagLeftMatMul(const Complex* diag,
+                                        const Complex* B,
+                                        Complex* C,
+                                        int64_t n)
+{
+    return DiagLeftMatMul(diag, B, C, n, n);
+}
+
+Status ComplexMatrixOps::DiagRightMatMul(const Complex* A,
+                                         const Complex* diag,
+                                         Complex* C,
+                                         int64_t m,
+                                         int64_t n)
+{
+    if (!A || !diag || !C)
+    {
+        return Status::kInvalidValue;
+    }
+    if (m <= 0 || n <= 0 || m > (std::numeric_limits<int64_t>::max() / n))
+    {
+        return Status::kInvalidValue;
+    }
+    int64_t count = m * n;
+    int threads = 256;
+    int blocks = static_cast<int>((count + threads - 1) / threads);
+    RightDiagMulKernel<<<blocks, threads, 0, stream_>>>(A, diag, C, m, count);
+    return StatusFromCuda(cudaGetLastError());
+}
+
+Status ComplexMatrixOps::DiagRightMatMul(const Complex* A,
+                                         const Complex* diag,
+                                         Complex* C,
+                                         int64_t n)
+{
+    return DiagRightMatMul(A, diag, C, n, n);
 }
 
 Status
