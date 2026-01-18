@@ -28,9 +28,7 @@ class Rcwa
 
   private:
     Status BuildKxKy(Real inc_ang, Real azi_ang, Real eps_ref);
-    Status BuildV0(const std::vector<Complex>& kx_diag,
-                   const std::vector<Complex>& ky_diag,
-                   Real eps_ref);
+    Status BuildV0(Real eps_ref);
     Status BuildPQ(const Complex* eps_conv, int64_t n, Complex* P, Complex* Q);
     Status RepeatSMatrix(SMatrix* S, int repeats, int64_t n);
 
@@ -54,13 +52,6 @@ class Rcwa
     Complex* kx_mat_ = nullptr;
     Complex* ky_mat_ = nullptr;
     VMatrix V0_{};
-
-    std::vector<Complex> kx_host_;
-    std::vector<Complex> ky_host_;
-    std::vector<Complex> v0_11_host_;
-    std::vector<Complex> v0_12_host_;
-    std::vector<Complex> v0_21_host_;
-    std::vector<Complex> v0_22_host_;
 
     std::vector<SMatrix> layer_smatrices_;
 };

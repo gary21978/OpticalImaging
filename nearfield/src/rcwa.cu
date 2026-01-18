@@ -4,7 +4,6 @@
 #include <cmath>
 #include <complex>
 #include <limits>
-#include <vector>
 
 #include "complex_matrix_ops.h"
 
@@ -23,6 +22,77 @@ __device__ inline Complex Multiply(Complex a, Complex b)
     const Real br = complex_real(b);
     const Real bi = complex_imag(b);
     return make_complex(ar * br - ai * bi, ar * bi + ai * br);
+}
+
+__device__ inline Complex Conj(Complex a)
+{
+    return make_complex(complex_real(a), -complex_imag(a));
+}
+
+__device__ inline Real Abs(Complex a)
+{
+    const Real ar = complex_real(a);
+    const Real ai = complex_imag(a);
+#if USE_DOUBLE_PRECISION
+    return sqrt(ar * ar + ai * ai);
+#else
+    return sqrtf(ar * ar + ai * ai);
+#endif
+}
+
+__device__ inline Complex SqrtComplex(Complex z)
+{
+    const Real a = complex_real(z);
+    const Real b = complex_imag(z);
+    if (b == static_cast<Real>(0.0) && a >= static_cast<Real>(0.0))
+    {
+#if USE_DOUBLE_PRECISION
+        return make_complex(sqrt(a), static_cast<Real>(0.0));
+#else
+        return make_complex(sqrtf(a), static_cast<Real>(0.0));
+#endif
+    }
+    const Real r = Abs(z);
+#if USE_DOUBLE_PRECISION
+    const Real t = sqrt((r + a) / static_cast<Real>(2.0));
+    Real u = sqrt((r - a) / static_cast<Real>(2.0));
+#else
+    const Real t = sqrtf((r + a) / static_cast<Real>(2.0));
+    Real u = sqrtf((r - a) / static_cast<Real>(2.0));
+#endif
+    if (b < static_cast<Real>(0.0))
+    {
+        u = -u;
+    }
+    return make_complex(t, u);
+}
+
+__device__ inline Complex Reciprocal(Complex z)
+{
+    const Real ar = complex_real(z);
+    const Real ai = complex_imag(z);
+    const Real denom = ar * ar + ai * ai;
+    if (denom == static_cast<Real>(0.0))
+    {
+        return make_complex(static_cast<Real>(0.0), static_cast<Real>(0.0));
+    }
+    return make_complex(ar / denom, -ai / denom);
+}
+
+__device__ inline Complex ExpI(Complex z)
+{
+    const Real a = complex_real(z);
+    const Real b = complex_imag(z);
+#if USE_DOUBLE_PRECISION
+    const Real exp_r = exp(-b);
+    const Real c = cos(a);
+    const Real s = sin(a);
+#else
+    const Real exp_r = expf(-b);
+    const Real c = cosf(a);
+    const Real s = sinf(a);
+#endif
+    return make_complex(exp_r * c, exp_r * s);
 }
 
 struct DeviceMatrix
@@ -197,31 +267,140 @@ __global__ void CopyBlockKernel(const Complex* src,
     }
 }
 
-__global__ void FillDiagBlockKernel(const Complex* diag,
-                                    Complex* dst,
-                                    int64_t n,
-                                    int64_t dst_n,
-                                    int64_t row_offset,
-                                    int64_t col_offset)
+__global__ void BuildV0iVPhaseKernel(const Complex* kx_diag,
+                                     const Complex* ky_diag,
+                                     const Complex* v0_11,
+                                     const Complex* v0_12,
+                                     const Complex* v0_21,
+                                     const Complex* v0_22,
+                                     Complex eps,
+                                     Real omega,
+                                     Real thickness,
+                                     Complex* v0iv,
+                                     Complex* phase_diag,
+                                     int64_t n,
+                                     int64_t n2)
 {
     int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    int64_t total = n * n;
-    if (idx < total)
+    if (idx >= n)
     {
-        int64_t row = idx % n;
-        int64_t col = idx / n;
-        const int64_t out_row = row + row_offset;
-        const int64_t out_col = col + col_offset;
-        if (row == col)
-        {
-            dst[out_col * dst_n + out_row] = diag[row];
-        }
-        else
-        {
-            dst[out_col * dst_n + out_row] =
-                make_complex(static_cast<Real>(0.0), static_cast<Real>(0.0));
-        }
+        return;
     }
+
+    const Complex kx = kx_diag[idx];
+    const Complex ky = ky_diag[idx];
+    const Complex kx2 = Multiply(kx, kx);
+    const Complex ky2 = Multiply(ky, ky);
+    const Complex sum = complex_add(kx2, ky2);
+    const Complex diff = complex_sub(eps, sum);
+    Complex kz = SqrtComplex(diff);
+    if (complex_imag(kz) < static_cast<Real>(0.0))
+    {
+        kz = Conj(kz);
+    }
+
+    const Complex kz_inv = Reciprocal(kz);
+    const Complex kxky = Multiply(kx, ky);
+    const Complex v11 = Multiply(make_complex(static_cast<Real>(-1.0), static_cast<Real>(0.0)),
+                                 Multiply(kxky, kz_inv));
+    const Complex v12 = complex_add(kz, Multiply(kx2, kz_inv));
+    const Complex v21 = Multiply(make_complex(static_cast<Real>(-1.0), static_cast<Real>(0.0)),
+                                 complex_add(kz, Multiply(ky2, kz_inv)));
+    const Complex v22 = Multiply(kxky, kz_inv);
+
+    const Complex term11 = Multiply(v0_11[idx], v11);
+    const Complex term12 = Multiply(v0_12[idx], v21);
+    const Complex term21 = Multiply(v0_21[idx], v11);
+    const Complex term22 = Multiply(v0_22[idx], v21);
+    const Complex term31 = Multiply(v0_11[idx], v12);
+    const Complex term32 = Multiply(v0_12[idx], v22);
+    const Complex term41 = Multiply(v0_21[idx], v12);
+    const Complex term42 = Multiply(v0_22[idx], v22);
+
+    const Complex neg_one = make_complex(static_cast<Real>(-1.0), static_cast<Real>(0.0));
+    const Complex b11 = Multiply(neg_one, complex_add(term11, term12));
+    const Complex b12 = Multiply(neg_one, complex_add(term31, term32));
+    const Complex b21 = Multiply(neg_one, complex_add(term21, term22));
+    const Complex b22 = Multiply(neg_one, complex_add(term41, term42));
+
+    const int64_t row0 = idx;
+    const int64_t row1 = idx + n;
+    const int64_t col0 = idx;
+    const int64_t col1 = idx + n;
+    v0iv[col0 * n2 + row0] = b11;
+    v0iv[col1 * n2 + row0] = b12;
+    v0iv[col0 * n2 + row1] = b21;
+    v0iv[col1 * n2 + row1] = b22;
+
+    const Complex kzt = Multiply(kz, make_complex(omega * thickness, static_cast<Real>(0.0)));
+    const Complex phase = ExpI(kzt);
+    phase_diag[idx] = phase;
+    phase_diag[idx + n] = phase;
+}
+
+__global__ void BuildV0Kernel(const Complex* kx_diag,
+                              const Complex* ky_diag,
+                              Complex eps,
+                              Complex* v0_11,
+                              Complex* v0_12,
+                              Complex* v0_21,
+                              Complex* v0_22,
+                              int64_t n)
+{
+    int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (idx >= n)
+    {
+        return;
+    }
+
+    const Complex kx = kx_diag[idx];
+    const Complex ky = ky_diag[idx];
+    const Complex kx2 = Multiply(kx, kx);
+    const Complex ky2 = Multiply(ky, ky);
+    const Complex sum = complex_add(kx2, ky2);
+    const Complex diff = complex_sub(eps, sum);
+    Complex kz = SqrtComplex(diff);
+    if (complex_imag(kz) < static_cast<Real>(0.0))
+    {
+        kz = Conj(kz);
+    }
+
+    const Complex kz_inv = Reciprocal(kz);
+    const Complex kxky = Multiply(kx, ky);
+    v0_11[idx] =
+        Multiply(make_complex(static_cast<Real>(-1.0), static_cast<Real>(0.0)),
+                 Multiply(kxky, kz_inv));
+    v0_12[idx] = complex_add(kz, Multiply(kx2, kz_inv));
+    v0_21[idx] =
+        Multiply(make_complex(static_cast<Real>(-1.0), static_cast<Real>(0.0)),
+                 complex_add(kz, Multiply(ky2, kz_inv)));
+    v0_22[idx] = Multiply(kxky, kz_inv);
+}
+
+__global__ void BuildKxKyDiagKernel(Complex* kx_diag,
+                                    Complex* ky_diag,
+                                    int order_x,
+                                    int order_y,
+                                    Real kx0_norm,
+                                    Real ky0_norm,
+                                    Real gx_norm,
+                                    Real gy_norm,
+                                    int64_t n)
+{
+    int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (idx >= n)
+    {
+        return;
+    }
+    const int ny = 2 * order_y + 1;
+    const int64_t ix = idx / ny;
+    const int64_t iy = idx - ix * ny;
+    const int ox = static_cast<int>(ix) - order_x;
+    const int oy = static_cast<int>(iy) - order_y;
+    const Real kx = kx0_norm + static_cast<Real>(ox) * gx_norm;
+    const Real ky = ky0_norm + static_cast<Real>(oy) * gy_norm;
+    kx_diag[idx] = make_complex(kx, static_cast<Real>(0.0));
+    ky_diag[idx] = make_complex(ky, static_cast<Real>(0.0));
 }
 
 __global__ void ScaleKernel(const Complex* A, Complex* C, int64_t count, Complex scalar)
@@ -269,26 +448,6 @@ Status FillDiagonalConstant(int64_t n, Complex value, Complex* out, cudaStream_t
     int threads = 256;
     int blocks = static_cast<int>((total + threads - 1) / threads);
     ConstantDiagKernel<<<blocks, threads, 0, stream>>>(out, n, value);
-    return StatusFromCuda(cudaGetLastError());
-}
-
-Status FillDiagBlock(const Complex* diag,
-                     int64_t n,
-                     Complex* dst,
-                     int64_t dst_n,
-                     int64_t row_offset,
-                     int64_t col_offset,
-                     cudaStream_t stream)
-{
-    if (!diag || !dst || n <= 0 || dst_n <= 0)
-    {
-        return Status::kInvalidValue;
-    }
-    int64_t total = n * n;
-    int threads = 256;
-    int blocks = static_cast<int>((total + threads - 1) / threads);
-    FillDiagBlockKernel<<<blocks, threads, 0, stream>>>(
-        diag, dst, n, dst_n, row_offset, col_offset);
     return StatusFromCuda(cudaGetLastError());
 }
 
@@ -367,16 +526,6 @@ Status MatMul(ComplexMatrixOps& ops,
     return ops.MatMul(A, B, out->get(), n);
 }
 
-std::complex<Real> ToStd(Complex value)
-{
-    return {static_cast<Real>(complex_real(value)), static_cast<Real>(complex_imag(value))};
-}
-
-Complex ToCu(const std::complex<Real>& value)
-{
-    return make_complex(static_cast<Real>(value.real()), static_cast<Real>(value.imag()));
-}
-
 } // namespace
 
 Rcwa::Rcwa(Real freq, int order_x, int order_y, Real Lx, Real Ly, cudaStream_t stream)
@@ -427,12 +576,6 @@ void Rcwa::FreeKVectors()
     SAFEFREE(V0_.V_12);
     SAFEFREE(V0_.V_21);
     SAFEFREE(V0_.V_22);
-    kx_host_.clear();
-    ky_host_.clear();
-    v0_11_host_.clear();
-    v0_12_host_.clear();
-    v0_21_host_.clear();
-    v0_22_host_.clear();
     kvectors_ready_ = false;
 }
 
@@ -454,113 +597,47 @@ Status Rcwa::BuildKxKy(Real inc_ang, Real azi_ang, Real eps_ref)
     const Real kx0_norm = sqrt_eps * std::sin(inc_ang) * std::cos(azi_ang);
     const Real ky0_norm = sqrt_eps * std::sin(inc_ang) * std::sin(azi_ang);
 
-    std::vector<Real> order_x_vals(static_cast<size_t>(2 * order_x_ + 1));
-    std::vector<Real> order_y_vals(static_cast<size_t>(2 * order_y_ + 1));
-    for (int i = 0; i < static_cast<int>(order_x_vals.size()); ++i)
-    {
-        order_x_vals[static_cast<size_t>(i)] = static_cast<Real>(i - order_x_);
-    }
-    for (int i = 0; i < static_cast<int>(order_y_vals.size()); ++i)
-    {
-        order_y_vals[static_cast<size_t>(i)] = static_cast<Real>(i - order_y_);
-    }
-
-    std::vector<Complex> kx_diag_host(static_cast<size_t>(order_N_));
-    std::vector<Complex> ky_diag_host(static_cast<size_t>(order_N_));
-    size_t idx = 0;
-    for (size_t ix = 0; ix < order_x_vals.size(); ++ix)
-    {
-        for (size_t iy = 0; iy < order_y_vals.size(); ++iy)
-        {
-            const Real kx = kx0_norm + order_x_vals[ix] * Gx_norm_;
-            const Real ky = ky0_norm + order_y_vals[iy] * Gy_norm_;
-            kx_diag_host[idx] = make_complex(kx, static_cast<Real>(0.0));
-            ky_diag_host[idx] = make_complex(ky, static_cast<Real>(0.0));
-            ++idx;
-        }
-    }
-
-    kx_host_ = kx_diag_host;
-    ky_host_ = ky_diag_host;
-
     CHECK(StatusFromCuda(
         cudaMalloc(&kx_diag_, static_cast<size_t>(order_N_) * sizeof(Complex))));
     CHECK(StatusFromCuda(
         cudaMalloc(&ky_diag_, static_cast<size_t>(order_N_) * sizeof(Complex))));
-    CHECK(StatusFromCuda(cudaMemcpyAsync(kx_diag_,
-                                         kx_diag_host.data(),
-                                         static_cast<size_t>(order_N_) * sizeof(Complex),
-                                         cudaMemcpyHostToDevice,
-                                         stream_)));
-    CHECK(StatusFromCuda(cudaMemcpyAsync(ky_diag_,
-                                         ky_diag_host.data(),
-                                         static_cast<size_t>(order_N_) * sizeof(Complex),
-                                         cudaMemcpyHostToDevice,
-                                         stream_)));
 
     CHECK(StatusFromCuda(
         cudaMalloc(&kx_mat_, static_cast<size_t>(order_N_) * order_N_ * sizeof(Complex))));
     CHECK(StatusFromCuda(
         cudaMalloc(&ky_mat_, static_cast<size_t>(order_N_) * order_N_ * sizeof(Complex))));
+    const int threads = 256;
+    const int blocks = static_cast<int>((order_N_ + threads - 1) / threads);
+    BuildKxKyDiagKernel<<<blocks, threads, 0, stream_>>>(kx_diag_,
+                                                        ky_diag_,
+                                                        order_x_,
+                                                        order_y_,
+                                                        kx0_norm,
+                                                        ky0_norm,
+                                                        Gx_norm_,
+                                                        Gy_norm_,
+                                                        order_N_);
+    CHECK(StatusFromCuda(cudaGetLastError()));
     CHECK(FillDiagonalFromVector(kx_diag_, order_N_, kx_mat_, stream_));
     CHECK(FillDiagonalFromVector(ky_diag_, order_N_, ky_mat_, stream_));
 
-    CHECK(BuildV0(kx_diag_host, ky_diag_host, static_cast<Real>(1.0)));
+    CHECK(BuildV0(static_cast<Real>(1.0)));
 
     kvectors_ready_ = true;
     return Status::kSuccess;
 }
 
-Status Rcwa::BuildV0(const std::vector<Complex>& kx_diag,
-                     const std::vector<Complex>& ky_diag,
-                     Real eps_ref)
+Status Rcwa::BuildV0(Real eps_ref)
 {
-    if (kx_diag.size() != static_cast<size_t>(order_N_) ||
-        ky_diag.size() != static_cast<size_t>(order_N_))
+    if (!kx_diag_ || !ky_diag_ || order_N_ <= 0)
     {
         return Status::kInvalidValue;
     }
 
-    std::vector<Complex> v11(kx_diag.size());
-    std::vector<Complex> v12(kx_diag.size());
-    std::vector<Complex> v21(kx_diag.size());
-    std::vector<Complex> v22(kx_diag.size());
-
-    const Real eps = eps_ref;
-    for (size_t i = 0; i < kx_diag.size(); ++i)
-    {
-        const std::complex<Real> kx(complex_real(kx_diag[i]), complex_imag(kx_diag[i]));
-        const std::complex<Real> ky(complex_real(ky_diag[i]), complex_imag(ky_diag[i]));
-        std::complex<Real> kz = std::sqrt(std::complex<Real>(eps) - kx * kx - ky * ky);
-        if (kz.imag() < static_cast<Real>(0.0))
-        {
-            kz = std::conj(kz);
-        }
-        const Real kz_abs = std::abs(kz);
-        const std::complex<Real> kz_inv =
-            kz_abs == static_cast<Real>(0.0)
-                ? std::complex<Real>(0.0, 0.0)
-                : (std::complex<Real>(1.0, 0.0) / kz);
-
-        const std::complex<Real> v11_val = -kx * ky * kz_inv;
-        const std::complex<Real> v12_val = kz + kx * kx * kz_inv;
-        const std::complex<Real> v21_val = -(kz + ky * ky * kz_inv);
-        const std::complex<Real> v22_val = kx * ky * kz_inv;
-
-        v11[i] = make_complex(static_cast<Real>(v11_val.real()),
-                              static_cast<Real>(v11_val.imag()));
-        v12[i] = make_complex(static_cast<Real>(v12_val.real()),
-                              static_cast<Real>(v12_val.imag()));
-        v21[i] = make_complex(static_cast<Real>(v21_val.real()),
-                              static_cast<Real>(v21_val.imag()));
-        v22[i] = make_complex(static_cast<Real>(v22_val.real()),
-                              static_cast<Real>(v22_val.imag()));
-    }
-
-    v0_11_host_ = v11;
-    v0_12_host_ = v12;
-    v0_21_host_ = v21;
-    v0_22_host_ = v22;
+    SAFEFREE(V0_.V_11);
+    SAFEFREE(V0_.V_12);
+    SAFEFREE(V0_.V_21);
+    SAFEFREE(V0_.V_22);
 
     CHECK(StatusFromCuda(
         cudaMalloc(&V0_.V_11, static_cast<size_t>(order_N_) * sizeof(Complex))));
@@ -571,26 +648,17 @@ Status Rcwa::BuildV0(const std::vector<Complex>& kx_diag,
     CHECK(StatusFromCuda(
         cudaMalloc(&V0_.V_22, static_cast<size_t>(order_N_) * sizeof(Complex))));
 
-    CHECK(StatusFromCuda(cudaMemcpyAsync(V0_.V_11,
-                                         v11.data(),
-                                         v11.size() * sizeof(Complex),
-                                         cudaMemcpyHostToDevice,
-                                         stream_)));
-    CHECK(StatusFromCuda(cudaMemcpyAsync(V0_.V_12,
-                                         v12.data(),
-                                         v12.size() * sizeof(Complex),
-                                         cudaMemcpyHostToDevice,
-                                         stream_)));
-    CHECK(StatusFromCuda(cudaMemcpyAsync(V0_.V_21,
-                                         v21.data(),
-                                         v21.size() * sizeof(Complex),
-                                         cudaMemcpyHostToDevice,
-                                         stream_)));
-    CHECK(StatusFromCuda(cudaMemcpyAsync(V0_.V_22,
-                                         v22.data(),
-                                         v22.size() * sizeof(Complex),
-                                         cudaMemcpyHostToDevice,
-                                         stream_)));
+    const int threads = 256;
+    const int blocks = static_cast<int>((order_N_ + threads - 1) / threads);
+    BuildV0Kernel<<<blocks, threads, 0, stream_>>>(kx_diag_,
+                                                   ky_diag_,
+                                                   make_complex(eps_ref, static_cast<Real>(0.0)),
+                                                   V0_.V_11,
+                                                   V0_.V_12,
+                                                   V0_.V_21,
+                                                   V0_.V_22,
+                                                   order_N_);
+    CHECK(StatusFromCuda(cudaGetLastError()));
 
     return Status::kSuccess;
 }
@@ -620,131 +688,37 @@ Status Rcwa::AddLayerHomogeneous(Real thickness, Real eps)
 
 Status Rcwa::AddLayerHomogeneous(Real thickness, Complex eps)
 {
-    if (order_N_ <= 0 || !kvectors_ready_ || kx_host_.empty() || ky_host_.empty() ||
-        v0_11_host_.empty())
+    if (order_N_ <= 0 || !kvectors_ready_ || !kx_diag_ || !ky_diag_ || !V0_.V_11 || !V0_.V_12 ||
+        !V0_.V_21 || !V0_.V_22)
     {
         return Status::kInvalidValue;
     }
 
     const int64_t n = order_N_;
     const int64_t n2 = 2 * n;
-    const std::complex<Real> eps_c = ToStd(eps);
-
-    std::vector<std::complex<Real>> kz(static_cast<size_t>(n));
-    std::vector<Complex> v11(static_cast<size_t>(n));
-    std::vector<Complex> v12(static_cast<size_t>(n));
-    std::vector<Complex> v21(static_cast<size_t>(n));
-    std::vector<Complex> v22(static_cast<size_t>(n));
-
-    for (int64_t i = 0; i < n; ++i)
-    {
-        const std::complex<Real> kx = ToStd(kx_host_[static_cast<size_t>(i)]);
-        const std::complex<Real> ky = ToStd(ky_host_[static_cast<size_t>(i)]);
-        std::complex<Real> kz_val = std::sqrt(eps_c - kx * kx - ky * ky);
-        if (kz_val.imag() < static_cast<Real>(0.0))
-        {
-            kz_val = std::conj(kz_val);
-        }
-        kz[static_cast<size_t>(i)] = kz_val;
-        const Real kz_abs = std::abs(kz_val);
-        const std::complex<Real> kz_inv =
-            kz_abs == static_cast<Real>(0.0)
-                ? std::complex<Real>(0.0, 0.0)
-                : (std::complex<Real>(1.0, 0.0) / kz_val);
-
-        const std::complex<Real> v11_val = -kx * ky * kz_inv;
-        const std::complex<Real> v12_val = kz_val + kx * kx * kz_inv;
-        const std::complex<Real> v21_val = -(kz_val + ky * ky * kz_inv);
-        const std::complex<Real> v22_val = kx * ky * kz_inv;
-
-        v11[static_cast<size_t>(i)] = ToCu(v11_val);
-        v12[static_cast<size_t>(i)] = ToCu(v12_val);
-        v21[static_cast<size_t>(i)] = ToCu(v21_val);
-        v22[static_cast<size_t>(i)] = ToCu(v22_val);
-    }
-
-    std::vector<Complex> v0iv11(static_cast<size_t>(n));
-    std::vector<Complex> v0iv12(static_cast<size_t>(n));
-    std::vector<Complex> v0iv21(static_cast<size_t>(n));
-    std::vector<Complex> v0iv22(static_cast<size_t>(n));
-    for (int64_t i = 0; i < n; ++i)
-    {
-        const std::complex<Real> v0_11 = ToStd(v0_11_host_[static_cast<size_t>(i)]);
-        const std::complex<Real> v0_12 = ToStd(v0_12_host_[static_cast<size_t>(i)]);
-        const std::complex<Real> v0_21 = ToStd(v0_21_host_[static_cast<size_t>(i)]);
-        const std::complex<Real> v0_22 = ToStd(v0_22_host_[static_cast<size_t>(i)]);
-
-        const std::complex<Real> v11_val = ToStd(v11[static_cast<size_t>(i)]);
-        const std::complex<Real> v12_val = ToStd(v12[static_cast<size_t>(i)]);
-        const std::complex<Real> v21_val = ToStd(v21[static_cast<size_t>(i)]);
-        const std::complex<Real> v22_val = ToStd(v22[static_cast<size_t>(i)]);
-
-        const std::complex<Real> b11 = -(v0_11 * v11_val + v0_12 * v21_val);
-        const std::complex<Real> b12 = -(v0_11 * v12_val + v0_12 * v22_val);
-        const std::complex<Real> b21 = -(v0_21 * v11_val + v0_22 * v21_val);
-        const std::complex<Real> b22 = -(v0_21 * v12_val + v0_22 * v22_val);
-
-        v0iv11[static_cast<size_t>(i)] = ToCu(b11);
-        v0iv12[static_cast<size_t>(i)] = ToCu(b12);
-        v0iv21[static_cast<size_t>(i)] = ToCu(b21);
-        v0iv22[static_cast<size_t>(i)] = ToCu(b22);
-    }
-
-    DeviceVector d_v0iv11;
-    DeviceVector d_v0iv12;
-    DeviceVector d_v0iv21;
-    DeviceVector d_v0iv22;
-    CHECK(d_v0iv11.Allocate(static_cast<size_t>(n)));
-    CHECK(d_v0iv12.Allocate(static_cast<size_t>(n)));
-    CHECK(d_v0iv21.Allocate(static_cast<size_t>(n)));
-    CHECK(d_v0iv22.Allocate(static_cast<size_t>(n)));
-    CHECK(StatusFromCuda(cudaMemcpyAsync(d_v0iv11.get(),
-                                         v0iv11.data(),
-                                         v0iv11.size() * sizeof(Complex),
-                                         cudaMemcpyHostToDevice,
-                                         stream_)));
-    CHECK(StatusFromCuda(cudaMemcpyAsync(d_v0iv12.get(),
-                                         v0iv12.data(),
-                                         v0iv12.size() * sizeof(Complex),
-                                         cudaMemcpyHostToDevice,
-                                         stream_)));
-    CHECK(StatusFromCuda(cudaMemcpyAsync(d_v0iv21.get(),
-                                         v0iv21.data(),
-                                         v0iv21.size() * sizeof(Complex),
-                                         cudaMemcpyHostToDevice,
-                                         stream_)));
-    CHECK(StatusFromCuda(cudaMemcpyAsync(d_v0iv22.get(),
-                                         v0iv22.data(),
-                                         v0iv22.size() * sizeof(Complex),
-                                         cudaMemcpyHostToDevice,
-                                         stream_)));
-
     DeviceMatrix V0iV;
     CHECK(V0iV.Allocate(n2, n2));
-    CHECK(FillDiagBlock(d_v0iv11.get(), n, V0iV.get(), n2, 0, 0, stream_));
-    CHECK(FillDiagBlock(d_v0iv12.get(), n, V0iV.get(), n2, 0, n, stream_));
-    CHECK(FillDiagBlock(d_v0iv21.get(), n, V0iV.get(), n2, n, 0, stream_));
-    CHECK(FillDiagBlock(d_v0iv22.get(), n, V0iV.get(), n2, n, n, stream_));
-
-    std::vector<Complex> phase_host(static_cast<size_t>(n2));
-    const std::complex<Real> imag_unit(0.0, 1.0);
-    for (int64_t i = 0; i < n; ++i)
-    {
-        const std::complex<Real> phase_val =
-            std::exp(imag_unit * static_cast<Real>(omega_ * thickness) *
-                     kz[static_cast<size_t>(i)]);
-        const Complex phase_cu = ToCu(phase_val);
-        phase_host[static_cast<size_t>(i)] = phase_cu;
-        phase_host[static_cast<size_t>(i + n)] = phase_cu;
-    }
-
     DeviceVector phase_diag;
     CHECK(phase_diag.Allocate(static_cast<size_t>(n2)));
-    CHECK(StatusFromCuda(cudaMemcpyAsync(phase_diag.get(),
-                                         phase_host.data(),
-                                         phase_host.size() * sizeof(Complex),
-                                         cudaMemcpyHostToDevice,
-                                         stream_)));
+    CHECK(StatusFromCuda(
+        cudaMemsetAsync(V0iV.get(), 0, static_cast<size_t>(n2) * n2 * sizeof(Complex), stream_)));
+
+    const int threads = 256;
+    const int blocks = static_cast<int>((n + threads - 1) / threads);
+    BuildV0iVPhaseKernel<<<blocks, threads, 0, stream_>>>(kx_diag_,
+                                                         ky_diag_,
+                                                         V0_.V_11,
+                                                         V0_.V_12,
+                                                         V0_.V_21,
+                                                         V0_.V_22,
+                                                         eps,
+                                                         omega_,
+                                                         thickness,
+                                                         V0iV.get(),
+                                                         phase_diag.get(),
+                                                         n,
+                                                         n2);
+    CHECK(StatusFromCuda(cudaGetLastError()));
 
     ComplexMatrixOps ops(stream_);
     CHECK(ops.SetStream(stream_));
