@@ -1,4 +1,3 @@
-#include <cstdio>
 #include <cstring>
 #include <cufft.h>
 #include <limits>
@@ -13,46 +12,6 @@ static Status StatusFromCuda(cudaError_t status)
 static Status StatusFromCufft(cufftResult status)
 {
     return status == CUFFT_SUCCESS ? Status::kSuccess : Status::kCudaError;
-}
-
-__global__ void CountNaNKernel(const Complex* data, int64_t count, int* out)
-{
-    const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (idx < count)
-    {
-        if (isnan(data[idx]))
-        {
-            atomicAdd(out, 1);
-        }
-    }
-}
-
-static void CheckNaN(const char* label, const Complex* data, int64_t count, cudaStream_t stream)
-{
-    if (!data || count <= 0)
-    {
-        return;
-    }
-
-    int* d_count = nullptr;
-    if (cudaMalloc(reinterpret_cast<void**>(&d_count), sizeof(int)) != cudaSuccess)
-    {
-        return;
-    }
-
-    cudaMemsetAsync(d_count, 0, sizeof(int), stream);
-    const int threads = 256;
-    const int blocks = static_cast<int>((count + threads - 1) / threads);
-    CountNaNKernel<<<blocks, threads, 0, stream>>>(data, count, d_count);
-
-    int h_count = 0;
-    cudaMemcpyAsync(&h_count, d_count, sizeof(int), cudaMemcpyDeviceToHost, stream);
-    cudaStreamSynchronize(stream);
-    if (h_count > 0)
-    {
-        printf("%s NaN count=%d\n", label, h_count);
-    }
-    cudaFree(d_count);
 }
 
 static constexpr double kExpConstant[5][5] = {
@@ -530,12 +489,6 @@ __global__ void BuildV0Kernel(const Complex* kx_diag,
     }
 
     const Complex kz_inv = ComplexReciprocal(kz);
-
-    if (isnan(kz_inv))
-    {
-        printf("%f+%fi\n", complex_real(diff), complex_imag(diff));
-    }
-
     const Complex kxky = ComplexMul(kx, ky);
     v0_11[idx] = ComplexMul(make_complex(kNegOne, kZero), ComplexMul(kxky, kz_inv));
     v0_12[idx] = ComplexAdd(kz, ComplexMul(kx2, kz_inv));
@@ -1103,12 +1056,6 @@ Status RCWA::ComputeSFromT(const TMatrix& T,
     }
 
     cudaStream_t use_stream = stream ? stream : stream_;
-
-    const int64_t diag_n = n / 2;
-    CheckNaN("ComputeSFromT V_11", V.V_11, diag_n, use_stream);
-    CheckNaN("ComputeSFromT V_12", V.V_12, diag_n, use_stream);
-    CheckNaN("ComputeSFromT V_21", V.V_21, diag_n, use_stream);
-    CheckNaN("ComputeSFromT V_22", V.V_22, diag_n, use_stream);
 
     S->S_11 = nullptr;
     S->S_12 = nullptr;
