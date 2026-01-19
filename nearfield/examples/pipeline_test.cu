@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -302,12 +303,14 @@ bool SaveFieldImage(const char* path,
 
 int main()
 {
+    using Clock = std::chrono::high_resolution_clock;
+
     const Real period_x = 3000.0;
     const Real period_y = 1500.0;
     const Real wavelength = 365.0;
     const Real freq = 1.0 / wavelength;
-    const int order_x = 5;
-    const int order_y = 5;
+    const int order_x = 9;
+    const int order_y = 11;
 
     RCWA rcwa(freq, order_x, order_y, period_x, period_y);
     rcwa.AddInputLayer(1.0);
@@ -316,7 +319,9 @@ int main()
     const int geom_x = 200;
     const int geom_y = 100;
     std::vector<Real> geometry;
+    const auto t_geom_start = Clock::now();
     LoadGeometry(geometry, geom_x, geom_y);
+    const auto t_geom_end = Clock::now();
 
     DeviceBuffer d_material;
     cudaMalloc(reinterpret_cast<void**>(&d_material.ptr),
@@ -332,6 +337,7 @@ int main()
     const Complex ns[] = {n_OX, n_TIN, n_TEOS};
 
     std::vector<Complex> eps_map;
+    const auto t_conv_start = Clock::now();
     for (int i = 0; i < 3; ++i)
     {
         BuildEpsMap(geometry, ns[i], eps_map);
@@ -343,14 +349,26 @@ int main()
         Complex* eps_conv = nullptr;
         rcwa.MaterialConv(d_material.get(), geom_x, geom_y, &eps_conv);
         rcwa.AddLayer(thicknesses[i], eps_conv);
-        SAFEFREE(eps_conv);
+        SAFEFREE(eps_conv);   
     }
+    const auto t_conv_end = Clock::now();
+    const auto t_conv = std::chrono::duration<double, std::milli>(t_conv_end - t_conv_start).count();
 
+    const auto t_hom_start = Clock::now();
     rcwa.AddLayerHomogeneous(20.0, n_SIN * n_SIN);
     rcwa.AddLayerHomogeneous(5.0, n_sub * n_sub);
+    const auto t_hom_end = Clock::now();
+    const auto t_hom = std::chrono::duration<double, std::milli>(t_hom_end - t_hom_start).count();
 
+    const auto t_global_start = Clock::now();
     rcwa.SolveGlobalSMatrix();
+    const auto t_global_end = Clock::now();
+    const auto t_global = std::chrono::duration<double, std::milli>(t_global_end - t_global_start).count();
+
+    const auto t_source_start = Clock::now();
     rcwa.SourcePlanewave(0.0, 1.0, "forward");
+    const auto t_source_end = Clock::now();
+    const auto t_source = std::chrono::duration<double, std::milli>(t_source_end - t_source_start).count();
 
     const int scatter_x = 256;
     const int scatter_y = 128;
@@ -358,25 +376,31 @@ int main()
     std::vector<Real> ys(scatter_y);
     for (int i = 0; i < scatter_x; ++i)
     {
-        xs[i] = (period_x / scatter_x) * (i + kHalf);
+        xs[i] = (period_x / scatter_x) * (i + 0.5);
     }
     for (int j = 0; j < scatter_y; ++j)
     {
-        ys[j] = (period_y / scatter_y) * (j + kHalf);
+        ys[j] = (period_y / scatter_y) * (j + 0.5);
     }
 
     Complex* Ex = nullptr;
     Complex* Ey = nullptr;
     Complex* Ez = nullptr;
+    const auto t_field_start = Clock::now();
     rcwa.FieldXY(xs.data(), scatter_x, ys.data(), scatter_y, &Ex, &Ey, &Ez);
+    const auto t_field_end = Clock::now();
+    const auto t_field = std::chrono::duration<double, std::milli>(t_field_end - t_field_start).count();
 
     std::vector<Real> host_mag;
     DeviceRealBuffer device_mag;
+    const auto t_image_start = Clock::now();
     SaveFieldImage("scatter_ex.png", Ex, scatter_x, scatter_y, host_mag, device_mag);
     SaveFieldImage("scatter_ey.png", Ey, scatter_x, scatter_y, host_mag, device_mag);
     SaveFieldImage("scatter_ez.png", Ez, scatter_x, scatter_y, host_mag, device_mag);
+    const auto t_image_end = Clock::now();
+    const auto t_image = std::chrono::duration<double, std::milli>(t_image_end - t_image_start).count();
 
-    std::cout << "RCWA pipeline test completed.\n";
+    printf("conv\t%.1f\nhomo\t%.1f\nglobal\t%.1f\nfield\t%.1f\nimage\t%.1f\n", t_conv, t_hom, t_global, t_field, t_image);
 
     rcwa.FreeDeviceTensor(Ex);
     rcwa.FreeDeviceTensor(Ey);
