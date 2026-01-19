@@ -142,10 +142,6 @@ class rcwa:
         else:
             self._compute_layer_exp()
 
-    def add_defect(self, layer_num=0, deps=None):
-        deps_conv = self._material_conv(deps)
-        self._update_layer_smatrix(layer_num, deps_conv)
-
     # Solve simulation
     def solve_global_smatrix(self):
         '''

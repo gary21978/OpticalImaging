@@ -11,14 +11,14 @@ set(CMAKE_CUDA_RUNTIME_LIBRARY Shared)
 set(CMAKE_CUDA_ARCHITECTURES 89)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-option(USE_DOUBLE_PRECISION "Use double precision complex ops" OFF)
+option(USE_DOUBLE_PRECISION "Use double precision complex ops" ON)
 
 file(GLOB_RECURSE CPP_SRC_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 file(GLOB_RECURSE CUDA_SRC_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cu")
 
 add_library(complex_ops STATIC ${CPP_SRC_FILES} ${CUDA_SRC_FILES})
 target_include_directories(complex_ops PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(complex_ops PUBLIC CUDA::cublas CUDA::cusolver)
+target_link_libraries(complex_ops PUBLIC CUDA::cublas CUDA::cusolver CUDA::cufft)
 
 add_executable(basic_arithm_test ${CMAKE_CURRENT_SOURCE_DIR}/examples/basic_arithm_test.cu)
 target_link_libraries(basic_arithm_test PRIVATE complex_ops)

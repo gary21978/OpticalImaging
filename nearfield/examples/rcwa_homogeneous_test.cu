@@ -6,9 +6,6 @@
 
 #include "rcwa.h"
 
-namespace
-{
-
 double ComplexDiff(const Complex& a, const Complex& b)
 {
     const double dr = static_cast<double>(complex_real(a) - complex_real(b));
@@ -38,22 +35,20 @@ double MaxMatrixDiff(const Complex* a, const Complex* b, int64_t n)
     return max_err;
 }
 
-} // namespace
-
 int main()
 {
-    const Real freq = static_cast<Real>(1.0);
+    const Real freq = kOne;
     const int order_x = 5;
     const int order_y = 7;
-    const Real Lx = static_cast<Real>(1.0);
-    const Real Ly = static_cast<Real>(1.0);
+    const Real Lx = kOne;
+    const Real Ly = kOne;
     const Real inc_ang = static_cast<Real>(0.1);
     const Real azi_ang = static_cast<Real>(0.2);
     const Real thickness = static_cast<Real>(0.7);
     const Complex eps = make_complex(static_cast<Real>(2.3), static_cast<Real>(0.1));
 
-    Rcwa rcwa_exp(freq, order_x, order_y, Lx, Ly);
-    Rcwa rcwa_hom(freq, order_x, order_y, Lx, Ly);
+    RCWA rcwa_exp(freq, order_x, order_y, Lx, Ly);
+    RCWA rcwa_hom(freq, order_x, order_y, Lx, Ly);
 
     if (rcwa_exp.SetIncidentAngles(inc_ang, azi_ang) != Status::kSuccess ||
         rcwa_hom.SetIncidentAngles(inc_ang, azi_ang) != Status::kSuccess)

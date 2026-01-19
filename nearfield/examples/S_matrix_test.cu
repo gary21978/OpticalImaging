@@ -5,11 +5,8 @@
 #include <limits>
 #include <vector>
 
-#include "layer_matrix.h"
+#include "rcwa.h"
 #include "matrix_print_utils.h"
-
-namespace
-{
 
 struct TMatrixHolder
 {
@@ -68,7 +65,7 @@ Status CheckBlockMatrix(const std::vector<Complex>& matrix,
     double max_err = 0.0;
     int max_row = 0;
     int max_col = 0;
-    Complex max_expected = make_complex(static_cast<Real>(0.0), static_cast<Real>(0.0));
+    Complex max_expected = make_complex(kZero, kZero);
 
     for (int row = 0; row < n; ++row)
     {
@@ -78,7 +75,7 @@ Status CheckBlockMatrix(const std::vector<Complex>& matrix,
         {
             const int col_mode = col < n2 ? col : col - n2;
             const bool col_top = col < n2;
-            Complex expected = make_complex(static_cast<Real>(0.0), static_cast<Real>(0.0));
+            Complex expected = make_complex(kZero, kZero);
             if (row_mode == col_mode)
             {
                 expected = (row_top == col_top) ? diag_value : off_value;
@@ -122,21 +119,22 @@ Status RunIdentitySMatrixTest(int n)
     const int64_t elements = static_cast<int64_t>(n) * n;
     const int64_t n2 = n / 2;
 
-    std::vector<Complex> h_identity(elements, make_complex(static_cast<Real>(0.0),
-                                                           static_cast<Real>(0.0)));
+    std::vector<Complex> h_identity(elements, make_complex(kZero,
+                                                           kZero));
     for (int i = 0; i < n; ++i)
     {
         const int64_t idx = static_cast<int64_t>(i) * n + i;
-        h_identity[static_cast<size_t>(idx)] = make_complex(static_cast<Real>(1.0),
-                                                            static_cast<Real>(0.0));
+        h_identity[static_cast<size_t>(idx)] = make_complex(kOne,
+                                                            kZero);
     }
 
     std::vector<Complex> h_diag(static_cast<size_t>(n2),
-                                make_complex(static_cast<Real>(1.0), static_cast<Real>(0.0)));
+                                make_complex(kOne, kZero));
 
     TMatrixHolder T;
     VMatrixHolder V;
     SMatrixHolder S;
+    RCWA rcwa(kOne, 1, 1, kOne, kOne);
 
     CHECK(cudaMalloc(reinterpret_cast<void**>(&T.value.T_11), elements * sizeof(Complex)));
     CHECK(cudaMalloc(reinterpret_cast<void**>(&T.value.T_12), elements * sizeof(Complex)));
@@ -166,7 +164,7 @@ Status RunIdentitySMatrixTest(int n)
     CHECK(cudaMemcpy(
         V.value.V_22, h_diag.data(), n2 * sizeof(Complex), cudaMemcpyHostToDevice));
 
-    CHECK(ComputeSFromT(T.value, V.value, n, &S.value));
+    CHECK(rcwa.ComputeSFromT(T.value, V.value, n, &S.value));
     CHECK(cudaDeviceSynchronize());
 
     std::vector<Complex> hS11(static_cast<size_t>(elements));
@@ -202,8 +200,6 @@ Status RunIdentitySMatrixTest(int n)
 
     return Status::kSuccess;
 }
-
-} // namespace
 
 int main(int argc, char** argv)
 {

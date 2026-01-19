@@ -8,11 +8,8 @@
 #include <limits>
 #include <vector>
 
-#include "layer_matrix.h"
+#include "rcwa.h"
 #include "matrix_print_utils.h"
-
-namespace
-{
 
 struct DeviceBuffer
 {
@@ -45,20 +42,21 @@ Status RunIdentityTest(int n)
     }
 
     const int64_t elements = static_cast<int64_t>(n) * n;
-    const Real k0d = static_cast<Real>(1.0);
+    const Real k0d = kOne;
 
     std::vector<Complex> hP(elements);
     std::vector<Complex> hQ(elements);
     for (int i = 0; i < n; ++i)
     {
         const int64_t idx = static_cast<int64_t>(i) * n + i;
-        hP[static_cast<size_t>(idx)] = make_complex(static_cast<Real>(1.0), static_cast<Real>(0.0));
-        hQ[static_cast<size_t>(idx)] = make_complex(static_cast<Real>(1.0), static_cast<Real>(0.0));
+        hP[static_cast<size_t>(idx)] = make_complex(kOne, kZero);
+        hQ[static_cast<size_t>(idx)] = make_complex(kOne, kZero);
     }
 
     DeviceBuffer dP;
     DeviceBuffer dQ;
     TMatrixHolder T;
+    RCWA rcwa(kOne, 1, 1, kOne, kOne);
 
     CHECK(cudaMalloc(dP.address(), elements * sizeof(Complex)));
     CHECK(cudaMalloc(dQ.address(), elements * sizeof(Complex)));
@@ -66,7 +64,7 @@ Status RunIdentityTest(int n)
     CHECK(cudaMemcpy(dP.get(), hP.data(), elements * sizeof(Complex), cudaMemcpyHostToDevice));
     CHECK(cudaMemcpy(dQ.get(), hQ.data(), elements * sizeof(Complex), cudaMemcpyHostToDevice));
 
-    CHECK(ComputeTFromPQ(dP.get(), dQ.get(), n, k0d, &T.value));
+    CHECK(rcwa.ComputeTFromPQ(dP.get(), dQ.get(), n, k0d, &T.value));
     CHECK(cudaDeviceSynchronize());
     SAFEFREE(T.value.T_11);
     SAFEFREE(T.value.T_12);
@@ -80,7 +78,7 @@ Status RunIdentityTest(int n)
     for (int iter = 0; iter < repeats; ++iter)
     {
         const auto start = std::chrono::high_resolution_clock::now();
-        CHECK(ComputeTFromPQ(dP.get(), dQ.get(), n, k0d, &T.value));
+        CHECK(rcwa.ComputeTFromPQ(dP.get(), dQ.get(), n, k0d, &T.value));
         CHECK(cudaDeviceSynchronize());
         const auto end = std::chrono::high_resolution_clock::now();
 
@@ -132,8 +130,6 @@ Status RunIdentityTest(int n)
 
     return Status::kSuccess;
 }
-} // namespace
-
 int main(int argc, char** argv)
 {
     int orders = 10;

@@ -4,9 +4,6 @@
 #include "complex_matrix_ops.h"
 #include "matrix_print_utils.h"
 
-namespace
-{
-
 struct DeviceBuffer
 {
     Complex* ptr = nullptr;
@@ -29,12 +26,12 @@ Status RunDemo(int k)
     std::vector<Complex> hSub(elements);
     std::vector<Complex> hX(elements);
 
-    const Real one = static_cast<Real>(1.0);
-    const Real zero = static_cast<Real>(0.0);
+    const Real one = kOne;
+    const Real zero = kZero;
 
     hA[0] = make_complex(one, zero);
-    hA[1] = make_complex(static_cast<Real>(3.0), static_cast<Real>(-1.0));
-    hA[2] = make_complex(static_cast<Real>(2.0), static_cast<Real>(1.0));
+    hA[1] = make_complex(static_cast<Real>(3.0), kNegOne);
+    hA[2] = make_complex(kTwo, kOne);
     hA[3] = make_complex(static_cast<Real>(4.0), zero);
 
     hB[0] = make_complex(one, zero);
@@ -87,8 +84,6 @@ Status RunDemo(int k)
 
     return Status::kSuccess;
 }
-
-} // namespace
 
 int main()
 {

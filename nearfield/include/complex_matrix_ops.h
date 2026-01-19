@@ -64,3 +64,46 @@ class ComplexMatrixOps
     cusolverDnHandle_t cusolver_handle_ = nullptr;
     cudaStream_t stream_ = nullptr;
 };
+
+Status MakeIdentity(Complex* A, int64_t n, cudaStream_t stream = nullptr);
+Status FillDiagonalFromVector(const Complex* diag,
+                              int64_t n,
+                              Complex* out,
+                              cudaStream_t stream = nullptr);
+Status FillDiagonalConstant(int64_t n,
+                            Complex value,
+                            Complex* out,
+                            cudaStream_t stream = nullptr);
+Status AddMatrix(ComplexMatrixOps& ops,
+                 const Complex* A,
+                 const Complex* B,
+                 Complex* C,
+                 int64_t n);
+Status SubMatrix(ComplexMatrixOps& ops,
+                 const Complex* A,
+                 const Complex* B,
+                 Complex* C,
+                 int64_t n);
+Status AddInPlace(ComplexMatrixOps& ops, Complex* A, const Complex* B, int64_t n);
+Status SubInPlace(ComplexMatrixOps& ops, Complex* A, const Complex* B, int64_t n);
+Status MatMul(ComplexMatrixOps& ops,
+              const Complex* A,
+              const Complex* B,
+              Complex* C,
+              int64_t n);
+Status ScaleMatrix(const Complex* A,
+                   Complex* C,
+                   int64_t n,
+                   Complex scalar,
+                   cudaStream_t stream = nullptr);
+Status ScaleInPlace(Complex* A, int64_t n, Complex scalar, cudaStream_t stream = nullptr);
+Status CopyMatrix(const Complex* src, Complex* dst, int64_t n, cudaStream_t stream = nullptr);
+Status CopyBlock(const Complex* src,
+                 int64_t n,
+                 Complex* dst,
+                 int64_t dst_n,
+                 int64_t row_offset,
+                 int64_t col_offset,
+                 Complex scale,
+                 cudaStream_t stream = nullptr);
+Status ComputeMatrixNorm1(const Complex* A, int64_t n, double* out_norm, cudaStream_t stream = nullptr);
