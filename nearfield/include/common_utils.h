@@ -1,5 +1,5 @@
 #pragma once
-
+#include <cstdio>
 #include <cmath>
 #include <cuComplex.h>
 #include <cuda_runtime.h>
