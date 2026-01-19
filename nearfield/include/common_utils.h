@@ -4,7 +4,6 @@
 #include <cstdio>
 #include <cuComplex.h>
 #include <cuda_runtime.h>
-#include <iomanip>
 
 #ifndef USE_DOUBLE_PRECISION
 #define USE_DOUBLE_PRECISION 1
@@ -23,6 +22,8 @@ using Complex = cuDoubleComplex;
 #define complex_real cuCreal
 #define complex_imag cuCimag
 #define PRINT_PRECISION std::setprecision(15)
+#define RealSqrt sqrt
+#define RealAbs abs
 #else
 using Real = float;
 using Complex = cuComplex;
@@ -36,6 +37,8 @@ using Complex = cuComplex;
 #define complex_real cuCrealf
 #define complex_imag cuCimagf
 #define PRINT_PRECISION std::setprecision(6)
+#define RealSqrt sqrtf
+#define RealAbs fabsf
 #endif
 
 constexpr Real kZero = static_cast<Real>(0.0);
@@ -79,6 +82,13 @@ inline const char* StatusToString(Status status)
 #define HOST_DEVICE
 #endif
 
+HOST_DEVICE inline bool isnan(Complex value)
+{
+    const Real real = complex_real(value);
+    const Real imag = complex_imag(value);
+    return isnan(real) || isnan(imag);
+}
+
 HOST_DEVICE inline Complex ComplexMul(Complex a, Complex b)
 {
     const Real ar = complex_real(a);
@@ -88,15 +98,20 @@ HOST_DEVICE inline Complex ComplexMul(Complex a, Complex b)
     return make_complex(ar * br - ai * bi, ar * bi + ai * br);
 }
 
-HOST_DEVICE inline Complex ComplexAdd(Complex a, Complex b)
+HOST_DEVICE inline Complex ComplexAdd(Complex a, Complex b) { return complex_add(a, b); }
+
+HOST_DEVICE inline Complex ComplexSub(Complex a, Complex b) { return complex_sub(a, b); }
+
+HOST_DEVICE inline Complex operator+(Complex a, Complex b) { return ComplexAdd(a, b); }
+
+HOST_DEVICE inline Complex operator-(Complex a, Complex b) { return ComplexSub(a, b); }
+
+HOST_DEVICE inline Complex operator-(Complex a)
 {
-    return complex_add(a, b);
+    return make_complex(-complex_real(a), -complex_imag(a));
 }
 
-HOST_DEVICE inline Complex ComplexSub(Complex a, Complex b)
-{
-    return complex_sub(a, b);
-}
+HOST_DEVICE inline Complex operator*(Complex a, Complex b) { return ComplexMul(a, b); }
 
 HOST_DEVICE inline Complex ComplexConj(Complex a)
 {
@@ -107,36 +122,46 @@ HOST_DEVICE inline Real ComplexAbs(Complex value)
 {
     const Real real = complex_real(value);
     const Real imag = complex_imag(value);
-#if USE_DOUBLE_PRECISION
-    return sqrt(real * real + imag * imag);
-#else
-    return sqrtf(real * real + imag * imag);
-#endif
+    return RealSqrt(real * real + imag * imag);
 }
 
 HOST_DEVICE inline Complex ComplexSqrt(Complex z)
 {
     const Real a = complex_real(z);
     const Real b = complex_imag(z);
-    if (b == kZero && a >= kZero)
+
+    if (b == kZero)
     {
-#if USE_DOUBLE_PRECISION
-        return make_complex(sqrt(a), kZero);
-#else
-        return make_complex(sqrtf(a), kZero);
-#endif
+        if (a >= kZero)
+        {
+            return make_complex(RealSqrt(a), kZero);
+        }
+        else
+        {
+            return make_complex(kZero, RealSqrt(-a));
+        }
     }
-    const Real r = ComplexAbs(z);
-#if USE_DOUBLE_PRECISION
-    const Real t = sqrt((r + a) / kTwo);
-    Real u = sqrt((r - a) / kTwo);
-#else
-    const Real t = sqrtf((r + a) / kTwo);
-    Real u = sqrtf((r - a) / kTwo);
-#endif
-    if (b < kZero)
+
+    if (a == kZero)
     {
-        u = -u;
+        Real root = RealSqrt(0.5 * RealAbs(b));
+        return b > kZero ? make_complex(root, root) : make_complex(root, -root);
+    }
+
+    Real r = ComplexAbs(z);
+    Real t = RealSqrt(0.5 * (r + RealAbs(a)));
+    Real u = 0.5 * b / t;
+
+    if (a < kZero)
+    {
+        if (b >= kZero)
+        {
+            return make_complex(u, t);
+        }
+        else
+        {
+            return make_complex(RealAbs(u), -t);
+        }
     }
     return make_complex(t, u);
 }

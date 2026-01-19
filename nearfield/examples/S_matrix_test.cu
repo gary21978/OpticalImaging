@@ -2,11 +2,10 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
-#include <limits>
 #include <vector>
 
-#include "rcwa.h"
 #include "matrix_print_utils.h"
+#include "rcwa.h"
 
 struct TMatrixHolder
 {
@@ -119,17 +118,14 @@ Status RunIdentitySMatrixTest(int n)
     const int64_t elements = static_cast<int64_t>(n) * n;
     const int64_t n2 = n / 2;
 
-    std::vector<Complex> h_identity(elements, make_complex(kZero,
-                                                           kZero));
+    std::vector<Complex> h_identity(elements, make_complex(kZero, kZero));
     for (int i = 0; i < n; ++i)
     {
         const int64_t idx = static_cast<int64_t>(i) * n + i;
-        h_identity[static_cast<size_t>(idx)] = make_complex(kOne,
-                                                            kZero);
+        h_identity[static_cast<size_t>(idx)] = make_complex(kOne, kZero);
     }
 
-    std::vector<Complex> h_diag(static_cast<size_t>(n2),
-                                make_complex(kOne, kZero));
+    std::vector<Complex> h_diag(static_cast<size_t>(n2), make_complex(kOne, kZero));
 
     TMatrixHolder T;
     VMatrixHolder V;
@@ -155,14 +151,10 @@ Status RunIdentitySMatrixTest(int n)
     CHECK(cudaMalloc(reinterpret_cast<void**>(&V.value.V_21), n2 * sizeof(Complex)));
     CHECK(cudaMalloc(reinterpret_cast<void**>(&V.value.V_22), n2 * sizeof(Complex)));
 
-    CHECK(cudaMemcpy(
-        V.value.V_11, h_diag.data(), n2 * sizeof(Complex), cudaMemcpyHostToDevice));
-    CHECK(cudaMemcpy(
-        V.value.V_12, h_diag.data(), n2 * sizeof(Complex), cudaMemcpyHostToDevice));
-    CHECK(cudaMemcpy(
-        V.value.V_21, h_diag.data(), n2 * sizeof(Complex), cudaMemcpyHostToDevice));
-    CHECK(cudaMemcpy(
-        V.value.V_22, h_diag.data(), n2 * sizeof(Complex), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(V.value.V_11, h_diag.data(), n2 * sizeof(Complex), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(V.value.V_12, h_diag.data(), n2 * sizeof(Complex), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(V.value.V_21, h_diag.data(), n2 * sizeof(Complex), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(V.value.V_22, h_diag.data(), n2 * sizeof(Complex), cudaMemcpyHostToDevice));
 
     CHECK(rcwa.ComputeSFromT(T.value, V.value, n, &S.value));
     CHECK(cudaDeviceSynchronize());
@@ -172,14 +164,14 @@ Status RunIdentitySMatrixTest(int n)
     std::vector<Complex> hS21(static_cast<size_t>(elements));
     std::vector<Complex> hS22(static_cast<size_t>(elements));
 
-    CHECK(cudaMemcpy(
-        hS11.data(), S.value.S_11, elements * sizeof(Complex), cudaMemcpyDeviceToHost));
-    CHECK(cudaMemcpy(
-        hS12.data(), S.value.S_12, elements * sizeof(Complex), cudaMemcpyDeviceToHost));
-    CHECK(cudaMemcpy(
-        hS21.data(), S.value.S_21, elements * sizeof(Complex), cudaMemcpyDeviceToHost));
-    CHECK(cudaMemcpy(
-        hS22.data(), S.value.S_22, elements * sizeof(Complex), cudaMemcpyDeviceToHost));
+    CHECK(
+        cudaMemcpy(hS11.data(), S.value.S_11, elements * sizeof(Complex), cudaMemcpyDeviceToHost));
+    CHECK(
+        cudaMemcpy(hS12.data(), S.value.S_12, elements * sizeof(Complex), cudaMemcpyDeviceToHost));
+    CHECK(
+        cudaMemcpy(hS21.data(), S.value.S_21, elements * sizeof(Complex), cudaMemcpyDeviceToHost));
+    CHECK(
+        cudaMemcpy(hS22.data(), S.value.S_22, elements * sizeof(Complex), cudaMemcpyDeviceToHost));
 
     const double tol = static_cast<double>(std::numeric_limits<Real>::epsilon()) * 1000.0;
     const Complex s11_diag =

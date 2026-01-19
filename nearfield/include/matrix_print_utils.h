@@ -124,7 +124,7 @@ inline void PrintMatrixInternal(const std::vector<Complex>& matrix, int n, const
 #define PrintMatrix2(matrix, n) PrintMatrixInternal((matrix), (n), 0, #matrix)
 #define PrintMatrix3(matrix, n, name) PrintMatrixInternal((matrix), (n), 0, (name))
 #define PrintMatrix4(matrix, n, k, name) PrintMatrixInternal((matrix), (n), (k), (name))
-#define PrintMatrix(...)                                                                            \
+#define PrintMatrix(...)                                                                           \
     PRINT_MATRIX_GET_MACRO(__VA_ARGS__, PrintMatrix4, PrintMatrix3, PrintMatrix2)(__VA_ARGS__)
 
-#endif  // MATRIX_PRINT_UTILS_H_
+#endif // MATRIX_PRINT_UTILS_H_

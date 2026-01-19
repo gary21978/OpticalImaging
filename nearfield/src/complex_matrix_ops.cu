@@ -1,4 +1,4 @@
-#include "complex_matrix_ops.h"
+#include "complex_matrix.h"
 
 #include <limits>
 
@@ -35,11 +35,8 @@ __global__ void SubKernel(const Complex* A, const Complex* B, Complex* C, int64_
     }
 }
 
-__global__ void LeftDiagMulKernel(const Complex* diag,
-                                 const Complex* B,
-                                 Complex* C,
-                                 int64_t rows,
-                                 int64_t count)
+__global__ void
+LeftDiagMulKernel(const Complex* diag, const Complex* B, Complex* C, int64_t rows, int64_t count)
 {
     int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (idx < count)
@@ -49,11 +46,8 @@ __global__ void LeftDiagMulKernel(const Complex* diag,
     }
 }
 
-__global__ void RightDiagMulKernel(const Complex* A,
-                                  const Complex* diag,
-                                  Complex* C,
-                                  int64_t rows,
-                                  int64_t count)
+__global__ void
+RightDiagMulKernel(const Complex* A, const Complex* diag, Complex* C, int64_t rows, int64_t count)
 {
     int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (idx < count)
@@ -145,6 +139,52 @@ __global__ void CopyBlockKernel(const Complex* src,
         int64_t col = idx / n;
         const Complex value = ComplexMul(src[col * n + row], scale);
         dst[(col + col_offset) * dst_n + (row + row_offset)] = value;
+    }
+}
+
+__global__ void AddDiagonalKernel(Complex* A, const Complex* diag, int64_t n, Complex scale)
+{
+    int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (idx < n)
+    {
+        const int64_t offset = idx * n + idx;
+        A[offset] = ComplexAdd(A[offset], ComplexMul(diag[idx], scale));
+    }
+}
+
+__global__ void AddDiagonalConstantKernel(Complex* A, int64_t n, Complex value)
+{
+    int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (idx < n)
+    {
+        const int64_t offset = idx * n + idx;
+        A[offset] = ComplexAdd(A[offset], value);
+    }
+}
+
+__global__ void CopyDiagonalBlockKernel(const Complex* diag,
+                                        int64_t n,
+                                        Complex* dst,
+                                        int64_t dst_n,
+                                        int64_t row_offset,
+                                        int64_t col_offset,
+                                        Complex scale)
+{
+    int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (idx < n)
+    {
+        const int64_t row = row_offset + idx;
+        const int64_t col = col_offset + idx;
+        dst[col * dst_n + row] = ComplexMul(diag[idx], scale);
+    }
+}
+
+__global__ void ElementwiseMulKernel(const Complex* a, const Complex* b, Complex* out, int64_t n)
+{
+    int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (idx < n)
+    {
+        out[idx] = ComplexMul(a[idx], b[idx]);
     }
 }
 
@@ -386,10 +426,8 @@ Status ComplexMatrixOps::DiagLeftMatMul(const Complex* diag,
     return StatusFromCuda(cudaGetLastError());
 }
 
-Status ComplexMatrixOps::DiagLeftMatMul(const Complex* diag,
-                                        const Complex* B,
-                                        Complex* C,
-                                        int64_t n)
+Status
+ComplexMatrixOps::DiagLeftMatMul(const Complex* diag, const Complex* B, Complex* C, int64_t n)
 {
     return DiagLeftMatMul(diag, B, C, n, n);
 }
@@ -415,10 +453,8 @@ Status ComplexMatrixOps::DiagRightMatMul(const Complex* A,
     return StatusFromCuda(cudaGetLastError());
 }
 
-Status ComplexMatrixOps::DiagRightMatMul(const Complex* A,
-                                         const Complex* diag,
-                                         Complex* C,
-                                         int64_t n)
+Status
+ComplexMatrixOps::DiagRightMatMul(const Complex* A, const Complex* diag, Complex* C, int64_t n)
 {
     return DiagRightMatMul(A, diag, C, n, n);
 }
@@ -701,6 +737,67 @@ Status MatMul(ComplexMatrixOps& ops, const Complex* A, const Complex* B, Complex
         return Status::kInvalidValue;
     }
     return ops.MatMul(A, B, C, n);
+}
+
+Status
+AddDiagonalInPlace(Complex* A, const Complex* diag, int64_t n, Complex scale, cudaStream_t stream)
+{
+    if (!A || !diag || n <= 0)
+    {
+        return Status::kInvalidValue;
+    }
+    int threads = 256;
+    int blocks = static_cast<int>((n + threads - 1) / threads);
+    AddDiagonalKernel<<<blocks, threads, 0, stream>>>(A, diag, n, scale);
+    return StatusFromCuda(cudaGetLastError());
+}
+
+Status AddDiagonalConstantInPlace(Complex* A, int64_t n, Complex value, cudaStream_t stream)
+{
+    if (!A || n <= 0)
+    {
+        return Status::kInvalidValue;
+    }
+    int threads = 256;
+    int blocks = static_cast<int>((n + threads - 1) / threads);
+    AddDiagonalConstantKernel<<<blocks, threads, 0, stream>>>(A, n, value);
+    return StatusFromCuda(cudaGetLastError());
+}
+
+Status CopyDiagonalBlock(const Complex* diag,
+                         int64_t n,
+                         Complex* dst,
+                         int64_t dst_n,
+                         int64_t row_offset,
+                         int64_t col_offset,
+                         Complex scale,
+                         cudaStream_t stream)
+{
+    if (!diag || !dst || n <= 0 || dst_n <= 0)
+    {
+        return Status::kInvalidValue;
+    }
+    int threads = 256;
+    int blocks = static_cast<int>((n + threads - 1) / threads);
+    CopyDiagonalBlockKernel<<<blocks, threads, 0, stream>>>(
+        diag, n, dst, dst_n, row_offset, col_offset, scale);
+    return StatusFromCuda(cudaGetLastError());
+}
+
+Status MultiplyDiagonalVectors(const Complex* a,
+                               const Complex* b,
+                               Complex* out,
+                               int64_t n,
+                               cudaStream_t stream)
+{
+    if (!a || !b || !out || n <= 0)
+    {
+        return Status::kInvalidValue;
+    }
+    int threads = 256;
+    int blocks = static_cast<int>((n + threads - 1) / threads);
+    ElementwiseMulKernel<<<blocks, threads, 0, stream>>>(a, b, out, n);
+    return StatusFromCuda(cudaGetLastError());
 }
 
 Status ScaleMatrix(const Complex* A, Complex* C, int64_t n, Complex scalar, cudaStream_t stream)

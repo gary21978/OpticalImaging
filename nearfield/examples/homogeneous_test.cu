@@ -37,15 +37,15 @@ double MaxMatrixDiff(const Complex* a, const Complex* b, int64_t n)
 
 int main()
 {
-    const Real freq = kOne;
-    const int order_x = 5;
-    const int order_y = 7;
-    const Real Lx = kOne;
-    const Real Ly = kOne;
-    const Real inc_ang = static_cast<Real>(0.1);
-    const Real azi_ang = static_cast<Real>(0.2);
-    const Real thickness = static_cast<Real>(0.7);
-    const Complex eps = make_complex(static_cast<Real>(2.3), static_cast<Real>(0.1));
+    const Real freq = 1.0;
+    const int order_x = 9;
+    const int order_y = 2;
+    const Real Lx = 1.0;
+    const Real Ly = 1.0;
+    const Real inc_ang = 0.1;
+    const Real azi_ang = 0.2;
+    const Real thickness = 0.7;
+    const Complex eps = make_complex(2.3, 0.1);
 
     RCWA rcwa_exp(freq, order_x, order_y, Lx, Ly);
     RCWA rcwa_hom(freq, order_x, order_y, Lx, Ly);
@@ -57,17 +57,40 @@ int main()
         return 1;
     }
 
+    float exp_ms = 0.0f;
+    float hom_ms = 0.0f;
+
+    cudaEvent_t start = nullptr;
+    cudaEvent_t stop = nullptr;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    cudaEventRecord(start);
     if (rcwa_exp.AddLayer(thickness, eps) != Status::kSuccess)
     {
         std::cout << "AddLayer (exp) failed.\n";
+        cudaEventDestroy(start);
+        cudaEventDestroy(stop);
         return 1;
     }
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&exp_ms, start, stop);
 
+    cudaEventRecord(start);
     if (rcwa_hom.AddLayerHomogeneous(thickness, eps) != Status::kSuccess)
     {
         std::cout << "AddLayerHomogeneous failed.\n";
+        cudaEventDestroy(start);
+        cudaEventDestroy(stop);
         return 1;
     }
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&hom_ms, start, stop);
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
 
     const auto& s_exp = rcwa_exp.layer_smatrices().front();
     const auto& s_hom = rcwa_hom.layer_smatrices().front();
@@ -79,8 +102,16 @@ int main()
     const double err21 = MaxMatrixDiff(s_exp.S_21, s_hom.S_21, n);
     const double err22 = MaxMatrixDiff(s_exp.S_22, s_hom.S_22, n);
 
+    Complex s_exp_00;
+    Complex s_hom_00;
+    cudaMemcpy(&s_exp_00, s_exp.S_11, sizeof(Complex), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&s_hom_00, s_hom.S_11, sizeof(Complex), cudaMemcpyDeviceToHost);
+
+    std::cout << "S_11(0,0): exp=(" << complex_real(s_exp_00) << ", " << complex_imag(s_exp_00)
+              << "), hom=(" << complex_real(s_hom_00) << ", " << complex_imag(s_hom_00) << ")\n";
     std::cout << "Max diffs: S11=" << err11 << ", S12=" << err12 << ", S21=" << err21
               << ", S22=" << err22 << "\n";
+    std::cout << "Timing (ms): AddLayer=" << exp_ms << ", AddLayerHomogeneous=" << hom_ms << "\n";
 
     if (err11 > tol || err12 > tol || err21 > tol || err22 > tol)
     {

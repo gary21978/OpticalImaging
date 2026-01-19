@@ -1,7 +1,7 @@
 #include <iostream>
 #include <vector>
 
-#include "complex_matrix_ops.h"
+#include "complex_matrix.h"
 #include "matrix_print_utils.h"
 
 struct DeviceBuffer
@@ -53,10 +53,8 @@ Status RunDemo(int k)
     CHECK(cudaMalloc(dSub.address(), elements * sizeof(Complex)));
     CHECK(cudaMalloc(dX.address(), elements * sizeof(Complex)));
 
-    CHECK(cudaMemcpy(
-        dA.get(), hA.data(), elements * sizeof(Complex), cudaMemcpyHostToDevice));
-    CHECK(cudaMemcpy(
-        dB.get(), hB.data(), elements * sizeof(Complex), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(dA.get(), hA.data(), elements * sizeof(Complex), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(dB.get(), hB.data(), elements * sizeof(Complex), cudaMemcpyHostToDevice));
 
     ComplexMatrixOps ops;
     CHECK(ops.MatMul(dA.get(), dB.get(), dC.get(), n));
@@ -64,14 +62,10 @@ Status RunDemo(int k)
     CHECK(ops.MatSub(dA.get(), dB.get(), dSub.get(), n));
     CHECK(ops.Solve(dA.get(), dB.get(), dX.get(), n));
 
-    CHECK(cudaMemcpy(
-        hC.data(), dC.get(), elements * sizeof(Complex), cudaMemcpyDeviceToHost));
-    CHECK(cudaMemcpy(
-        hAdd.data(), dAdd.get(), elements * sizeof(Complex), cudaMemcpyDeviceToHost));
-    CHECK(cudaMemcpy(
-        hSub.data(), dSub.get(), elements * sizeof(Complex), cudaMemcpyDeviceToHost));
-    CHECK(cudaMemcpy(
-        hX.data(), dX.get(), elements * sizeof(Complex), cudaMemcpyDeviceToHost));
+    CHECK(cudaMemcpy(hC.data(), dC.get(), elements * sizeof(Complex), cudaMemcpyDeviceToHost));
+    CHECK(cudaMemcpy(hAdd.data(), dAdd.get(), elements * sizeof(Complex), cudaMemcpyDeviceToHost));
+    CHECK(cudaMemcpy(hSub.data(), dSub.get(), elements * sizeof(Complex), cudaMemcpyDeviceToHost));
+    CHECK(cudaMemcpy(hX.data(), dX.get(), elements * sizeof(Complex), cudaMemcpyDeviceToHost));
 
     std::cout << "\n==== demo ====" << "\n";
     std::cout << PRINT_PRECISION;
@@ -85,7 +79,4 @@ Status RunDemo(int k)
     return Status::kSuccess;
 }
 
-int main()
-{
-    return RunDemo(0) == Status::kSuccess ? 0 : 1;
-}
+int main() { return RunDemo(0) == Status::kSuccess ? 0 : 1; }

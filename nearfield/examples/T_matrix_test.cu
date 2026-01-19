@@ -1,6 +1,5 @@
 #include <algorithm>
 #include <chrono>
-#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <iomanip>
@@ -8,8 +7,8 @@
 #include <limits>
 #include <vector>
 
-#include "rcwa.h"
 #include "matrix_print_utils.h"
+#include "rcwa.h"
 
 struct DeviceBuffer
 {
@@ -97,9 +96,9 @@ Status RunIdentityTest(int n)
     }
 
     std::cout << "\n==== Identity test ====" << "\n";
-    std::cout << "N=" << n << ", avg=" << std::fixed << std::setprecision(3)
-              << (total_ms / repeats) << " ms, min=" << min_ms << " ms, max=" << max_ms
-              << " ms, repeats=" << repeats << "\n";
+    std::cout << "N=" << n << ", avg=" << std::fixed << std::setprecision(3) << (total_ms / repeats)
+              << " ms, min=" << min_ms << " ms, max=" << max_ms << " ms, repeats=" << repeats
+              << "\n";
 
     if (n >= 2)
     {
@@ -144,7 +143,7 @@ int main(int argc, char** argv)
     }
     int PxQ = (2 * orders + 1) * (2 * orders + 1);
 
-    //RunSmallTest();
-    RunIdentityTest(2*PxQ);
+    // RunSmallTest();
+    RunIdentityTest(2 * PxQ);
     return 0;
 }

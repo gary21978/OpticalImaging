@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-
 #include <cublas_v2.h>
 #include <cusolverDn.h>
 
@@ -35,19 +34,11 @@ class ComplexMatrixOps
                   cublasOperation_t transA = CUBLAS_OP_N,
                   cublasOperation_t transB = CUBLAS_OP_N);
 
-    Status DiagLeftMatMul(const Complex* diag,
-                          const Complex* B,
-                          Complex* C,
-                          int64_t m,
-                          int64_t n);
+    Status DiagLeftMatMul(const Complex* diag, const Complex* B, Complex* C, int64_t m, int64_t n);
     Status DiagLeftMatMul(const Complex* diag, const Complex* B, Complex* C, int64_t n);
 
-    Status DiagRightMatMul(const Complex* A,
-                           const Complex* diag,
-                           Complex* C,
-                           int64_t m,
-                           int64_t n);
-                           
+    Status DiagRightMatMul(const Complex* A, const Complex* diag, Complex* C, int64_t m, int64_t n);
+
     Status DiagRightMatMul(const Complex* A, const Complex* diag, Complex* C, int64_t n);
 
     Status MatAdd(const Complex* A, const Complex* B, Complex* C, int64_t m, int64_t n);
@@ -66,36 +57,36 @@ class ComplexMatrixOps
 };
 
 Status MakeIdentity(Complex* A, int64_t n, cudaStream_t stream = nullptr);
-Status FillDiagonalFromVector(const Complex* diag,
-                              int64_t n,
-                              Complex* out,
-                              cudaStream_t stream = nullptr);
-Status FillDiagonalConstant(int64_t n,
-                            Complex value,
-                            Complex* out,
-                            cudaStream_t stream = nullptr);
-Status AddMatrix(ComplexMatrixOps& ops,
-                 const Complex* A,
-                 const Complex* B,
-                 Complex* C,
-                 int64_t n);
-Status SubMatrix(ComplexMatrixOps& ops,
-                 const Complex* A,
-                 const Complex* B,
-                 Complex* C,
-                 int64_t n);
+Status
+FillDiagonalFromVector(const Complex* diag, int64_t n, Complex* out, cudaStream_t stream = nullptr);
+Status FillDiagonalConstant(int64_t n, Complex value, Complex* out, cudaStream_t stream = nullptr);
+Status AddMatrix(ComplexMatrixOps& ops, const Complex* A, const Complex* B, Complex* C, int64_t n);
+Status SubMatrix(ComplexMatrixOps& ops, const Complex* A, const Complex* B, Complex* C, int64_t n);
 Status AddInPlace(ComplexMatrixOps& ops, Complex* A, const Complex* B, int64_t n);
 Status SubInPlace(ComplexMatrixOps& ops, Complex* A, const Complex* B, int64_t n);
-Status MatMul(ComplexMatrixOps& ops,
-              const Complex* A,
-              const Complex* B,
-              Complex* C,
-              int64_t n);
-Status ScaleMatrix(const Complex* A,
-                   Complex* C,
-                   int64_t n,
-                   Complex scalar,
-                   cudaStream_t stream = nullptr);
+Status MatMul(ComplexMatrixOps& ops, const Complex* A, const Complex* B, Complex* C, int64_t n);
+Status AddDiagonalInPlace(Complex* A,
+                          const Complex* diag,
+                          int64_t n,
+                          Complex scale,
+                          cudaStream_t stream = nullptr);
+Status
+AddDiagonalConstantInPlace(Complex* A, int64_t n, Complex value, cudaStream_t stream = nullptr);
+Status CopyDiagonalBlock(const Complex* diag,
+                         int64_t n,
+                         Complex* dst,
+                         int64_t dst_n,
+                         int64_t row_offset,
+                         int64_t col_offset,
+                         Complex scale,
+                         cudaStream_t stream = nullptr);
+Status MultiplyDiagonalVectors(const Complex* a,
+                               const Complex* b,
+                               Complex* out,
+                               int64_t n,
+                               cudaStream_t stream = nullptr);
+Status
+ScaleMatrix(const Complex* A, Complex* C, int64_t n, Complex scalar, cudaStream_t stream = nullptr);
 Status ScaleInPlace(Complex* A, int64_t n, Complex scalar, cudaStream_t stream = nullptr);
 Status CopyMatrix(const Complex* src, Complex* dst, int64_t n, cudaStream_t stream = nullptr);
 Status CopyBlock(const Complex* src,
@@ -106,4 +97,5 @@ Status CopyBlock(const Complex* src,
                  int64_t col_offset,
                  Complex scale,
                  cudaStream_t stream = nullptr);
-Status ComputeMatrixNorm1(const Complex* A, int64_t n, double* out_norm, cudaStream_t stream = nullptr);
+Status
+ComputeMatrixNorm1(const Complex* A, int64_t n, double* out_norm, cudaStream_t stream = nullptr);

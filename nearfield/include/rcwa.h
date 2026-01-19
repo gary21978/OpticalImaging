@@ -40,12 +40,20 @@ class RCWA
     RCWA& operator=(const RCWA&) = delete;
 
     Status SetIncidentAngles(Real inc_ang, Real azi_ang, Real eps_ref = kOne);
+    Status SetIncidentAngles(Real inc_ang, Real azi_ang, const char* angle_layer);
 
     Status AddLayer(Real thickness, Real eps);
     Status AddLayer(Real thickness, Complex eps);
     Status AddLayerHomogeneous(Real thickness, Real eps);
     Status AddLayerHomogeneous(Real thickness, Complex eps);
     Status AddLayer(Real thickness, const Complex* eps_conv);
+    Status AddInputLayer(Real eps);
+    Status AddInputLayer(Complex eps);
+    Status AddOutputLayer(Real eps);
+    Status AddOutputLayer(Complex eps);
+
+    Status SourcePlanewave(Real ex_amp, Real ey_amp, const char* direction = "forward");
+    Status SourcePlanewave(Complex ex_amp, Complex ey_amp, const char* direction = "forward");
 
     Status MaterialConv(const Complex* material,
                         int64_t nx,
@@ -56,6 +64,16 @@ class RCWA
                               const SMatrix* S_in = nullptr,
                               const SMatrix* S_out = nullptr,
                               cudaStream_t stream = nullptr) const;
+    Status SolveGlobalSMatrix();
+    Status FieldXY(const Real* x_axis,
+                   int64_t x_count,
+                   const Real* y_axis,
+                   int64_t y_count,
+                   Complex** Ex,
+                   Complex** Ey,
+                   Complex** Ez,
+                   cudaStream_t stream = nullptr) const;
+    void FreeDeviceTensor(Complex* ptr) const;
 
     Status ComputeTFromPQ(const Complex* P,
                           const Complex* Q,
@@ -85,6 +103,8 @@ class RCWA
 
     void FreeLayers();
     void FreeKVectors();
+    void FreeGlobalSMatrix();
+    void FreeSource();
 
     Real freq_ = kZero;
     Real omega_ = kZero;
@@ -100,9 +120,13 @@ class RCWA
 
     Complex* kx_diag_ = nullptr;
     Complex* ky_diag_ = nullptr;
-    Complex* kx_mat_ = nullptr;
-    Complex* ky_mat_ = nullptr;
     VMatrix V0_{};
 
     std::vector<SMatrix> layer_smatrices_;
+    SMatrix global_smatrix_{};
+    Complex* source_ei_ = nullptr;
+    Complex eps_in_ = make_complex(kOne, kZero);
+    Complex eps_out_ = make_complex(kOne, kZero);
+    bool angle_layer_input_ = true;
+    bool source_forward_ = true;
 };
