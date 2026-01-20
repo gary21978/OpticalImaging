@@ -218,7 +218,7 @@ __global__ void BuildV0iVPhaseKernel(const Complex* kx_diag,
     const Complex sum = ComplexAdd(kx2, ky2);
     const Complex diff = ComplexSub(eps, sum);
     Complex kz = ComplexSqrt(diff);
-    if (complex_imag(kz) < 0.0)
+    if (ComplexImag(kz) < 0.0)
     {
         kz = ComplexConj(kz);
     }
@@ -269,7 +269,7 @@ __global__ void ScaleComplexKernel(Complex* data, int64_t n, Real scale)
         return;
     }
     const Complex value = data[idx];
-    data[idx] = make_complex(complex_real(value) * scale, complex_imag(value) * scale);
+    data[idx] = make_complex(ComplexReal(value) * scale, ComplexImag(value) * scale);
 }
 
 __global__ void SetSourceKernel(Complex* vec, int64_t index, Complex ex, Complex ey, int64_t n)
@@ -298,7 +298,7 @@ __global__ void BuildKzKernel(const Complex* kx,
     const Complex sum = ComplexAdd(ComplexMul(kxv, kxv), ComplexMul(kyv, kyv));
     const Complex diff = ComplexSub(eps, sum);
     Complex kzz = ComplexSqrt(diff);
-    if (complex_imag(kzz) < 0.0)
+    if (ComplexImag(kzz) < 0.0)
     {
         kzz = ComplexConj(kzz);
     }
@@ -483,7 +483,7 @@ __global__ void BuildV0Kernel(const Complex* kx_diag,
     const Complex sum = ComplexAdd(kx2, ky2);
     const Complex diff = ComplexSub(eps, sum);
     Complex kz = ComplexSqrt(diff);
-    if (complex_imag(kz) < 0.0)
+    if (ComplexImag(kz) < 0.0)
     {
         kz = ComplexConj(kz);
     }
@@ -667,7 +667,7 @@ Status RCWA::SetIncidentAngles(Real inc_ang, Real azi_ang, const char* angle_lay
 {
     angle_layer_input_ = IsInputLayerName(angle_layer);
     const Complex eps = angle_layer_input_ ? eps_in_ : eps_out_;
-    const Real sqrt_eps = complex_real(ComplexSqrt(eps));
+    const Real sqrt_eps = ComplexReal(ComplexSqrt(eps));
     const Real eps_ref = sqrt_eps * sqrt_eps;
     return BuildKxKy(inc_ang, azi_ang, eps_ref);
 }

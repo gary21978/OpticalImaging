@@ -14,8 +14,8 @@
 
 inline std::string FormatComplex(const Complex& value, double eps)
 {
-    double real = static_cast<double>(complex_real(value));
-    double imag = static_cast<double>(complex_imag(value));
+    double real = static_cast<double>(ComplexReal(value));
+    double imag = static_cast<double>(ComplexImag(value));
 
     if (std::abs(real) <= eps)
     {

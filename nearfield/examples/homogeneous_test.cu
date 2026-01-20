@@ -8,8 +8,8 @@
 
 double ComplexDiff(const Complex& a, const Complex& b)
 {
-    const double dr = static_cast<double>(complex_real(a) - complex_real(b));
-    const double di = static_cast<double>(complex_imag(a) - complex_imag(b));
+    const double dr = static_cast<double>(ComplexReal(a) - ComplexReal(b));
+    const double di = static_cast<double>(ComplexImag(a) - ComplexImag(b));
     return std::sqrt(dr * dr + di * di);
 }
 
@@ -107,8 +107,8 @@ int main()
     cudaMemcpy(&s_exp_00, s_exp.S_11, sizeof(Complex), cudaMemcpyDeviceToHost);
     cudaMemcpy(&s_hom_00, s_hom.S_11, sizeof(Complex), cudaMemcpyDeviceToHost);
 
-    std::cout << "S_11(0,0): exp=(" << complex_real(s_exp_00) << ", " << complex_imag(s_exp_00)
-              << "), hom=(" << complex_real(s_hom_00) << ", " << complex_imag(s_hom_00) << ")\n";
+    std::cout << "S_11(0,0): exp=(" << ComplexReal(s_exp_00) << ", " << ComplexImag(s_exp_00)
+              << "), hom=(" << ComplexReal(s_hom_00) << ", " << ComplexImag(s_hom_00) << ")\n";
     std::cout << "Max diffs: S11=" << err11 << ", S12=" << err12 << ", S21=" << err21
               << ", S22=" << err22 << "\n";
     std::cout << "Timing (ms): AddLayer=" << exp_ms << ", AddLayerHomogeneous=" << hom_ms << "\n";

@@ -25,12 +25,12 @@ __global__ void IntensityKernel(const Complex* ex,
     const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (idx < count)
     {
-        const Real exr = complex_real(ex[idx]);
-        const Real exi = complex_imag(ex[idx]);
-        const Real eyr = complex_real(ey[idx]);
-        const Real eyi = complex_imag(ey[idx]);
-        const Real ezr = complex_real(ez[idx]);
-        const Real ezi = complex_imag(ez[idx]);
+        const Real exr = ComplexReal(ex[idx]);
+        const Real exi = ComplexImag(ex[idx]);
+        const Real eyr = ComplexReal(ey[idx]);
+        const Real eyi = ComplexImag(ey[idx]);
+        const Real ezr = ComplexReal(ez[idx]);
+        const Real ezi = ComplexImag(ez[idx]);
         output[idx] = exr * exr + exi * exi + eyr * eyr + eyi * eyi + ezr * ezr + ezi * ezi;
     }
 }

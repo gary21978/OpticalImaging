@@ -48,8 +48,8 @@ struct VMatrixHolder
 
 double ComplexError(const Complex& a, const Complex& b)
 {
-    const double dr = static_cast<double>(complex_real(a) - complex_real(b));
-    const double di = static_cast<double>(complex_imag(a) - complex_imag(b));
+    const double dr = static_cast<double>(ComplexReal(a) - ComplexReal(b));
+    const double di = static_cast<double>(ComplexImag(a) - ComplexImag(b));
     return std::sqrt(dr * dr + di * di);
 }
 

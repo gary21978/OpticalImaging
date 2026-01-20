@@ -16,10 +16,10 @@ using Complex = cuDoubleComplex;
 #define CUSOLVER_GETRF cusolverDnZgetrf
 #define CUSOLVER_GETRS cusolverDnZgetrs
 #define make_complex make_cuDoubleComplex
-#define complex_add cuCadd
-#define complex_sub cuCsub
-#define complex_real cuCreal
-#define complex_imag cuCimag
+#define ComplexAdd cuCadd
+#define ComplexSub cuCsub
+#define ComplexReal cuCreal
+#define ComplexImag cuCimag
 #define PRINT_PRECISION std::setprecision(15)
 #define RealSqrt sqrt
 #define RealAbs abs
@@ -31,10 +31,10 @@ using Complex = cuComplex;
 #define CUSOLVER_GETRF cusolverDnCgetrf
 #define CUSOLVER_GETRS cusolverDnCgetrs
 #define make_complex make_cuComplex
-#define complex_add cuCaddf
-#define complex_sub cuCsubf
-#define complex_real cuCrealf
-#define complex_imag cuCimagf
+#define ComplexAdd cuCaddf
+#define ComplexSub cuCsubf
+#define ComplexReal cuCrealf
+#define ComplexImag cuCimagf
 #define PRINT_PRECISION std::setprecision(6)
 #define RealSqrt sqrtf
 #define RealAbs fabsf
@@ -77,23 +77,19 @@ inline const char* StatusToString(Status status)
 
 HOST_DEVICE inline bool isnan(Complex value)
 {
-    const Real real = complex_real(value);
-    const Real imag = complex_imag(value);
+    const Real real = ComplexReal(value);
+    const Real imag = ComplexImag(value);
     return isnan(real) || isnan(imag);
 }
 
 HOST_DEVICE inline Complex ComplexMul(Complex a, Complex b)
 {
-    const Real ar = complex_real(a);
-    const Real ai = complex_imag(a);
-    const Real br = complex_real(b);
-    const Real bi = complex_imag(b);
+    const Real ar = ComplexReal(a);
+    const Real ai = ComplexImag(a);
+    const Real br = ComplexReal(b);
+    const Real bi = ComplexImag(b);
     return make_complex(ar * br - ai * bi, ar * bi + ai * br);
 }
-
-HOST_DEVICE inline Complex ComplexAdd(Complex a, Complex b) { return complex_add(a, b); }
-
-HOST_DEVICE inline Complex ComplexSub(Complex a, Complex b) { return complex_sub(a, b); }
 
 HOST_DEVICE inline Complex operator+(Complex a, Complex b) { return ComplexAdd(a, b); }
 
@@ -101,27 +97,27 @@ HOST_DEVICE inline Complex operator-(Complex a, Complex b) { return ComplexSub(a
 
 HOST_DEVICE inline Complex operator-(Complex a)
 {
-    return make_complex(-complex_real(a), -complex_imag(a));
+    return make_complex(-ComplexReal(a), -ComplexImag(a));
 }
 
 HOST_DEVICE inline Complex operator*(Complex a, Complex b) { return ComplexMul(a, b); }
 
 HOST_DEVICE inline Complex ComplexConj(Complex a)
 {
-    return make_complex(complex_real(a), -complex_imag(a));
+    return make_complex(ComplexReal(a), -ComplexImag(a));
 }
 
 HOST_DEVICE inline Real ComplexAbs(Complex value)
 {
-    const Real real = complex_real(value);
-    const Real imag = complex_imag(value);
+    const Real real = ComplexReal(value);
+    const Real imag = ComplexImag(value);
     return RealSqrt(real * real + imag * imag);
 }
 
 HOST_DEVICE inline Complex ComplexSqrt(Complex z)
 {
-    const Real a = complex_real(z);
-    const Real b = complex_imag(z);
+    const Real a = ComplexReal(z);
+    const Real b = ComplexImag(z);
 
     if (b == 0.0)
     {
@@ -161,8 +157,8 @@ HOST_DEVICE inline Complex ComplexSqrt(Complex z)
 
 HOST_DEVICE inline Complex ComplexReciprocal(Complex z)
 {
-    const Real ar = complex_real(z);
-    const Real ai = complex_imag(z);
+    const Real ar = ComplexReal(z);
+    const Real ai = ComplexImag(z);
     const Real denom = ar * ar + ai * ai;
     if (denom == 0.0)
     {
@@ -173,8 +169,8 @@ HOST_DEVICE inline Complex ComplexReciprocal(Complex z)
 
 HOST_DEVICE inline Complex ComplexExpI(Complex z)
 {
-    const Real a = complex_real(z);
-    const Real b = complex_imag(z);
+    const Real a = ComplexReal(z);
+    const Real b = ComplexImag(z);
 #if USE_DOUBLE_PRECISION
     const Real exp_r = exp(-b);
     const Real c = cos(a);
