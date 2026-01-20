@@ -16,6 +16,25 @@ __global__ void MagnitudeKernel(const Complex* input, Real* output, int64_t coun
     }
 }
 
+__global__ void IntensityKernel(const Complex* ex,
+                                const Complex* ey,
+                                const Complex* ez,
+                                Real* output,
+                                int64_t count)
+{
+    const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (idx < count)
+    {
+        const Real exr = complex_real(ex[idx]);
+        const Real exi = complex_imag(ex[idx]);
+        const Real eyr = complex_real(ey[idx]);
+        const Real eyi = complex_imag(ey[idx]);
+        const Real ezr = complex_real(ez[idx]);
+        const Real ezi = complex_imag(ez[idx]);
+        output[idx] = exr * exr + exi * exi + eyr * eyr + eyi * eyi + ezr * ezr + ezi * ezi;
+    }
+}
+
 struct DeviceBuffer
 {
     Complex* ptr = nullptr;
@@ -44,19 +63,12 @@ inline Complex operator+(Real real, ImagLiteral imag) { return make_complex(real
 
 void LoadGeometry(std::vector<Real>& geom, int nx, int ny)
 {
-    geom.assign(static_cast<size_t>(nx) * ny, kZero);
+    geom.assign(static_cast<size_t>(nx) * ny, 0.0);
     for (int x = 0; x < nx; ++x)
     {
-        for (int y = 25; y < 50; ++y)
+        for (int y = ny / 4 ; y < ny / 2; ++y)
         {
-            geom[static_cast<size_t>(x) * ny + y] = kOne;
-        }
-    }
-    for (int x = 50; x < 100; ++x)
-    {
-        for (int y = 0; y < ny; ++y)
-        {
-            geom[static_cast<size_t>(x) * ny + y] = kOne;
+            geom[static_cast<size_t>(x) * ny + y] = 1.0;
         }
     }
 }
@@ -65,46 +77,41 @@ void BuildEpsMap(const std::vector<Real>& geom, Complex n, std::vector<Complex>&
 {
     const size_t count = geom.size();
     eps_map.resize(count);
-    const Complex one = make_complex(kOne, kZero);
+    const Complex one = make_complex(1.0, 0.0);
     const Complex n2 = ComplexMul(n, n);
     const Complex delta = ComplexSub(n2, one);
     for (size_t i = 0; i < count; ++i)
     {
-        const Complex g = make_complex(geom[i], kZero);
+        const Complex g = make_complex(geom[i], 0.0);
         eps_map[i] = ComplexAdd(one, ComplexMul(delta, g));
     }
 }
 
 Real Clamp01(Real v)
 {
-    if (v < kZero)
+    if (v < 0.0)
     {
-        return kZero;
+        return 0.0;
     }
-    if (v > kOne)
+    if (v > 1.0)
     {
-        return kOne;
+        return 1.0;
     }
     return v;
 }
 
 void JetColor(Real x, unsigned char& r, unsigned char& g, unsigned char& b)
 {
-    const Real four = kTwo + kTwo;
-    const Real one_point_five = kOne + kHalf;
-    const Real two_point_five = kTwo + kHalf;
-    const Real three_point_five = kTwo + kOne + kHalf;
-    const Real four_point_five = kTwo + kTwo + kHalf;
-    const Real t = four * Clamp01(x);
+    const double t = 4.0 * Clamp01(x);
 
-    const Real r_val = Clamp01(std::min(t - one_point_five, -t + four_point_five));
-    const Real g_val = Clamp01(std::min(t - kHalf, -t + three_point_five));
-    const Real b_val = Clamp01(std::min(t + kHalf, -t + two_point_five));
+    const double r_val = Clamp01(std::min(t - 1.5, -t + 4.5));
+    const double g_val = Clamp01(std::min(t - 0.5, -t + 3.5));
+    const double b_val = Clamp01(std::min(t + 0.5, -t + 2.5));
 
     const double scale = 255.0;
-    r = static_cast<unsigned char>(std::min(scale, static_cast<double>(r_val) * scale));
-    g = static_cast<unsigned char>(std::min(scale, static_cast<double>(g_val) * scale));
-    b = static_cast<unsigned char>(std::min(scale, static_cast<double>(b_val) * scale));
+    r = static_cast<unsigned char>(std::min(scale, r_val * scale));
+    g = static_cast<unsigned char>(std::min(scale, g_val * scale));
+    b = static_cast<unsigned char>(std::min(scale, b_val * scale));
 }
 
 uint32_t Crc32(const unsigned char* data, size_t len)
@@ -246,7 +253,7 @@ bool WritePng(const char* path, const std::vector<unsigned char>& rgb, int width
 
 bool WritePngJet(const char* path, const std::vector<Real>& mag, int width, int height)
 {
-    Real max_val = kZero;
+    Real max_val = 0.0;
     for (Real v : mag)
     {
         if (v > max_val)
@@ -254,9 +261,9 @@ bool WritePngJet(const char* path, const std::vector<Real>& mag, int width, int 
             max_val = v;
         }
     }
-    if (max_val == kZero)
+    if (max_val == 0.0)
     {
-        max_val = kOne;
+        max_val = 1.0;
     }
 
     std::vector<unsigned char> pixels(static_cast<size_t>(width) * height * 3);
@@ -272,6 +279,23 @@ bool WritePngJet(const char* path, const std::vector<Real>& mag, int width, int 
         pixels[i * 3 + 2] = b;
     }
 
+    return WritePng(path, pixels, width, height);
+}
+
+bool WriteMaskPng(const char* path, const std::vector<Real>& mask, int width, int height)
+{
+    std::vector<unsigned char> pixels(static_cast<size_t>(width) * height * 3);
+    for (size_t i = 0; i < width; ++i)
+    {
+        for (size_t j = 0; j < height; ++j)
+        {
+            const unsigned char c = mask[i * height + j] > 0.5 ? 255 : 0;
+            size_t k = j * width + i;
+            pixels[k * 3 + 0] = c;
+            pixels[k * 3 + 1] = c;
+            pixels[k * 3 + 2] = c;
+        }
+    }
     return WritePng(path, pixels, width, height);
 }
 
@@ -301,16 +325,53 @@ bool SaveFieldImage(const char* path,
     return WritePngJet(path, host_mag, width, height);
 }
 
+bool SaveIntensityImage(const char* path,
+                        const Complex* ex,
+                        const Complex* ey,
+                        const Complex* ez,
+                        int width,
+                        int height,
+                        std::vector<Real>& host_mag,
+                        DeviceRealBuffer& device_mag)
+{
+    const int64_t count = static_cast<int64_t>(width) * height;
+    if (!device_mag.get())
+    {
+        cudaMalloc(reinterpret_cast<void**>(&device_mag.ptr),
+                   static_cast<size_t>(count) * sizeof(Real));
+    }
+
+    const int threads = 256;
+    const int blocks = static_cast<int>((count + threads - 1) / threads);
+    IntensityKernel<<<blocks, threads>>>(ex, ey, ez, device_mag.get(), count);
+
+    host_mag.resize(static_cast<size_t>(count));
+    cudaMemcpy(host_mag.data(),
+               device_mag.get(),
+               static_cast<size_t>(count) * sizeof(Real),
+               cudaMemcpyDeviceToHost);
+
+    return WritePngJet(path, host_mag, width, height);
+}
+
 int main()
 {
+    std::cout << "Precision: "
+#if USE_DOUBLE_PRECISION
+              << "double" << std::endl;
+#else
+              << "single" << std::endl;
+#endif
+
     using Clock = std::chrono::high_resolution_clock;
 
     const Real period_x = 3000.0;
     const Real period_y = 1500.0;
     const Real wavelength = 365.0;
     const Real freq = 1.0 / wavelength;
-    const int order_x = 9;
-    const int order_y = 11;
+    const int order = 9;
+    const int order_x = order;
+    const int order_y = order;
 
     RCWA rcwa(freq, order_x, order_y, period_x, period_y);
     rcwa.AddInputLayer(1.0);
@@ -322,6 +383,8 @@ int main()
     const auto t_geom_start = Clock::now();
     LoadGeometry(geometry, geom_x, geom_y);
     const auto t_geom_end = Clock::now();
+    //WriteMaskPng("geometry_mask.png", geometry, geom_y, geom_x);
+    WriteMaskPng("geometry_mask.png", geometry, geom_x, geom_y);
 
     DeviceBuffer d_material;
     cudaMalloc(reinterpret_cast<void**>(&d_material.ptr),
@@ -337,7 +400,9 @@ int main()
     const Complex ns[] = {n_OX, n_TIN, n_TEOS};
 
     std::vector<Complex> eps_map;
-    const auto t_conv_start = Clock::now();
+    double t_conv = 0.0;
+    double t_scatter = 0.0;
+
     for (int i = 0; i < 3; ++i)
     {
         BuildEpsMap(geometry, ns[i], eps_map);
@@ -347,12 +412,19 @@ int main()
                    cudaMemcpyHostToDevice);
 
         Complex* eps_conv = nullptr;
+
+        auto t_conv_start = Clock::now();
         rcwa.MaterialConv(d_material.get(), geom_x, geom_y, &eps_conv);
+        auto t_conv_end = Clock::now();
+        t_conv += std::chrono::duration<double, std::milli>(t_conv_end - t_conv_start).count();
+
+        auto t_addlayer_start = Clock::now();
         rcwa.AddLayer(thicknesses[i], eps_conv);
-        SAFEFREE(eps_conv);   
+        auto t_addlayer_end = Clock::now();
+        t_scatter +=
+            std::chrono::duration<double, std::milli>(t_addlayer_end - t_addlayer_start).count();
+        SAFEFREE(eps_conv);
     }
-    const auto t_conv_end = Clock::now();
-    const auto t_conv = std::chrono::duration<double, std::milli>(t_conv_end - t_conv_start).count();
 
     const auto t_hom_start = Clock::now();
     rcwa.AddLayerHomogeneous(20.0, n_SIN * n_SIN);
@@ -363,12 +435,14 @@ int main()
     const auto t_global_start = Clock::now();
     rcwa.SolveGlobalSMatrix();
     const auto t_global_end = Clock::now();
-    const auto t_global = std::chrono::duration<double, std::milli>(t_global_end - t_global_start).count();
+    const auto t_global =
+        std::chrono::duration<double, std::milli>(t_global_end - t_global_start).count();
 
     const auto t_source_start = Clock::now();
     rcwa.SourcePlanewave(0.0, 1.0, "forward");
     const auto t_source_end = Clock::now();
-    const auto t_source = std::chrono::duration<double, std::milli>(t_source_end - t_source_start).count();
+    const auto t_source =
+        std::chrono::duration<double, std::milli>(t_source_end - t_source_start).count();
 
     const int scatter_x = 256;
     const int scatter_y = 128;
@@ -389,7 +463,8 @@ int main()
     const auto t_field_start = Clock::now();
     rcwa.FieldXY(xs.data(), scatter_x, ys.data(), scatter_y, &Ex, &Ey, &Ez);
     const auto t_field_end = Clock::now();
-    const auto t_field = std::chrono::duration<double, std::milli>(t_field_end - t_field_start).count();
+    const auto t_field =
+        std::chrono::duration<double, std::milli>(t_field_end - t_field_start).count();
 
     std::vector<Real> host_mag;
     DeviceRealBuffer device_mag;
@@ -397,10 +472,25 @@ int main()
     SaveFieldImage("scatter_ex.png", Ex, scatter_x, scatter_y, host_mag, device_mag);
     SaveFieldImage("scatter_ey.png", Ey, scatter_x, scatter_y, host_mag, device_mag);
     SaveFieldImage("scatter_ez.png", Ez, scatter_x, scatter_y, host_mag, device_mag);
+    SaveIntensityImage("scatter_intensity.png",
+                       Ex,
+                       Ey,
+                       Ez,
+                       scatter_x,
+                       scatter_y,
+                       host_mag,
+                       device_mag);
     const auto t_image_end = Clock::now();
-    const auto t_image = std::chrono::duration<double, std::milli>(t_image_end - t_image_start).count();
+    const auto t_image =
+        std::chrono::duration<double, std::milli>(t_image_end - t_image_start).count();
 
-    printf("conv\t%.1f\nhomo\t%.1f\nglobal\t%.1f\nfield\t%.1f\nimage\t%.1f\n", t_conv, t_hom, t_global, t_field, t_image);
+    printf("conv\t%.1f ms\nscatter\t%.1f ms\nhomo\t%.1f ms\nglobal\t%.1f ms\nfield\t%.1f ms\nimage\t%.1f ms\n",
+           t_conv,
+           t_scatter,
+           t_hom,
+           t_global,
+           t_field,
+           t_image);
 
     rcwa.FreeDeviceTensor(Ex);
     rcwa.FreeDeviceTensor(Ey);

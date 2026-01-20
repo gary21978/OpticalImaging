@@ -64,7 +64,7 @@ Status CheckBlockMatrix(const std::vector<Complex>& matrix,
     double max_err = 0.0;
     int max_row = 0;
     int max_col = 0;
-    Complex max_expected = make_complex(kZero, kZero);
+    Complex max_expected = make_complex(0.0, 0.0);
 
     for (int row = 0; row < n; ++row)
     {
@@ -74,7 +74,7 @@ Status CheckBlockMatrix(const std::vector<Complex>& matrix,
         {
             const int col_mode = col < n2 ? col : col - n2;
             const bool col_top = col < n2;
-            Complex expected = make_complex(kZero, kZero);
+            Complex expected = make_complex(0.0, 0.0);
             if (row_mode == col_mode)
             {
                 expected = (row_top == col_top) ? diag_value : off_value;
@@ -118,19 +118,19 @@ Status RunIdentitySMatrixTest(int n)
     const int64_t elements = static_cast<int64_t>(n) * n;
     const int64_t n2 = n / 2;
 
-    std::vector<Complex> h_identity(elements, make_complex(kZero, kZero));
+    std::vector<Complex> h_identity(elements, make_complex(0.0, 0.0));
     for (int i = 0; i < n; ++i)
     {
         const int64_t idx = static_cast<int64_t>(i) * n + i;
-        h_identity[static_cast<size_t>(idx)] = make_complex(kOne, kZero);
+        h_identity[static_cast<size_t>(idx)] = make_complex(1.0, 0.0);
     }
 
-    std::vector<Complex> h_diag(static_cast<size_t>(n2), make_complex(kOne, kZero));
+    std::vector<Complex> h_diag(static_cast<size_t>(n2), make_complex(1.0, 0.0));
 
     TMatrixHolder T;
     VMatrixHolder V;
     SMatrixHolder S;
-    RCWA rcwa(kOne, 1, 1, kOne, kOne);
+    RCWA rcwa(1.0, 1, 1, 1.0, 1.0);
 
     CHECK(cudaMalloc(reinterpret_cast<void**>(&T.value.T_11), elements * sizeof(Complex)));
     CHECK(cudaMalloc(reinterpret_cast<void**>(&T.value.T_12), elements * sizeof(Complex)));

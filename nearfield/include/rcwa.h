@@ -39,7 +39,7 @@ class RCWA
     RCWA(const RCWA&) = delete;
     RCWA& operator=(const RCWA&) = delete;
 
-    Status SetIncidentAngles(Real inc_ang, Real azi_ang, Real eps_ref = kOne);
+    Status SetIncidentAngles(Real inc_ang, Real azi_ang, Real eps_ref = 1.0);
     Status SetIncidentAngles(Real inc_ang, Real azi_ang, const char* angle_layer);
 
     Status AddLayer(Real thickness, Real eps);
@@ -106,12 +106,12 @@ class RCWA
     void FreeGlobalSMatrix();
     void FreeSource();
 
-    Real freq_ = kZero;
-    Real omega_ = kZero;
-    Real Lx_ = kZero;
-    Real Ly_ = kZero;
-    Real Gx_norm_ = kZero;
-    Real Gy_norm_ = kZero;
+    Real freq_ = 0.0;
+    Real omega_ = 0.0;
+    Real Lx_ = 0.0;
+    Real Ly_ = 0.0;
+    Real Gx_norm_ = 0.0;
+    Real Gy_norm_ = 0.0;
     int order_x_ = 0;
     int order_y_ = 0;
     int64_t order_N_ = 0;
@@ -125,8 +125,8 @@ class RCWA
     std::vector<SMatrix> layer_smatrices_;
     SMatrix global_smatrix_{};
     Complex* source_ei_ = nullptr;
-    Complex eps_in_ = make_complex(kOne, kZero);
-    Complex eps_out_ = make_complex(kOne, kZero);
+    Complex eps_in_ = make_complex(1.0, 0.0);
+    Complex eps_out_ = make_complex(1.0, 0.0);
     bool angle_layer_input_ = true;
     bool source_forward_ = true;
 };

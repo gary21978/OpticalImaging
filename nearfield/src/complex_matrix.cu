@@ -76,11 +76,11 @@ __global__ void IdentityKernel(Complex* A, int64_t n)
         int64_t col = idx / n;
         if (row == col)
         {
-            A[idx] = make_complex(kOne, kZero);
+            A[idx] = make_complex(1.0, 0.0);
         }
         else
         {
-            A[idx] = make_complex(kZero, kZero);
+            A[idx] = make_complex(0.0, 0.0);
         }
     }
 }
@@ -99,7 +99,7 @@ __global__ void DiagFromVectorKernel(const Complex* diag, Complex* out, int64_t 
         }
         else
         {
-            out[idx] = make_complex(kZero, kZero);
+            out[idx] = make_complex(0.0, 0.0);
         }
     }
 }
@@ -118,7 +118,7 @@ __global__ void ConstantDiagKernel(Complex* out, int64_t n, Complex value)
         }
         else
         {
-            out[idx] = make_complex(kZero, kZero);
+            out[idx] = make_complex(0.0, 0.0);
         }
     }
 }
@@ -198,7 +198,7 @@ __global__ void ColumnSumKernel(const Complex* A, int64_t n, Real* col_sums)
         return;
     }
 
-    Real sum = kZero;
+    Real sum = 0.0;
     for (int64_t row = threadIdx.x; row < n; row += blockDim.x)
     {
         sum += ComplexAbs(A[col * n + row]);
@@ -226,7 +226,7 @@ __global__ void ColumnSumKernel(const Complex* A, int64_t n, Real* col_sums)
 __global__ void MaxReduceKernel(const Real* input, int64_t n, Real* output)
 {
     const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    Real value = kZero;
+    Real value = 0.0;
     if (idx < n)
     {
         value = input[idx];
@@ -376,8 +376,8 @@ Status ComplexMatrixOps::MatMul(const Complex* A,
     int ldb = (transB == CUBLAS_OP_N) ? k_int : n_int;
     int ldc = m_int;
 
-    Complex alpha = make_complex(kOne, kZero);
-    Complex beta = make_complex(kZero, kZero);
+    Complex alpha = make_complex(1.0, 0.0);
+    Complex beta = make_complex(0.0, 0.0);
 
     return StatusFromCublas(CUBLAS_GEMM(cublas_handle_,
                                         transA,
@@ -891,7 +891,7 @@ Status ComputeMatrixNorm1(const Complex* A, int64_t n, double* out_norm, cudaStr
         output = swap;
     }
 
-    Real host_value = kZero;
+    Real host_value = 0.0;
     CHECK(StatusFromCuda(
         cudaMemcpyAsync(&host_value, input, sizeof(Real), cudaMemcpyDeviceToHost, stream)));
     CHECK(StatusFromCuda(cudaStreamSynchronize(stream)));

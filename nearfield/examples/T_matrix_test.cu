@@ -41,21 +41,21 @@ Status RunIdentityTest(int n)
     }
 
     const int64_t elements = static_cast<int64_t>(n) * n;
-    const Real k0d = kOne;
+    const Real k0d = 1.0;
 
     std::vector<Complex> hP(elements);
     std::vector<Complex> hQ(elements);
     for (int i = 0; i < n; ++i)
     {
         const int64_t idx = static_cast<int64_t>(i) * n + i;
-        hP[static_cast<size_t>(idx)] = make_complex(kOne, kZero);
-        hQ[static_cast<size_t>(idx)] = make_complex(kOne, kZero);
+        hP[static_cast<size_t>(idx)] = make_complex(1.0, 0.0);
+        hQ[static_cast<size_t>(idx)] = make_complex(1.0, 0.0);
     }
 
     DeviceBuffer dP;
     DeviceBuffer dQ;
     TMatrixHolder T;
-    RCWA rcwa(kOne, 1, 1, kOne, kOne);
+    RCWA rcwa(1.0, 1, 1, 1.0, 1.0);
 
     CHECK(cudaMalloc(dP.address(), elements * sizeof(Complex)));
     CHECK(cudaMalloc(dQ.address(), elements * sizeof(Complex)));

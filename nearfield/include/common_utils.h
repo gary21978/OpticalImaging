@@ -40,12 +40,6 @@ using Complex = cuComplex;
 #define RealAbs fabsf
 #endif
 
-constexpr Real kZero = static_cast<Real>(0.0);
-constexpr Real kOne = static_cast<Real>(1.0);
-constexpr Real kTwo = static_cast<Real>(2.0);
-constexpr Real kHalf = static_cast<Real>(0.5);
-constexpr Real kNegOne = static_cast<Real>(-1.0);
-
 // Matrices are column-major and stored in device memory.
 enum class Status
 {
@@ -129,31 +123,31 @@ HOST_DEVICE inline Complex ComplexSqrt(Complex z)
     const Real a = complex_real(z);
     const Real b = complex_imag(z);
 
-    if (b == kZero)
+    if (b == 0.0)
     {
-        if (a >= kZero)
+        if (a >= 0.0)
         {
-            return make_complex(RealSqrt(a), kZero);
+            return make_complex(RealSqrt(a), 0.0);
         }
         else
         {
-            return make_complex(kZero, RealSqrt(-a));
+            return make_complex(0.0, RealSqrt(-a));
         }
     }
 
-    if (a == kZero)
+    if (a == 0.0)
     {
         Real root = RealSqrt(0.5 * RealAbs(b));
-        return b > kZero ? make_complex(root, root) : make_complex(root, -root);
+        return b > 0.0 ? make_complex(root, root) : make_complex(root, -root);
     }
 
     Real r = ComplexAbs(z);
     Real t = RealSqrt(0.5 * (r + RealAbs(a)));
     Real u = 0.5 * b / t;
 
-    if (a < kZero)
+    if (a < 0.0)
     {
-        if (b >= kZero)
+        if (b >= 0.0)
         {
             return make_complex(u, t);
         }
@@ -170,9 +164,9 @@ HOST_DEVICE inline Complex ComplexReciprocal(Complex z)
     const Real ar = complex_real(z);
     const Real ai = complex_imag(z);
     const Real denom = ar * ar + ai * ai;
-    if (denom == kZero)
+    if (denom == 0.0)
     {
-        return make_complex(kZero, kZero);
+        return make_complex(0.0, 0.0);
     }
     return make_complex(ar / denom, -ai / denom);
 }
