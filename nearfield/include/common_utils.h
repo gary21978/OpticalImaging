@@ -18,9 +18,12 @@ using Complex = cuDoubleComplex;
 #define make_complex make_cuDoubleComplex
 #define ComplexAdd cuCadd
 #define ComplexSub cuCsub
+#define ComplexMul cuCmul
+#define ComplexDiv cuCdiv
+#define ComplexAbs cuCabs
 #define ComplexReal cuCreal
 #define ComplexImag cuCimag
-#define PRINT_PRECISION std::setprecision(15)
+#define ComplexConj cuConj
 #define RealSqrt sqrt
 #define RealAbs abs
 #else
@@ -33,9 +36,12 @@ using Complex = cuComplex;
 #define make_complex make_cuComplex
 #define ComplexAdd cuCaddf
 #define ComplexSub cuCsubf
+#define ComplexMul cuCmulf
+#define ComplexDiv cuCdivf
+#define ComplexAbs cuCabsf
 #define ComplexReal cuCrealf
 #define ComplexImag cuCimagf
-#define PRINT_PRECISION std::setprecision(6)
+#define ComplexConj cuConjf
 #define RealSqrt sqrtf
 #define RealAbs fabsf
 #endif
@@ -82,15 +88,6 @@ HOST_DEVICE inline bool isnan(Complex value)
     return isnan(real) || isnan(imag);
 }
 
-HOST_DEVICE inline Complex ComplexMul(Complex a, Complex b)
-{
-    const Real ar = ComplexReal(a);
-    const Real ai = ComplexImag(a);
-    const Real br = ComplexReal(b);
-    const Real bi = ComplexImag(b);
-    return make_complex(ar * br - ai * bi, ar * bi + ai * br);
-}
-
 HOST_DEVICE inline Complex operator+(Complex a, Complex b) { return ComplexAdd(a, b); }
 
 HOST_DEVICE inline Complex operator-(Complex a, Complex b) { return ComplexSub(a, b); }
@@ -102,17 +99,7 @@ HOST_DEVICE inline Complex operator-(Complex a)
 
 HOST_DEVICE inline Complex operator*(Complex a, Complex b) { return ComplexMul(a, b); }
 
-HOST_DEVICE inline Complex ComplexConj(Complex a)
-{
-    return make_complex(ComplexReal(a), -ComplexImag(a));
-}
-
-HOST_DEVICE inline Real ComplexAbs(Complex value)
-{
-    const Real real = ComplexReal(value);
-    const Real imag = ComplexImag(value);
-    return RealSqrt(real * real + imag * imag);
-}
+HOST_DEVICE inline Complex operator/(Complex a, Complex b) { return ComplexDiv(a, b); }
 
 HOST_DEVICE inline Complex ComplexSqrt(Complex z)
 {

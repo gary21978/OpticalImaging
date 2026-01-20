@@ -27,7 +27,12 @@ inline std::string FormatComplex(const Complex& value, double eps)
     }
 
     std::ostringstream oss;
-    oss << PRINT_PRECISION;
+
+#if USE_DOUBLE_PRECISION
+    oss << std::setprecision(15);
+#else
+    oss << std::setprecision(6);
+#endif
 
     if (imag == 0.0)
     {
