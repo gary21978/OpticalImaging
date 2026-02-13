@@ -324,8 +324,7 @@ __global__ void BuildEzKernel(const Complex* kx,
     }
     const Complex numerator =
         ComplexAdd(ComplexMul(kx[idx], ex[idx]), ComplexMul(ky[idx], ey[idx]));
-    const Complex inv_kz = ComplexReciprocal(kz[idx]);
-    ez[idx] = ComplexMul(numerator, inv_kz);
+    ez[idx] = ComplexDiv(numerator, kz[idx]);
 }
 
 __global__ void FieldXYKernel(const Complex* kx,
@@ -385,7 +384,7 @@ __global__ void BuildConvMatrixKernel(const Complex* fft,
 {
     const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     const int64_t total = order_n * order_n;
-    if (idx >= total)
+    if (idx >= total) 
     {
         return;
     }
@@ -401,22 +400,10 @@ __global__ void BuildConvMatrixKernel(const Complex* fft,
     int64_t fx = row_ix - col_ix;
     int64_t fy = row_iy - col_iy;
 
-    if (nx > 0)
-    {
-        fx %= nx;
-        if (fx < 0)
-        {
-            fx += nx;
-        }
-    }
-    if (ny > 0)
-    {
-        fy %= ny;
-        if (fy < 0)
-        {
-            fy += ny;
-        }
-    }
+    fx %= nx;
+    fx += (fx < 0) ? nx : 0;
+    fy %= ny;
+    fy += (fy < 0) ? ny : 0;
 
     const int64_t fft_idx = fx * ny + fy;
     out[col * order_n + row] = fft[fft_idx];
@@ -1132,8 +1119,8 @@ Status RCWA::AddLayerHomogeneous(Real thickness, Real eps)
 
 Status RCWA::AddLayerHomogeneous(Real thickness, Complex eps)
 {
-    if (!kvectors_ready_ || !kx_diag_ || !ky_diag_ || !V0_.V_11 || !V0_.V_12 ||
-        !V0_.V_21 || !V0_.V_22)
+    if (!kvectors_ready_ || !kx_diag_ || !ky_diag_ || !V0_.V_11 || !V0_.V_12 || !V0_.V_21 ||
+        !V0_.V_22)
     {
         return Status::kInvalidValue;
     }
@@ -1434,14 +1421,18 @@ Status RCWA::RSProd(const SMatrix& Sm,
     CHECK(X1.Allocate(n, n));
     CHECK(X3.Allocate(n, n));
     CHECK(Z1.Allocate(n, n));
-    CHECK(StatusFromCuda(cudaMemcpyAsync(
-        X1.get(), rhs1.get(), block_bytes, cudaMemcpyDeviceToDevice, use_stream)));
-    CHECK(StatusFromCuda(cudaMemcpyAsync(
-        X3.get(), rhs1.get() + static_cast<size_t>(n) * n, block_bytes,
-        cudaMemcpyDeviceToDevice, use_stream)));
-    CHECK(StatusFromCuda(cudaMemcpyAsync(
-        Z1.get(), rhs1.get() + static_cast<size_t>(2) * n * n, block_bytes,
-        cudaMemcpyDeviceToDevice, use_stream)));
+    CHECK(StatusFromCuda(
+        cudaMemcpyAsync(X1.get(), rhs1.get(), block_bytes, cudaMemcpyDeviceToDevice, use_stream)));
+    CHECK(StatusFromCuda(cudaMemcpyAsync(X3.get(),
+                                         rhs1.get() + static_cast<size_t>(n) * n,
+                                         block_bytes,
+                                         cudaMemcpyDeviceToDevice,
+                                         use_stream)));
+    CHECK(StatusFromCuda(cudaMemcpyAsync(Z1.get(),
+                                         rhs1.get() + static_cast<size_t>(2) * n * n,
+                                         block_bytes,
+                                         cudaMemcpyDeviceToDevice,
+                                         use_stream)));
 
     DeviceMatrix Sn21Z1;
     CHECK(Sn21Z1.Allocate(n, n));
@@ -1512,16 +1503,20 @@ Status RCWA::RSProd(const SMatrix& Sm,
     CHECK(X3.Allocate(n, n));
     CHECK(X2.Allocate(n, n));
     CHECK(X4.Allocate(n, n));
-    CHECK(StatusFromCuda(cudaMemcpyAsync(
-        X1.get(), rhs1.get(), block_bytes, cudaMemcpyDeviceToDevice, use_stream)));
-    CHECK(StatusFromCuda(cudaMemcpyAsync(
-        X3.get(), rhs1.get() + static_cast<size_t>(n) * n, block_bytes,
-        cudaMemcpyDeviceToDevice, use_stream)));
-    CHECK(StatusFromCuda(cudaMemcpyAsync(
-        X2.get(), rhs2.get(), block_bytes, cudaMemcpyDeviceToDevice, use_stream)));
-    CHECK(StatusFromCuda(cudaMemcpyAsync(
-        X4.get(), rhs2.get() + static_cast<size_t>(n) * n, block_bytes,
-        cudaMemcpyDeviceToDevice, use_stream)));
+    CHECK(StatusFromCuda(
+        cudaMemcpyAsync(X1.get(), rhs1.get(), block_bytes, cudaMemcpyDeviceToDevice, use_stream)));
+    CHECK(StatusFromCuda(cudaMemcpyAsync(X3.get(),
+                                         rhs1.get() + static_cast<size_t>(n) * n,
+                                         block_bytes,
+                                         cudaMemcpyDeviceToDevice,
+                                         use_stream)));
+    CHECK(StatusFromCuda(
+        cudaMemcpyAsync(X2.get(), rhs2.get(), block_bytes, cudaMemcpyDeviceToDevice, use_stream)));
+    CHECK(StatusFromCuda(cudaMemcpyAsync(X4.get(),
+                                         rhs2.get() + static_cast<size_t>(n) * n,
+                                         block_bytes,
+                                         cudaMemcpyDeviceToDevice,
+                                         use_stream)));
 #endif
 
     DeviceMatrix S11;
