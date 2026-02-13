@@ -8,6 +8,10 @@
 #define USE_DOUBLE_PRECISION 1
 #endif
 
+#ifndef CUDA_THREADS
+#define CUDA_THREADS 256
+#endif
+
 #if USE_DOUBLE_PRECISION
 using Real = double;
 using Complex = cuDoubleComplex;

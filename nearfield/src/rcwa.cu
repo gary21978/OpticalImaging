@@ -552,16 +552,15 @@ __global__ void BuildKxKyDiagKernel(Complex* kx_diag,
 static Status
 ApplyV0Left(const VMatrix& V, const Complex* B, int64_t n, DeviceMatrix* out, cudaStream_t stream)
 {
-    if (!B || !out || !V.V_11 || !V.V_12 || !V.V_21 || !V.V_22 || n <= 0 || (n % 2) != 0)
+    if (!B || !out || !V.V_11 || !V.V_12 || !V.V_21 || !V.V_22 || (n % 2) != 0)
     {
         return Status::kInvalidValue;
     }
     CHECK(out->Allocate(n, n));
     int64_t n2 = n / 2;
     int64_t total = n2 * n;
-    int threads = 256;
-    int blocks = static_cast<int>((total + threads - 1) / threads);
-    V0LeftMulKernel<<<blocks, threads, 0, stream>>>(
+    int blocks = static_cast<int>((total + CUDA_THREADS - 1) / CUDA_THREADS);
+    V0LeftMulKernel<<<blocks, CUDA_THREADS, 0, stream>>>(
         V.V_11, V.V_12, V.V_21, V.V_22, B, out->get(), n, n2);
     return StatusFromCuda(cudaGetLastError());
 }
@@ -569,16 +568,15 @@ ApplyV0Left(const VMatrix& V, const Complex* B, int64_t n, DeviceMatrix* out, cu
 static Status
 ApplyV0Right(const VMatrix& V, const Complex* B, int64_t n, DeviceMatrix* out, cudaStream_t stream)
 {
-    if (!B || !out || !V.V_11 || !V.V_12 || !V.V_21 || !V.V_22 || n <= 0 || (n % 2) != 0)
+    if (!B || !out || !V.V_11 || !V.V_12 || !V.V_21 || !V.V_22 || (n % 2) != 0)
     {
         return Status::kInvalidValue;
     }
     CHECK(out->Allocate(n, n));
     int64_t n2 = n / 2;
     int64_t total = n2 * n;
-    int threads = 256;
-    int blocks = static_cast<int>((total + threads - 1) / threads);
-    V0RightMulKernel<<<blocks, threads, 0, stream>>>(
+    int blocks = static_cast<int>((total + CUDA_THREADS - 1) / CUDA_THREADS);
+    V0RightMulKernel<<<blocks, CUDA_THREADS, 0, stream>>>(
         V.V_11, V.V_12, V.V_21, V.V_22, B, out->get(), n, n2);
     return StatusFromCuda(cudaGetLastError());
 }
@@ -695,9 +693,8 @@ Status RCWA::BuildKxKy(Real inc_ang, Real azi_ang, Real eps_ref)
     CHECK(StatusFromCuda(cudaMalloc(&kx_diag_, static_cast<size_t>(order_N_) * sizeof(Complex))));
     CHECK(StatusFromCuda(cudaMalloc(&ky_diag_, static_cast<size_t>(order_N_) * sizeof(Complex))));
 
-    const int threads = 256;
-    const int blocks = static_cast<int>((order_N_ + threads - 1) / threads);
-    BuildKxKyDiagKernel<<<blocks, threads, 0, stream_>>>(
+    const int blocks = static_cast<int>((order_N_ + CUDA_THREADS - 1) / CUDA_THREADS);
+    BuildKxKyDiagKernel<<<blocks, CUDA_THREADS, 0, stream_>>>(
         kx_diag_, ky_diag_, order_x_, order_y_, kx0_norm, ky0_norm, Gx_norm_, Gy_norm_, order_N_);
     CHECK(StatusFromCuda(cudaGetLastError()));
 
@@ -724,9 +721,8 @@ Status RCWA::BuildV0(Real eps_ref)
     CHECK(StatusFromCuda(cudaMalloc(&V0_.V_21, static_cast<size_t>(order_N_) * sizeof(Complex))));
     CHECK(StatusFromCuda(cudaMalloc(&V0_.V_22, static_cast<size_t>(order_N_) * sizeof(Complex))));
 
-    const int threads = 256;
-    const int blocks = static_cast<int>((order_N_ + threads - 1) / threads);
-    BuildV0Kernel<<<blocks, threads, 0, stream_>>>(kx_diag_,
+    const int blocks = static_cast<int>((order_N_ + CUDA_THREADS - 1) / CUDA_THREADS);
+    BuildV0Kernel<<<blocks, CUDA_THREADS, 0, stream_>>>(kx_diag_,
                                                    ky_diag_,
                                                    make_complex(eps_ref, 0.0),
                                                    V0_.V_11,
@@ -1122,9 +1118,8 @@ Status RCWA::AddLayerHomogeneous(Real thickness, Complex eps)
     CHECK(StatusFromCuda(
         cudaMemsetAsync(V0iV.get(), 0, static_cast<size_t>(n2) * n2 * sizeof(Complex), stream_)));
 
-    const int threads = 256;
-    const int blocks = static_cast<int>((n + threads - 1) / threads);
-    BuildV0iVPhaseKernel<<<blocks, threads, 0, stream_>>>(kx_diag_,
+    const int blocks = static_cast<int>((n + CUDA_THREADS - 1) / CUDA_THREADS);
+    BuildV0iVPhaseKernel<<<blocks, CUDA_THREADS, 0, stream_>>>(kx_diag_,
                                                           ky_diag_,
                                                           V0_.V_11,
                                                           V0_.V_12,
@@ -1302,17 +1297,16 @@ Status RCWA::MaterialConv(const Complex* material,
 
     const double denom = static_cast<double>(nx) * static_cast<double>(ny);
     const Real scale = denom > 0.0 ? static_cast<Real>(1.0 / denom) : 0.0;
-    const int threads = 256;
-    int blocks = static_cast<int>((fft_size + threads - 1) / threads);
-    ScaleComplexKernel<<<blocks, threads, 0, use_stream>>>(fft_buf.get(), fft_size, scale);
+    int blocks = static_cast<int>((fft_size + CUDA_THREADS - 1) / CUDA_THREADS);
+    ScaleComplexKernel<<<blocks, CUDA_THREADS, 0, use_stream>>>(fft_buf.get(), fft_size, scale);
     CHECK(StatusFromCuda(cudaGetLastError()));
 
     DeviceMatrix conv;
     CHECK(conv.Allocate(order_N_, order_N_));
     const int64_t total = order_N_ * order_N_;
-    blocks = static_cast<int>((total + threads - 1) / threads);
+    blocks = static_cast<int>((total + CUDA_THREADS - 1) / CUDA_THREADS);
     const int64_t oy_len = static_cast<int64_t>(2 * order_y_ + 1);
-    BuildConvMatrixKernel<<<blocks, threads, 0, use_stream>>>(
+    BuildConvMatrixKernel<<<blocks, CUDA_THREADS, 0, use_stream>>>(
         fft_buf.get(), nx, ny, oy_len, conv.get(), order_N_);
     CHECK(StatusFromCuda(cudaGetLastError()));
 
@@ -1735,16 +1729,15 @@ Status RCWA::FieldXY(const Real* x_axis,
 
     DeviceVector Kz;
     CHECK(Kz.Allocate(static_cast<size_t>(n)));
-    const int threads = 256;
-    const int blocks = static_cast<int>((n + threads - 1) / threads);
+    const int blocks = static_cast<int>((n + CUDA_THREADS - 1) / CUDA_THREADS);
     const Complex eps = angle_layer_input_ ? eps_in_ : eps_out_;
-    BuildKzKernel<<<blocks, threads, 0, use_stream>>>(
+    BuildKzKernel<<<blocks, CUDA_THREADS, 0, use_stream>>>(
         kx_diag_, ky_diag_, eps, angle_layer_input_ ? 1 : 0, Kz.get(), n);
     CHECK(StatusFromCuda(cudaGetLastError()));
 
     DeviceVector Ezmn;
     CHECK(Ezmn.Allocate(static_cast<size_t>(n)));
-    BuildEzKernel<<<blocks, threads, 0, use_stream>>>(
+    BuildEzKernel<<<blocks, CUDA_THREADS, 0, use_stream>>>(
         kx_diag_, ky_diag_, Kz.get(), Exy.get(), Exy.get() + n, Ezmn.get(), n);
     CHECK(StatusFromCuda(cudaGetLastError()));
 
@@ -1756,8 +1749,8 @@ Status RCWA::FieldXY(const Real* x_axis,
     CHECK(EzMat.Allocate(x_count, y_count));
 
     const int64_t total = x_count * y_count;
-    const int grid = static_cast<int>((total + threads - 1) / threads);
-    FieldXYKernel<<<grid, threads, 0, use_stream>>>(kx_diag_,
+    const int grid = static_cast<int>((total + CUDA_THREADS - 1) / CUDA_THREADS);
+    FieldXYKernel<<<grid, CUDA_THREADS, 0, use_stream>>>(kx_diag_,
                                                     ky_diag_,
                                                     Exy.get(),
                                                     Exy.get() + n,

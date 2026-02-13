@@ -66,7 +66,14 @@ void LoadGeometry(std::vector<Real>& geom, int nx, int ny)
     geom.assign(static_cast<size_t>(nx) * ny, 0.0);
     for (int x = 0; x < nx; ++x)
     {
-        for (int y = ny / 4 ; y < ny / 2; ++y)
+        for (int y = ny / 4; y < ny / 2; ++y)
+        {
+            geom[static_cast<size_t>(x) * ny + y] = 1.0;
+        }
+    }
+    for (int y = 0; y < ny; ++y)
+    {
+        for (int x = nx / 4; x < nx / 2; ++x)
         {
             geom[static_cast<size_t>(x) * ny + y] = 1.0;
         }
@@ -313,9 +320,8 @@ bool SaveFieldImage(const char* path,
                    static_cast<size_t>(count) * sizeof(Real));
     }
 
-    const int threads = 256;
-    const int blocks = static_cast<int>((count + threads - 1) / threads);
-    MagnitudeKernel<<<blocks, threads>>>(field, device_mag.get(), count);
+    const int blocks = static_cast<int>((count + CUDA_THREADS - 1) / CUDA_THREADS);
+    MagnitudeKernel<<<blocks, CUDA_THREADS>>>(field, device_mag.get(), count);
     host_mag.resize(static_cast<size_t>(count));
     cudaMemcpy(host_mag.data(),
                device_mag.get(),
@@ -341,9 +347,8 @@ bool SaveIntensityImage(const char* path,
                    static_cast<size_t>(count) * sizeof(Real));
     }
 
-    const int threads = 256;
-    const int blocks = static_cast<int>((count + threads - 1) / threads);
-    IntensityKernel<<<blocks, threads>>>(ex, ey, ez, device_mag.get(), count);
+    const int blocks = static_cast<int>((count + CUDA_THREADS - 1) / CUDA_THREADS);
+    IntensityKernel<<<blocks, CUDA_THREADS>>>(ex, ey, ez, device_mag.get(), count);
 
     host_mag.resize(static_cast<size_t>(count));
     cudaMemcpy(host_mag.data(),
@@ -383,7 +388,6 @@ int main()
     const auto t_geom_start = Clock::now();
     LoadGeometry(geometry, geom_x, geom_y);
     const auto t_geom_end = Clock::now();
-    //WriteMaskPng("geometry_mask.png", geometry, geom_y, geom_x);
     WriteMaskPng("geometry_mask.png", geometry, geom_x, geom_y);
 
     DeviceBuffer d_material;
@@ -472,19 +476,14 @@ int main()
     SaveFieldImage("scatter_ex.png", Ex, scatter_x, scatter_y, host_mag, device_mag);
     SaveFieldImage("scatter_ey.png", Ey, scatter_x, scatter_y, host_mag, device_mag);
     SaveFieldImage("scatter_ez.png", Ez, scatter_x, scatter_y, host_mag, device_mag);
-    SaveIntensityImage("scatter_intensity.png",
-                       Ex,
-                       Ey,
-                       Ez,
-                       scatter_x,
-                       scatter_y,
-                       host_mag,
-                       device_mag);
+    SaveIntensityImage(
+        "scatter_intensity.png", Ex, Ey, Ez, scatter_x, scatter_y, host_mag, device_mag);
     const auto t_image_end = Clock::now();
     const auto t_image =
         std::chrono::duration<double, std::milli>(t_image_end - t_image_start).count();
 
-    printf("conv\t%.1f ms\nscatter\t%.1f ms\nhomo\t%.1f ms\nglobal\t%.1f ms\nfield\t%.1f ms\nimage\t%.1f ms\n",
+    printf("conv\t%.1f ms\nscatter\t%.1f ms\nhomo\t%.1f ms\nglobal\t%.1f ms\nfield\t%.1f "
+           "ms\nimage\t%.1f ms\n",
            t_conv,
            t_scatter,
            t_hom,

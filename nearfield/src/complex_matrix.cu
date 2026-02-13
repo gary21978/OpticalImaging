@@ -420,9 +420,8 @@ Status ComplexMatrixOps::DiagLeftMatMul(const Complex* diag,
         return Status::kInvalidValue;
     }
     int64_t count = m * n;
-    int threads = 256;
-    int blocks = static_cast<int>((count + threads - 1) / threads);
-    LeftDiagMulKernel<<<blocks, threads, 0, stream_>>>(diag, B, C, m, count);
+    int blocks = static_cast<int>((count + CUDA_THREADS - 1) / CUDA_THREADS);
+    LeftDiagMulKernel<<<blocks, CUDA_THREADS, 0, stream_>>>(diag, B, C, m, count);
     return StatusFromCuda(cudaGetLastError());
 }
 
@@ -447,9 +446,8 @@ Status ComplexMatrixOps::DiagRightMatMul(const Complex* A,
         return Status::kInvalidValue;
     }
     int64_t count = m * n;
-    int threads = 256;
-    int blocks = static_cast<int>((count + threads - 1) / threads);
-    RightDiagMulKernel<<<blocks, threads, 0, stream_>>>(A, diag, C, m, count);
+    int blocks = static_cast<int>((count + CUDA_THREADS - 1) / CUDA_THREADS);
+    RightDiagMulKernel<<<blocks, CUDA_THREADS, 0, stream_>>>(A, diag, C, m, count);
     return StatusFromCuda(cudaGetLastError());
 }
 
@@ -471,9 +469,8 @@ ComplexMatrixOps::MatAdd(const Complex* A, const Complex* B, Complex* C, int64_t
         return Status::kInvalidValue;
     }
     int64_t count = m * n;
-    int threads = 256;
-    int blocks = static_cast<int>((count + threads - 1) / threads);
-    AddKernel<<<blocks, threads, 0, stream_>>>(A, B, C, count);
+    int blocks = static_cast<int>((count + CUDA_THREADS - 1) / CUDA_THREADS);
+    AddKernel<<<blocks, CUDA_THREADS, 0, stream_>>>(A, B, C, count);
     return StatusFromCuda(cudaGetLastError());
 }
 
@@ -494,9 +491,8 @@ ComplexMatrixOps::MatSub(const Complex* A, const Complex* B, Complex* C, int64_t
         return Status::kInvalidValue;
     }
     int64_t count = m * n;
-    int threads = 256;
-    int blocks = static_cast<int>((count + threads - 1) / threads);
-    SubKernel<<<blocks, threads, 0, stream_>>>(A, B, C, count);
+    int blocks = static_cast<int>((count + CUDA_THREADS - 1) / CUDA_THREADS);
+    SubKernel<<<blocks, CUDA_THREADS, 0, stream_>>>(A, B, C, count);
     return StatusFromCuda(cudaGetLastError());
 }
 
@@ -662,9 +658,8 @@ Status MakeIdentity(Complex* A, int64_t n, cudaStream_t stream)
         return Status::kInvalidValue;
     }
     int64_t total = n * n;
-    int threads = 256;
-    int blocks = static_cast<int>((total + threads - 1) / threads);
-    IdentityKernel<<<blocks, threads, 0, stream>>>(A, n);
+    int blocks = static_cast<int>((total + CUDA_THREADS - 1) / CUDA_THREADS);
+    IdentityKernel<<<blocks, CUDA_THREADS, 0, stream>>>(A, n);
     return StatusFromCuda(cudaGetLastError());
 }
 
@@ -675,9 +670,8 @@ Status FillDiagonalFromVector(const Complex* diag, int64_t n, Complex* out, cuda
         return Status::kInvalidValue;
     }
     int64_t total = n * n;
-    int threads = 256;
-    int blocks = static_cast<int>((total + threads - 1) / threads);
-    DiagFromVectorKernel<<<blocks, threads, 0, stream>>>(diag, out, n);
+    int blocks = static_cast<int>((total + CUDA_THREADS - 1) / CUDA_THREADS);
+    DiagFromVectorKernel<<<blocks, CUDA_THREADS, 0, stream>>>(diag, out, n);
     return StatusFromCuda(cudaGetLastError());
 }
 
@@ -688,9 +682,8 @@ Status FillDiagonalConstant(int64_t n, Complex value, Complex* out, cudaStream_t
         return Status::kInvalidValue;
     }
     int64_t total = n * n;
-    int threads = 256;
-    int blocks = static_cast<int>((total + threads - 1) / threads);
-    ConstantDiagKernel<<<blocks, threads, 0, stream>>>(out, n, value);
+    int blocks = static_cast<int>((total + CUDA_THREADS - 1) / CUDA_THREADS);
+    ConstantDiagKernel<<<blocks, CUDA_THREADS, 0, stream>>>(out, n, value);
     return StatusFromCuda(cudaGetLastError());
 }
 
@@ -746,9 +739,8 @@ AddDiagonalInPlace(Complex* A, const Complex* diag, int64_t n, Complex scale, cu
     {
         return Status::kInvalidValue;
     }
-    int threads = 256;
-    int blocks = static_cast<int>((n + threads - 1) / threads);
-    AddDiagonalKernel<<<blocks, threads, 0, stream>>>(A, diag, n, scale);
+    int blocks = static_cast<int>((n + CUDA_THREADS - 1) / CUDA_THREADS);
+    AddDiagonalKernel<<<blocks, CUDA_THREADS, 0, stream>>>(A, diag, n, scale);
     return StatusFromCuda(cudaGetLastError());
 }
 
@@ -758,9 +750,8 @@ Status AddDiagonalConstantInPlace(Complex* A, int64_t n, Complex value, cudaStre
     {
         return Status::kInvalidValue;
     }
-    int threads = 256;
-    int blocks = static_cast<int>((n + threads - 1) / threads);
-    AddDiagonalConstantKernel<<<blocks, threads, 0, stream>>>(A, n, value);
+    int blocks = static_cast<int>((n + CUDA_THREADS - 1) / CUDA_THREADS);
+    AddDiagonalConstantKernel<<<blocks, CUDA_THREADS, 0, stream>>>(A, n, value);
     return StatusFromCuda(cudaGetLastError());
 }
 
@@ -777,9 +768,8 @@ Status CopyDiagonalBlock(const Complex* diag,
     {
         return Status::kInvalidValue;
     }
-    int threads = 256;
-    int blocks = static_cast<int>((n + threads - 1) / threads);
-    CopyDiagonalBlockKernel<<<blocks, threads, 0, stream>>>(
+    int blocks = static_cast<int>((n + CUDA_THREADS - 1) / CUDA_THREADS);
+    CopyDiagonalBlockKernel<<<blocks, CUDA_THREADS, 0, stream>>>(
         diag, n, dst, dst_n, row_offset, col_offset, scale);
     return StatusFromCuda(cudaGetLastError());
 }
@@ -794,9 +784,8 @@ Status MultiplyDiagonalVectors(const Complex* a,
     {
         return Status::kInvalidValue;
     }
-    int threads = 256;
-    int blocks = static_cast<int>((n + threads - 1) / threads);
-    ElementwiseMulKernel<<<blocks, threads, 0, stream>>>(a, b, out, n);
+    int blocks = static_cast<int>((n + CUDA_THREADS - 1) / CUDA_THREADS);
+    ElementwiseMulKernel<<<blocks, CUDA_THREADS, 0, stream>>>(a, b, out, n);
     return StatusFromCuda(cudaGetLastError());
 }
 
@@ -807,9 +796,8 @@ Status ScaleMatrix(const Complex* A, Complex* C, int64_t n, Complex scalar, cuda
         return Status::kInvalidValue;
     }
     int64_t count = n * n;
-    int threads = 256;
-    int blocks = static_cast<int>((count + threads - 1) / threads);
-    ScaleKernel<<<blocks, threads, 0, stream>>>(A, C, count, scalar);
+    int blocks = static_cast<int>((count + CUDA_THREADS - 1) / CUDA_THREADS);
+    ScaleKernel<<<blocks, CUDA_THREADS, 0, stream>>>(A, C, count, scalar);
     return StatusFromCuda(cudaGetLastError());
 }
 
@@ -843,9 +831,8 @@ Status CopyBlock(const Complex* src,
         return Status::kInvalidValue;
     }
     int64_t total = n * n;
-    int threads = 256;
-    int blocks = static_cast<int>((total + threads - 1) / threads);
-    CopyBlockKernel<<<blocks, threads, 0, stream>>>(
+    int blocks = static_cast<int>((total + CUDA_THREADS - 1) / CUDA_THREADS);
+    CopyBlockKernel<<<blocks, CUDA_THREADS, 0, stream>>>(
         src, n, dst, dst_n, row_offset, col_offset, scale);
     return StatusFromCuda(cudaGetLastError());
 }
