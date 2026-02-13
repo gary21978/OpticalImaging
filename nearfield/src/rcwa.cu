@@ -217,11 +217,7 @@ __global__ void BuildV0iVPhaseKernel(const Complex* kx_diag,
     const Complex ky2 = ComplexMul(ky, ky);
     const Complex sum = ComplexAdd(kx2, ky2);
     const Complex diff = ComplexSub(eps, sum);
-    Complex kz = ComplexSqrt(diff);
-    if (ComplexImag(kz) < 0.0)
-    {
-        kz = ComplexConj(kz);
-    }
+    Complex kz = ComplexSqrtImPos(diff);
 
     const Complex kz_inv = ComplexReciprocal(kz);
     const Complex kxky = ComplexMul(kx, ky);
@@ -297,11 +293,8 @@ __global__ void BuildKzKernel(const Complex* kx,
     const Complex kyv = ky[idx];
     const Complex sum = ComplexAdd(ComplexMul(kxv, kxv), ComplexMul(kyv, kyv));
     const Complex diff = ComplexSub(eps, sum);
-    Complex kzz = ComplexSqrt(diff);
-    if (ComplexImag(kzz) < 0.0)
-    {
-        kzz = ComplexConj(kzz);
-    }
+    Complex kzz = ComplexSqrtImPos(diff);
+    
     if (!input_layer)
     {
         kzz = ComplexMul(make_complex(-1.0, 0.0), kzz);
@@ -469,12 +462,7 @@ __global__ void BuildV0Kernel(const Complex* kx_diag,
     const Complex ky2 = ComplexMul(ky, ky);
     const Complex sum = ComplexAdd(kx2, ky2);
     const Complex diff = ComplexSub(eps, sum);
-    Complex kz = ComplexSqrt(diff);
-    if (ComplexImag(kz) < 0.0)
-    {
-        kz = ComplexConj(kz);
-    }
-
+    Complex kz = ComplexSqrtImPos(diff);
     const Complex kz_inv = ComplexReciprocal(kz);
     const Complex kxky = ComplexMul(kx, ky);
     v0_11[idx] = ComplexMul(make_complex(-1.0, 0.0), ComplexMul(kxky, kz_inv));

@@ -46,7 +46,6 @@ using Complex = cuComplex;
 #define RealAbs fabsf
 #endif
 
-// Matrices are column-major and stored in device memory.
 enum class Status
 {
     kSuccess = 0,
@@ -100,7 +99,7 @@ HOST_DEVICE inline Complex operator-(Complex a)
 HOST_DEVICE inline Complex operator*(Complex a, Complex b) { return ComplexMul(a, b); }
 
 HOST_DEVICE inline Complex operator/(Complex a, Complex b) { return ComplexDiv(a, b); }
-
+/*
 HOST_DEVICE inline Complex ComplexSqrt(Complex z)
 {
     const Real a = ComplexReal(z);
@@ -140,6 +139,39 @@ HOST_DEVICE inline Complex ComplexSqrt(Complex z)
         }
     }
     return make_complex(t, u);
+}*/
+
+// branchless implementation of complex square root
+
+HOST_DEVICE inline Complex ComplexSqrt(Complex z)
+{
+    Real a = ComplexReal(z);
+    Real b = ComplexImag(z);
+    Real r = ComplexAbs(z);
+    Real t = RealSqrt(Real(0.5) * (r + RealAbs(a)));
+    Real inv_t = (t > Real(0)) ? Real(1) / t : Real(0);
+    Real u = Real(0.5) * b * inv_t;
+    // sign masks
+    Real sign_a = Real(a < Real(0));   // 0 or 1
+    Real sign_b = copysign(Real(1), b);// 1 or -1
+    // a >= 0
+    Real re_pos = t;
+    Real im_pos = u;
+    // a < 0
+    Real re_neg = RealAbs(u);
+    Real im_neg = sign_b * t;
+    // select
+    Real re = re_pos + sign_a * (re_neg - re_pos);
+    Real im = im_pos + sign_a * (im_neg - im_pos);
+    return make_complex(re, im);
+}
+
+HOST_DEVICE inline Complex ComplexSqrtImPos(Complex z)
+{
+    Complex w = ComplexSqrt(z);
+    Real re = ComplexReal(w);
+    Real im = ComplexImag(w);
+    return make_complex(re, RealAbs(im));
 }
 
 HOST_DEVICE inline Complex ComplexReciprocal(Complex z)
