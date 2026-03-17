@@ -63,7 +63,7 @@ Status RunIdentityTest(int n)
     CHECK(cudaMemcpy(dP.get(), hP.data(), elements * sizeof(Complex), cudaMemcpyHostToDevice));
     CHECK(cudaMemcpy(dQ.get(), hQ.data(), elements * sizeof(Complex), cudaMemcpyHostToDevice));
 
-    CHECK(rcwa.ComputeTFromPQ(dP.get(), dQ.get(), n, k0d, &T.value));
+    CHECK(rcwa.ComputeTFromPQOrder18(dP.get(), dQ.get(), n, k0d, &T.value));
     CHECK(cudaDeviceSynchronize());
     SAFEFREE(T.value.T_11);
     SAFEFREE(T.value.T_12);
@@ -77,7 +77,7 @@ Status RunIdentityTest(int n)
     for (int iter = 0; iter < repeats; ++iter)
     {
         const auto start = std::chrono::high_resolution_clock::now();
-        CHECK(rcwa.ComputeTFromPQ(dP.get(), dQ.get(), n, k0d, &T.value));
+        CHECK(rcwa.ComputeTFromPQOrder18(dP.get(), dQ.get(), n, k0d, &T.value));
         CHECK(cudaDeviceSynchronize());
         const auto end = std::chrono::high_resolution_clock::now();
 

@@ -14,7 +14,7 @@ static Status StatusFromCufft(cufftResult status)
     return status == CUFFT_SUCCESS ? Status::kSuccess : Status::kCudaError;
 }
 
-static constexpr double kExpConstant[5][5] = {
+static constexpr double kExpConstantOrder18[5][5] = {
     {0.0, -0.10036558103014462001, -0.00802924648241156960, -0.00089213849804572995, 0.0},
     {0.0,
      0.39784974949964507614,
@@ -32,6 +32,21 @@ static constexpr double kExpConstant[5][5] = {
      0.02955525704293155274,
      -0.00001391802575160607},
     {0.0, 0.0, -0.09233646193671185927, -0.01693649390020817171, -0.00001400867981820361}};
+
+static constexpr double kExpConstantOrder12[4][4] = {
+    {-0.01860232051462055322,
+     -0.00500702322573317730,
+     -0.57342012296052226390,
+     -0.13339969394389205970},
+    {4.60000000000000000000,
+     0.99287510353848683614,
+     -0.13244556105279963884,
+     0.00172990000000000000},
+    {0.21169311829980944294,
+     0.15822438471572672537,
+     0.16563516943672741501,
+     0.01078627793157924250},
+    {0.0, -0.13181061013830184015, -0.02027855540589259079, -0.00675951846863086359}};
 
 struct DeviceMatrix
 {
@@ -294,7 +309,7 @@ __global__ void BuildKzKernel(const Complex* kx,
     const Complex sum = ComplexAdd(ComplexMul(kxv, kxv), ComplexMul(kyv, kyv));
     const Complex diff = ComplexSub(eps, sum);
     Complex kzz = ComplexSqrtImPos(diff);
-    
+
     if (!input_layer)
     {
         kzz = ComplexMul(make_complex(-1.0, 0.0), kzz);
@@ -377,7 +392,7 @@ __global__ void BuildConvMatrixKernel(const Complex* fft,
 {
     const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     const int64_t total = order_n * order_n;
-    if (idx >= total) 
+    if (idx >= total)
     {
         return;
     }
@@ -466,8 +481,8 @@ __global__ void BuildV0Kernel(const Complex* kx_diag,
     const Complex kz_inv = ComplexReciprocal(kz);
     const Complex kxky = ComplexMul(kx, ky);
     v0_11[idx] = ComplexMul(make_complex(-1.0, 0.0), ComplexMul(kxky, kz_inv));
-    v0_12[idx] = ComplexAdd(kz, ComplexMul(kx2, kz_inv));
-    v0_21[idx] = ComplexMul(make_complex(-1.0, 0.0), ComplexAdd(kz, ComplexMul(ky2, kz_inv)));
+    v0_12[idx] = ComplexMul(make_complex(-1.0, 0.0), ComplexAdd(kz, ComplexMul(ky2, kz_inv)));
+    v0_21[idx] = ComplexAdd(kz, ComplexMul(kx2, kz_inv));
     v0_22[idx] = ComplexMul(kxky, kz_inv);
 }
 
@@ -723,24 +738,24 @@ Status RCWA::BuildV0(Real eps_ref)
 
     const int blocks = static_cast<int>((order_N_ + CUDA_THREADS - 1) / CUDA_THREADS);
     BuildV0Kernel<<<blocks, CUDA_THREADS, 0, stream_>>>(kx_diag_,
-                                                   ky_diag_,
-                                                   make_complex(eps_ref, 0.0),
-                                                   V0_.V_11,
-                                                   V0_.V_12,
-                                                   V0_.V_21,
-                                                   V0_.V_22,
-                                                   order_N_);
+                                                        ky_diag_,
+                                                        make_complex(eps_ref, 0.0),
+                                                        V0_.V_11,
+                                                        V0_.V_12,
+                                                        V0_.V_21,
+                                                        V0_.V_22,
+                                                        order_N_);
     CHECK(StatusFromCuda(cudaGetLastError()));
 
     return Status::kSuccess;
 }
 
-Status RCWA::ComputeTFromPQ(const Complex* P,
-                            const Complex* Q,
-                            int64_t n,
-                            Real k0d,
-                            TMatrix* T,
-                            cudaStream_t stream) const
+Status RCWA::ComputeTFromPQOrder18(const Complex* P,
+                                   const Complex* Q,
+                                   int64_t n,
+                                   Real k0d,
+                                   TMatrix* T,
+                                   cudaStream_t stream) const
 {
     if (!P || !Q || !T || n <= 0)
     {
@@ -824,11 +839,11 @@ Status RCWA::ComputeTFromPQ(const Complex* P,
 
     for (int i = 0; i < 5; ++i)
     {
-        const Complex c0 = make_complex(static_cast<Real>(kExpConstant[i][0]), 0.0);
-        const Complex c1 = make_complex(static_cast<Real>(kExpConstant[i][1]), 0.0);
-        const Complex c2 = make_complex(static_cast<Real>(kExpConstant[i][2]), 0.0);
-        const Complex c3 = make_complex(static_cast<Real>(kExpConstant[i][3]), 0.0);
-        const Complex c4 = make_complex(static_cast<Real>(kExpConstant[i][4]), 0.0);
+        const Complex c0 = make_complex(static_cast<Real>(kExpConstantOrder18[i][0]), 0.0);
+        const Complex c1 = make_complex(static_cast<Real>(kExpConstantOrder18[i][1]), 0.0);
+        const Complex c2 = make_complex(static_cast<Real>(kExpConstantOrder18[i][2]), 0.0);
+        const Complex c3 = make_complex(static_cast<Real>(kExpConstantOrder18[i][3]), 0.0);
+        const Complex c4 = make_complex(static_cast<Real>(kExpConstantOrder18[i][4]), 0.0);
 
         CHECK(B_11[i].Allocate(n, n));
         CHECK(ScaleMatrix(I2.get(), B_11[i].get(), n, c0, use_stream));
@@ -999,6 +1014,255 @@ Status RCWA::ComputeTFromPQ(const Complex* P,
     return Status::kSuccess;
 }
 
+Status RCWA::ComputeTFromPQOrder12(const Complex* P,
+                                   const Complex* Q,
+                                   int64_t n,
+                                   Real k0d,
+                                   TMatrix* T,
+                                   cudaStream_t stream) const
+{
+    if (!P || !Q || !T || n <= 0)
+    {
+        return Status::kInvalidValue;
+    }
+
+    cudaStream_t use_stream = stream ? stream : stream_;
+
+    T->T_11 = nullptr;
+    T->T_12 = nullptr;
+    T->T_21 = nullptr;
+    T->T_22 = nullptr;
+
+    ComplexMatrixOps ops(use_stream);
+    CHECK(ops.SetStream(use_stream));
+
+    // Matrix exponential via scaling/squaring + [5/5] Padé on block matrix:
+    // A = [0, -P; Q, 0], then T = exp(A * k0d).
+    double Pnorm = 0.0;
+    double Qnorm = 0.0;
+    CHECK(ComputeMatrixNorm1(P, n, &Pnorm, use_stream));
+    CHECK(ComputeMatrixNorm1(Q, n, &Qnorm, use_stream));
+
+    const double Rnorm = std::max(Pnorm, Qnorm);
+    const double scaled = Rnorm * static_cast<double>(k0d);
+    int m = 0;
+    if (scaled > 0.0)
+    {
+        m = static_cast<int>(std::ceil(std::log2(scaled)));
+        if (m < 0)
+        {
+            m = 0;
+        }
+    }
+
+    const double scale_A = std::pow(2.0, -m) * static_cast<double>(k0d);
+    const Complex scale_pos = make_complex(static_cast<Real>(scale_A), 0.0);
+    const Complex scale_neg = make_complex(static_cast<Real>(-scale_A), 0.0);
+
+    DeviceMatrix I2;
+    CHECK(I2.Allocate(n, n));
+    CHECK(MakeIdentity(I2.get(), n, use_stream));
+
+    DeviceMatrix A_12;
+    CHECK(A_12.Allocate(n, n));
+    CHECK(ScaleMatrix(P, A_12.get(), n, scale_neg, use_stream));
+
+    DeviceMatrix A_21;
+    CHECK(A_21.Allocate(n, n));
+    CHECK(ScaleMatrix(Q, A_21.get(), n, scale_pos, use_stream));
+
+    DeviceMatrix A2_11;
+    CHECK(A2_11.Allocate(n, n));
+    CHECK(MatMul(ops, A_12.get(), A_21.get(), A2_11.get(), n));
+
+    DeviceMatrix A2_22;
+    CHECK(A2_22.Allocate(n, n));
+    CHECK(MatMul(ops, A_21.get(), A_12.get(), A2_22.get(), n));
+
+    DeviceMatrix A3_12;
+    CHECK(A3_12.Allocate(n, n));
+    CHECK(MatMul(ops, A_12.get(), A2_22.get(), A3_12.get(), n));
+
+    DeviceMatrix A3_21;
+    CHECK(A3_21.Allocate(n, n));
+    CHECK(MatMul(ops, A_21.get(), A2_11.get(), A3_21.get(), n));
+
+    DeviceMatrix scratch;
+    DeviceMatrix B_11[4];
+    DeviceMatrix B_12[4];
+    DeviceMatrix B_21[4];
+    DeviceMatrix B_22[4];
+
+    for (int i = 0; i < 4; ++i)
+    {
+        const Complex c0 = make_complex(static_cast<Real>(kExpConstantOrder12[i][0]), 0.0);
+        const Complex c1 = make_complex(static_cast<Real>(kExpConstantOrder12[i][1]), 0.0);
+        const Complex c2 = make_complex(static_cast<Real>(kExpConstantOrder12[i][2]), 0.0);
+        const Complex c3 = make_complex(static_cast<Real>(kExpConstantOrder12[i][3]), 0.0);
+
+        CHECK(B_11[i].Allocate(n, n));
+        CHECK(ScaleMatrix(I2.get(), B_11[i].get(), n, c0, use_stream));
+        CHECK(scratch.Allocate(n, n));
+        CHECK(ScaleMatrix(A2_11.get(), scratch.get(), n, c2, use_stream));
+        CHECK(AddInPlace(ops, B_11[i].get(), scratch.get(), n));
+
+        CHECK(B_12[i].Allocate(n, n));
+        CHECK(ScaleMatrix(A_12.get(), B_12[i].get(), n, c1, use_stream));
+        CHECK(ScaleMatrix(A3_12.get(), scratch.get(), n, c3, use_stream));
+        CHECK(AddInPlace(ops, B_12[i].get(), scratch.get(), n));
+
+        CHECK(B_21[i].Allocate(n, n));
+        CHECK(ScaleMatrix(A_21.get(), B_21[i].get(), n, c1, use_stream));
+        CHECK(ScaleMatrix(A3_21.get(), scratch.get(), n, c3, use_stream));
+        CHECK(AddInPlace(ops, B_21[i].get(), scratch.get(), n));
+
+        CHECK(B_22[i].Allocate(n, n));
+        CHECK(ScaleMatrix(I2.get(), B_22[i].get(), n, c0, use_stream));
+        CHECK(ScaleMatrix(A2_22.get(), scratch.get(), n, c2, use_stream));
+        CHECK(AddInPlace(ops, B_22[i].get(), scratch.get(), n));
+    }
+
+    A2_11.Reset();
+    A2_22.Reset();
+    A3_12.Reset();
+    A3_21.Reset();
+
+    DeviceMatrix A6_11;
+    CHECK(A6_11.Allocate(n, n));
+    CHECK(MatMul(ops, B_11[3].get(), B_11[3].get(), A6_11.get(), n));
+    CHECK(scratch.Allocate(n, n));
+    CHECK(MatMul(ops, B_12[3].get(), B_21[3].get(), scratch.get(), n));
+    CHECK(AddInPlace(ops, A6_11.get(), scratch.get(), n));
+    CHECK(AddInPlace(ops, A6_11.get(), B_11[2].get(), n));
+
+    DeviceMatrix A6_12;
+    CHECK(A6_12.Allocate(n, n));
+    CHECK(MatMul(ops, B_11[3].get(), B_12[3].get(), A6_12.get(), n));
+    CHECK(scratch.Allocate(n, n));
+    CHECK(MatMul(ops, B_12[3].get(), B_22[3].get(), scratch.get(), n));
+    CHECK(AddInPlace(ops, A6_12.get(), scratch.get(), n));
+    CHECK(AddInPlace(ops, A6_12.get(), B_12[2].get(), n));
+
+    DeviceMatrix A6_21;
+    CHECK(A6_21.Allocate(n, n));
+    CHECK(MatMul(ops, B_21[3].get(), B_11[3].get(), A6_21.get(), n));
+    CHECK(scratch.Allocate(n, n));
+    CHECK(MatMul(ops, B_22[3].get(), B_21[3].get(), scratch.get(), n));
+    CHECK(AddInPlace(ops, A6_21.get(), scratch.get(), n));
+    CHECK(AddInPlace(ops, A6_21.get(), B_21[2].get(), n));
+
+    DeviceMatrix A6_22;
+    CHECK(A6_22.Allocate(n, n));
+    CHECK(MatMul(ops, B_21[3].get(), B_12[3].get(), A6_22.get(), n));
+    CHECK(scratch.Allocate(n, n));
+    CHECK(MatMul(ops, B_22[3].get(), B_22[3].get(), scratch.get(), n));
+    CHECK(AddInPlace(ops, A6_22.get(), scratch.get(), n));
+    CHECK(AddInPlace(ops, A6_22.get(), B_22[2].get(), n));
+
+    DeviceMatrix temp1;
+    DeviceMatrix temp2;
+    DeviceMatrix temp3;
+
+    DeviceMatrix T_11;
+    {
+        CHECK(temp1.Allocate(n, n));
+        CHECK(AddMatrix(ops, B_11[1].get(), A6_11.get(), temp1.get(), n));
+        CHECK(temp2.Allocate(n, n));
+        CHECK(MatMul(ops, temp1.get(), A6_11.get(), temp2.get(), n));
+        CHECK(temp1.Allocate(n, n));
+        CHECK(AddMatrix(ops, B_12[1].get(), A6_12.get(), temp1.get(), n));
+        CHECK(temp3.Allocate(n, n));
+        CHECK(MatMul(ops, temp1.get(), A6_21.get(), temp3.get(), n));
+        CHECK(T_11.Allocate(n, n));
+        CHECK(AddMatrix(ops, B_11[0].get(), temp2.get(), T_11.get(), n));
+        CHECK(AddInPlace(ops, T_11.get(), temp3.get(), n));
+    }
+
+    DeviceMatrix T_12;
+    {
+        CHECK(temp1.Allocate(n, n));
+        CHECK(AddMatrix(ops, B_11[1].get(), A6_11.get(), temp1.get(), n));
+        CHECK(temp2.Allocate(n, n));
+        CHECK(MatMul(ops, temp1.get(), A6_12.get(), temp2.get(), n));
+        CHECK(temp1.Allocate(n, n));
+        CHECK(AddMatrix(ops, B_12[1].get(), A6_12.get(), temp1.get(), n));
+        CHECK(temp3.Allocate(n, n));
+        CHECK(MatMul(ops, temp1.get(), A6_22.get(), temp3.get(), n));
+        CHECK(T_12.Allocate(n, n));
+        CHECK(AddMatrix(ops, B_12[0].get(), temp2.get(), T_12.get(), n));
+        CHECK(AddInPlace(ops, T_12.get(), temp3.get(), n));
+    }
+
+    DeviceMatrix T_21;
+    {
+        CHECK(temp1.Allocate(n, n));
+        CHECK(AddMatrix(ops, B_21[1].get(), A6_21.get(), temp1.get(), n));
+        CHECK(temp2.Allocate(n, n));
+        CHECK(MatMul(ops, temp1.get(), A6_11.get(), temp2.get(), n));
+        CHECK(temp1.Allocate(n, n));
+        CHECK(AddMatrix(ops, B_22[1].get(), A6_22.get(), temp1.get(), n));
+        CHECK(temp3.Allocate(n, n));
+        CHECK(MatMul(ops, temp1.get(), A6_21.get(), temp3.get(), n));
+        CHECK(T_21.Allocate(n, n));
+        CHECK(AddMatrix(ops, B_21[0].get(), temp2.get(), T_21.get(), n));
+        CHECK(AddInPlace(ops, T_21.get(), temp3.get(), n));
+    }
+
+    DeviceMatrix T_22;
+    {
+        CHECK(temp1.Allocate(n, n));
+        CHECK(AddMatrix(ops, B_21[1].get(), A6_21.get(), temp1.get(), n));
+        CHECK(temp2.Allocate(n, n));
+        CHECK(MatMul(ops, temp1.get(), A6_12.get(), temp2.get(), n));
+        CHECK(temp1.Allocate(n, n));
+        CHECK(AddMatrix(ops, B_22[1].get(), A6_22.get(), temp1.get(), n));
+        CHECK(temp3.Allocate(n, n));
+        CHECK(MatMul(ops, temp1.get(), A6_22.get(), temp3.get(), n));
+        CHECK(T_22.Allocate(n, n));
+        CHECK(AddMatrix(ops, B_22[0].get(), temp2.get(), T_22.get(), n));
+        CHECK(AddInPlace(ops, T_22.get(), temp3.get(), n));
+    }
+
+    DeviceMatrix tmp11;
+    DeviceMatrix tmp12;
+    DeviceMatrix tmp21;
+    DeviceMatrix tmp22;
+
+    for (int i = 0; i < m; ++i)
+    {
+        CHECK(tmp11.Allocate(n, n));
+        CHECK(MatMul(ops, T_11.get(), T_11.get(), tmp11.get(), n));
+        CHECK(scratch.Allocate(n, n));
+        CHECK(MatMul(ops, T_12.get(), T_21.get(), scratch.get(), n));
+        CHECK(AddInPlace(ops, tmp11.get(), scratch.get(), n));
+        CHECK(tmp12.Allocate(n, n));
+        CHECK(MatMul(ops, T_11.get(), T_12.get(), tmp12.get(), n));
+        CHECK(scratch.Allocate(n, n));
+        CHECK(MatMul(ops, T_12.get(), T_22.get(), scratch.get(), n));
+        CHECK(AddInPlace(ops, tmp12.get(), scratch.get(), n));
+        CHECK(tmp21.Allocate(n, n));
+        CHECK(MatMul(ops, T_21.get(), T_11.get(), tmp21.get(), n));
+        CHECK(scratch.Allocate(n, n));
+        CHECK(MatMul(ops, T_22.get(), T_21.get(), scratch.get(), n));
+        CHECK(AddInPlace(ops, tmp21.get(), scratch.get(), n));
+        CHECK(tmp22.Allocate(n, n));
+        CHECK(MatMul(ops, T_21.get(), T_12.get(), tmp22.get(), n));
+        CHECK(scratch.Allocate(n, n));
+        CHECK(MatMul(ops, T_22.get(), T_22.get(), scratch.get(), n));
+        CHECK(AddInPlace(ops, tmp22.get(), scratch.get(), n));
+        T_11.Swap(tmp11);
+        T_12.Swap(tmp12);
+        T_21.Swap(tmp21);
+        T_22.Swap(tmp22);
+    }
+
+    T->T_11 = T_11.Release();
+    T->T_12 = T_12.Release();
+    T->T_21 = T_21.Release();
+    T->T_22 = T_22.Release();
+    return Status::kSuccess;
+}
+
 Status RCWA::ComputeSFromT(const TMatrix& T,
                            const VMatrix& V,
                            int64_t n,
@@ -1120,18 +1384,18 @@ Status RCWA::AddLayerHomogeneous(Real thickness, Complex eps)
 
     const int blocks = static_cast<int>((n + CUDA_THREADS - 1) / CUDA_THREADS);
     BuildV0iVPhaseKernel<<<blocks, CUDA_THREADS, 0, stream_>>>(kx_diag_,
-                                                          ky_diag_,
-                                                          V0_.V_11,
-                                                          V0_.V_12,
-                                                          V0_.V_21,
-                                                          V0_.V_22,
-                                                          eps,
-                                                          omega_,
-                                                          thickness,
-                                                          V0iV.get(),
-                                                          phase_diag.get(),
-                                                          n,
-                                                          n2);
+                                                               ky_diag_,
+                                                               V0_.V_11,
+                                                               V0_.V_12,
+                                                               V0_.V_21,
+                                                               V0_.V_22,
+                                                               eps,
+                                                               omega_,
+                                                               thickness,
+                                                               V0iV.get(),
+                                                               phase_diag.get(),
+                                                               n,
+                                                               n2);
     CHECK(StatusFromCuda(cudaGetLastError()));
 
     ComplexMatrixOps ops(stream_);
@@ -1221,7 +1485,7 @@ Status RCWA::AddLayer(Real thickness, const Complex* eps_conv)
     CHECK(BuildPQ(eps_conv, n, P.get(), Q.get()));
 
     TMatrix T{};
-    CHECK(ComputeTFromPQ(P.get(), Q.get(), n2, k0d, &T, stream_));
+    CHECK(ComputeTFromPQOrder18(P.get(), Q.get(), n2, k0d, &T, stream_));
 
     SMatrix S{};
     CHECK(ComputeSFromT(T, V0_, n2, &S, stream_));
@@ -1246,19 +1510,7 @@ Status RCWA::MaterialConv(const Complex* material,
                           Complex** eps_conv,
                           cudaStream_t stream) const
 {
-    if (!material || !eps_conv || nx <= 0 || ny <= 0)
-    {
-        return Status::kInvalidValue;
-    }
-    if (nx > std::numeric_limits<int>::max() || ny > std::numeric_limits<int>::max())
-    {
-        return Status::kInvalidValue;
-    }
-    if (nx > (std::numeric_limits<int64_t>::max() / ny))
-    {
-        return Status::kInvalidValue;
-    }
-    if (order_N_ > (std::numeric_limits<int64_t>::max() / order_N_))
+    if (!material || !eps_conv)
     {
         return Status::kInvalidValue;
     }
@@ -1751,19 +2003,19 @@ Status RCWA::FieldXY(const Real* x_axis,
     const int64_t total = x_count * y_count;
     const int grid = static_cast<int>((total + CUDA_THREADS - 1) / CUDA_THREADS);
     FieldXYKernel<<<grid, CUDA_THREADS, 0, use_stream>>>(kx_diag_,
-                                                    ky_diag_,
-                                                    Exy.get(),
-                                                    Exy.get() + n,
-                                                    Ezmn.get(),
-                                                    dx.get(),
-                                                    dy.get(),
-                                                    x_count,
-                                                    y_count,
-                                                    omega_,
-                                                    n,
-                                                    ExMat.get(),
-                                                    EyMat.get(),
-                                                    EzMat.get());
+                                                         ky_diag_,
+                                                         Exy.get(),
+                                                         Exy.get() + n,
+                                                         Ezmn.get(),
+                                                         dx.get(),
+                                                         dy.get(),
+                                                         x_count,
+                                                         y_count,
+                                                         omega_,
+                                                         n,
+                                                         ExMat.get(),
+                                                         EyMat.get(),
+                                                         EzMat.get());
     CHECK(StatusFromCuda(cudaGetLastError()));
 
     *Ex = ExMat.Release();
@@ -1865,13 +2117,13 @@ Status RCWA::BuildPQ(const Complex* eps_conv, int64_t n, Complex* P, Complex* Q)
         Q, 0, static_cast<size_t>(2 * n) * static_cast<size_t>(2 * n) * sizeof(Complex), stream_)));
 
     CHECK(CopyBlock(KxEiKy.get(), n, P, 2 * n, 0, 0, one, stream_));
-    CHECK(CopyBlock(P12.get(), n, P, 2 * n, 0, n, one, stream_));
-    CHECK(CopyBlock(P21.get(), n, P, 2 * n, n, 0, one, stream_));
+    CHECK(CopyBlock(P21.get(), n, P, 2 * n, 0, n, one, stream_));
+    CHECK(CopyBlock(P12.get(), n, P, 2 * n, n, 0, one, stream_));
     CHECK(CopyBlock(KyEiKx.get(), n, P, 2 * n, n, n, neg_one, stream_));
 
     CHECK(CopyDiagonalBlock(KxKyDiag.get(), n, Q, 2 * n, 0, 0, neg_one, stream_));
-    CHECK(CopyBlock(Q12.get(), n, Q, 2 * n, 0, n, one, stream_));
-    CHECK(CopyBlock(Q21.get(), n, Q, 2 * n, n, 0, one, stream_));
+    CHECK(CopyBlock(Q21.get(), n, Q, 2 * n, 0, n, one, stream_));
+    CHECK(CopyBlock(Q12.get(), n, Q, 2 * n, n, 0, one, stream_));
     CHECK(CopyDiagonalBlock(KxKyDiag.get(), n, Q, 2 * n, n, n, one, stream_));
 
     return Status::kSuccess;

@@ -75,12 +75,18 @@ class RCWA
                    cudaStream_t stream = nullptr) const;
     void FreeDeviceTensor(Complex* ptr) const;
 
-    Status ComputeTFromPQ(const Complex* P,
-                          const Complex* Q,
-                          int64_t n,
-                          Real k0d,
-                          TMatrix* T,
-                          cudaStream_t stream = nullptr) const;
+    Status ComputeTFromPQOrder18(const Complex* P,
+                                 const Complex* Q,
+                                 int64_t n,
+                                 Real k0d,
+                                 TMatrix* T,
+                                 cudaStream_t stream = nullptr) const;
+    Status ComputeTFromPQOrder12(const Complex* P,
+                                 const Complex* Q,
+                                 int64_t n,
+                                 Real k0d,
+                                 TMatrix* T,
+                                 cudaStream_t stream = nullptr) const;
     Status ComputeSFromT(const TMatrix& T,
                          const VMatrix& V,
                          int64_t n,
