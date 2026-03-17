@@ -103,47 +103,6 @@ HOST_DEVICE inline Complex operator-(Complex a)
 HOST_DEVICE inline Complex operator*(Complex a, Complex b) { return ComplexMul(a, b); }
 
 HOST_DEVICE inline Complex operator/(Complex a, Complex b) { return ComplexDiv(a, b); }
-/*
-HOST_DEVICE inline Complex ComplexSqrt(Complex z)
-{
-    const Real a = ComplexReal(z);
-    const Real b = ComplexImag(z);
-
-    if (b == 0.0)
-    {
-        if (a >= 0.0)
-        {
-            return make_complex(RealSqrt(a), 0.0);
-        }
-        else
-        {
-            return make_complex(0.0, RealSqrt(-a));
-        }
-    }
-
-    if (a == 0.0)
-    {
-        Real root = RealSqrt(0.5 * RealAbs(b));
-        return b > 0.0 ? make_complex(root, root) : make_complex(root, -root);
-    }
-
-    Real r = ComplexAbs(z);
-    Real t = RealSqrt(0.5 * (r + RealAbs(a)));
-    Real u = 0.5 * b / t;
-
-    if (a < 0.0)
-    {
-        if (b >= 0.0)
-        {
-            return make_complex(u, t);
-        }
-        else
-        {
-            return make_complex(RealAbs(u), -t);
-        }
-    }
-    return make_complex(t, u);
-}*/
 
 // branchless implementation of complex square root
 
@@ -176,6 +135,19 @@ HOST_DEVICE inline Complex ComplexSqrtImPos(Complex z)
     Real re = ComplexReal(w);
     Real im = ComplexImag(w);
     return make_complex(re, RealAbs(im));
+}
+
+HOST_DEVICE inline Complex ComplexSqrt_RCWA(Complex z)
+{
+    Real x = ComplexReal(z);
+    Real y = ComplexImag(z);
+    Real r = ComplexAbs(z);
+    Real p = RealSqrt(Real(0.5) * (r + RealAbs(x)));
+    Real q = (p > Real(0)) ? Real(0.5) * y / p : Real(0);
+    Real s = Real(x >= Real(0)) * (RealAbs(q) - p);
+    Real u = q - copysign(s, q);
+    Real v = p + s;
+    return make_complex(u, v);
 }
 
 HOST_DEVICE inline Complex ComplexReciprocal(Complex z)
