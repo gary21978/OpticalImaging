@@ -206,70 +206,111 @@ struct DeviceRealBuffer
     }
 };
 
-__global__ void BuildV0iVPhaseKernel(const Complex* kx_diag,
-                                     const Complex* ky_diag,
-                                     const Complex* v0_11,
-                                     const Complex* v0_12,
-                                     const Complex* v0_21,
-                                     const Complex* v0_22,
-                                     Complex eps,
-                                     Real omega,
-                                     Real thickness,
-                                     Complex* v0iv,
-                                     Complex* phase_diag,
-                                     int64_t n,
-                                     int64_t n2)
+__global__ void BuildHomogeneousSBlocksKernel(const Complex* kx_diag,
+                                              const Complex* ky_diag,
+                                              Complex eps,
+                                              Real omega,
+                                              Real thickness,
+                                              Complex* S11,
+                                              Complex* S12,
+                                              Complex* S21,
+                                              Complex* S22,
+                                              int* singular_flag,
+                                              int64_t n,
+                                              int64_t n2)
 {
-    int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (idx >= n)
     {
         return;
     }
 
+    const Complex one = make_complex(1.0, 0.0);
+    const Complex neg_one = make_complex(-1.0, 0.0);
+    const Complex two = make_complex(2.0, 0.0);
+    const Complex zero = make_complex(0.0, 0.0);
+
     const Complex kx = kx_diag[idx];
     const Complex ky = ky_diag[idx];
     const Complex kx2 = ComplexMul(kx, kx);
     const Complex ky2 = ComplexMul(ky, ky);
-    const Complex sum = ComplexAdd(kx2, ky2);
-    const Complex diff = ComplexSub(eps, sum);
-    Complex kz = ComplexSqrtImPos(diff);
-
-    const Complex kz_inv = ComplexReciprocal(kz);
     const Complex kxky = ComplexMul(kx, ky);
-    const Complex v11 = ComplexMul(make_complex(-1.0, 0.0), ComplexMul(kxky, kz_inv));
-    const Complex v12 = ComplexAdd(kz, ComplexMul(kx2, kz_inv));
-    const Complex v21 =
-        ComplexMul(make_complex(-1.0, 0.0), ComplexAdd(kz, ComplexMul(ky2, kz_inv)));
-    const Complex v22 = ComplexMul(kxky, kz_inv);
+    const Complex sum = ComplexAdd(kx2, ky2);
 
-    const Complex term11 = ComplexMul(v0_11[idx], v11);
-    const Complex term12 = ComplexMul(v0_12[idx], v21);
-    const Complex term21 = ComplexMul(v0_21[idx], v11);
-    const Complex term22 = ComplexMul(v0_22[idx], v21);
-    const Complex term31 = ComplexMul(v0_11[idx], v12);
-    const Complex term32 = ComplexMul(v0_12[idx], v22);
-    const Complex term41 = ComplexMul(v0_21[idx], v12);
-    const Complex term42 = ComplexMul(v0_22[idx], v22);
+    const Complex kz = ComplexSqrtImPos(ComplexSub(eps, sum));
+    const Complex kz0 = ComplexSqrtImPos(ComplexSub(one, sum));
 
-    const Complex neg_one = make_complex(-1.0, 0.0);
-    const Complex b11 = -(term11 + term12);
-    const Complex b12 = -(term31 + term32);
-    const Complex b21 = -(term21 + term22);
-    const Complex b22 = -(term41 + term42);
+    const Real tiny = static_cast<Real>(1e-12);
+    if (ComplexAbs(kz) <= tiny || ComplexAbs(kz0) <= tiny)
+    {
+        atomicExch(singular_flag, 1);
+        return;
+    }
+
+    const Complex kz_over_kz0 = ComplexDiv(kz, kz0);
+    const Complex kz0_over_kz = ComplexDiv(kz0, kz);
+    const Complex tau = ComplexSub(kz_over_kz0, kz0_over_kz);
+
+    const Complex a = ComplexSub(ComplexMul(tau, kx2), kz_over_kz0);
+    const Complex b = ComplexMul(tau, kxky);
+    const Complex d = ComplexSub(ComplexMul(tau, ky2), kz_over_kz0);
+    const Complex2x2 U(a, b, b, d);
+
+    const Complex kzt = ComplexMul(kz, make_complex(omega * thickness, 0.0));
+    const Complex u = ComplexExpI(kzt);
+    const Complex2x2 I(one, zero, zero, one);
+
+    const Complex2x2 A = Mat2x2Sub(I, U);
+    const Complex2x2 B = Mat2x2Scale(Mat2x2Add(I, U), u);
+
+    bool ok = false;
+    const Complex2x2 A_inv = Mat2x2Inv(A, ok);
+    if (!ok)
+    {
+        atomicExch(singular_flag, 1);
+        return;
+    }
+
+    const Complex2x2 G = Mat2x2Mul(B, A_inv);
+    const Complex2x2 GB = Mat2x2Mul(G, B);
+    const Complex2x2 A_minus_GB = Mat2x2Sub(A, GB);
+
+    const Complex2x2 inv_A_minus_GB = Mat2x2Inv(A_minus_GB, ok);
+    if (!ok)
+    {
+        atomicExch(singular_flag, 1);
+        return;
+    }
+
+    const Complex2x2 C = Mat2x2Scale(inv_A_minus_GB, two);
+    const Complex2x2 D = Mat2x2Scale(Mat2x2Mul(C, G), neg_one);
+    const Complex2x2 S11_block = Mat2x2Add(Mat2x2Scale(C, u), D);
+    const Complex2x2 S12_block = Mat2x2Sub(Mat2x2Add(Mat2x2Scale(D, u), C), I);
 
     const int64_t row0 = idx;
     const int64_t row1 = idx + n;
     const int64_t col0 = idx;
     const int64_t col1 = idx + n;
-    v0iv[col0 * n2 + row0] = b11;
-    v0iv[col1 * n2 + row0] = b12;
-    v0iv[col0 * n2 + row1] = b21;
-    v0iv[col1 * n2 + row1] = b22;
 
-    const Complex kzt = ComplexMul(kz, make_complex(omega * thickness, 0.0));
-    const Complex phase = ComplexExpI(kzt);
-    phase_diag[idx] = phase;
-    phase_diag[idx + n] = phase;
+    S11[col0 * n2 + row0] = S11_block.m00;
+    S11[col0 * n2 + row1] = S11_block.m10;
+    S11[col1 * n2 + row0] = S11_block.m01;
+    S11[col1 * n2 + row1] = S11_block.m11;
+
+    S12[col0 * n2 + row0] = S12_block.m00;
+    S12[col0 * n2 + row1] = S12_block.m10;
+    S12[col1 * n2 + row0] = S12_block.m01;
+    S12[col1 * n2 + row1] = S12_block.m11;
+
+    S21[col0 * n2 + row0] = S12_block.m00;
+    S21[col0 * n2 + row1] = S12_block.m10;
+    S21[col1 * n2 + row0] = S12_block.m01;
+    S21[col1 * n2 + row1] = S12_block.m11;
+
+    S22[col0 * n2 + row0] = S11_block.m00;
+    S22[col0 * n2 + row1] = S11_block.m10;
+    S22[col1 * n2 + row0] = S11_block.m01;
+    S22[col1 * n2 + row1] = S11_block.m11;
 }
 
 __global__ void ScaleComplexKernel(Complex* data, int64_t n, Real scale)
@@ -1367,85 +1408,70 @@ Status RCWA::AddLayerHomogeneous(Real thickness, Real eps)
 
 Status RCWA::AddLayerHomogeneous(Real thickness, Complex eps)
 {
-    if (!kvectors_ready_ || !kx_diag_ || !ky_diag_ || !V0_.V_11 || !V0_.V_12 || !V0_.V_21 ||
-        !V0_.V_22)
+    if (!kvectors_ready_ || !kx_diag_ || !ky_diag_)
     {
         return Status::kInvalidValue;
     }
 
     const int64_t n = order_N_;
     const int64_t n2 = 2 * n;
-    DeviceMatrix V0iV;
-    CHECK(V0iV.Allocate(n2, n2));
-    DeviceVector phase_diag;
-    CHECK(phase_diag.Allocate(static_cast<size_t>(n2)));
-    CHECK(StatusFromCuda(
-        cudaMemsetAsync(V0iV.get(), 0, static_cast<size_t>(n2) * n2 * sizeof(Complex), stream_)));
+    DeviceMatrix S11;
+    DeviceMatrix S12;
+    DeviceMatrix S21;
+    DeviceMatrix S22;
+    CHECK(S11.Allocate(n2, n2));
+    CHECK(S12.Allocate(n2, n2));
+    CHECK(S21.Allocate(n2, n2));
+    CHECK(S22.Allocate(n2, n2));
+
+    const size_t matrix_bytes = static_cast<size_t>(n2) * static_cast<size_t>(n2) * sizeof(Complex);
+    CHECK(StatusFromCuda(cudaMemsetAsync(S11.get(), 0, matrix_bytes, stream_)));
+    CHECK(StatusFromCuda(cudaMemsetAsync(S12.get(), 0, matrix_bytes, stream_)));
+    CHECK(StatusFromCuda(cudaMemsetAsync(S21.get(), 0, matrix_bytes, stream_)));
+    CHECK(StatusFromCuda(cudaMemsetAsync(S22.get(), 0, matrix_bytes, stream_)));
+
+    int* dev_singular_flag = nullptr;
+    CHECK(StatusFromCuda(cudaMalloc(&dev_singular_flag, sizeof(int))));
+    const auto singular_flag_cleanup = [&]()
+    {
+        if (dev_singular_flag)
+        {
+            cudaFree(dev_singular_flag);
+            dev_singular_flag = nullptr;
+        }
+    };
+    CHECK(StatusFromCuda(cudaMemsetAsync(dev_singular_flag, 0, sizeof(int), stream_)));
 
     const int blocks = static_cast<int>((n + CUDA_THREADS - 1) / CUDA_THREADS);
-    BuildV0iVPhaseKernel<<<blocks, CUDA_THREADS, 0, stream_>>>(kx_diag_,
-                                                               ky_diag_,
-                                                               V0_.V_11,
-                                                               V0_.V_12,
-                                                               V0_.V_21,
-                                                               V0_.V_22,
-                                                               eps,
-                                                               omega_,
-                                                               thickness,
-                                                               V0iV.get(),
-                                                               phase_diag.get(),
-                                                               n,
-                                                               n2);
+    BuildHomogeneousSBlocksKernel<<<blocks, CUDA_THREADS, 0, stream_>>>(kx_diag_,
+                                                                         ky_diag_,
+                                                                         eps,
+                                                                         omega_,
+                                                                         thickness,
+                                                                         S11.get(),
+                                                                         S12.get(),
+                                                                         S21.get(),
+                                                                         S22.get(),
+                                                                         dev_singular_flag,
+                                                                         n,
+                                                                         n2);
     CHECK(StatusFromCuda(cudaGetLastError()));
 
-    ComplexMatrixOps ops(stream_);
-    CHECK(ops.SetStream(stream_));
-
-    // Homogeneous layer transfer via analytic exp(A*d):
-    // uses V0iV blocks and phase = exp(i * kz * omega * d).
-    DeviceMatrix I;
-    DeviceMatrix A;
-    DeviceMatrix B;
-    DeviceMatrix scratch1;
-    DeviceMatrix scratch2;
-    DeviceMatrix C1;
-    CHECK(I.Allocate(n2, n2));
-    CHECK(A.Allocate(n2, n2));
-    CHECK(B.Allocate(n2, n2));
-    CHECK(scratch1.Allocate(n2, n2));
-    CHECK(scratch2.Allocate(n2, n2));
-    CHECK(C1.Allocate(n2, n2));
-
-    CHECK(MakeIdentity(I.get(), n2, stream_));
-    CHECK(AddMatrix(ops, I.get(), V0iV.get(), A.get(), n2));
-    CHECK(CopyMatrix(I.get(), scratch1.get(), n2, stream_));
-    CHECK(SubInPlace(ops, scratch1.get(), V0iV.get(), n2));
-    CHECK(ops.DiagRightMatMul(scratch1.get(), phase_diag.get(), B.get(), n2));
-
-    CHECK(ops.Solve(A.get(), I.get(), scratch1.get(), n2));
-    CHECK(MatMul(ops, B.get(), scratch1.get(), scratch2.get(), n2));
-    CHECK(MatMul(ops, scratch2.get(), B.get(), scratch1.get(), n2));
-    CHECK(SubInPlace(ops, A.get(), scratch1.get(), n2));
-    CHECK(ops.Solve(A.get(), I.get(), C1.get(), n2));
-    CHECK(ScaleInPlace(C1.get(), n2, make_complex(2.0, 0.0), stream_));
-    CHECK(MatMul(ops, C1.get(), scratch2.get(), scratch1.get(), n2));
-    CHECK(ScaleInPlace(scratch1.get(), n2, make_complex(-1.0, 0.0), stream_));
-
-    CHECK(ops.DiagLeftMatMul(phase_diag.get(), C1.get(), scratch2.get(), n2));
-    CHECK(AddInPlace(ops, scratch2.get(), scratch1.get(), n2));
-
-    CHECK(ops.DiagLeftMatMul(phase_diag.get(), scratch1.get(), A.get(), n2));
-    CHECK(AddInPlace(ops, A.get(), C1.get(), n2));
-    CHECK(SubInPlace(ops, A.get(), I.get(), n2));
-
-    CHECK(CopyMatrix(A.get(), B.get(), n2, stream_));
-    CHECK(CopyMatrix(scratch2.get(), C1.get(), n2, stream_));
+    int singular_flag_host = 0;
+    CHECK(StatusFromCuda(cudaMemcpyAsync(
+        &singular_flag_host, dev_singular_flag, sizeof(int), cudaMemcpyDeviceToHost, stream_)));
+    CHECK(StatusFromCuda(cudaStreamSynchronize(stream_)));
+    singular_flag_cleanup();
+    if (singular_flag_host != 0)
+    {
+        return Status::kInvalidValue;
+    }
 
     SMatrix S{};
-    S.S_11 = scratch2.Release();
-    S.S_12 = A.Release();
-    S.S_21 = B.Release();
-    S.S_22 = C1.Release();
+    S.S_11 = S11.Release();
+    S.S_12 = S12.Release();
+    S.S_21 = S21.Release();
+    S.S_22 = S22.Release();
     layer_smatrices_.push_back(S);
     return Status::kSuccess;
 }
