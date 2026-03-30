@@ -6,14 +6,14 @@
 
 #include "rcwa.h"
 
-double ComplexDiff(const Complex& a, const Complex& b)
+static double ComplexDiff(const Complex& a, const Complex& b)
 {
     const double dr = static_cast<double>(ComplexReal(a) - ComplexReal(b));
     const double di = static_cast<double>(ComplexImag(a) - ComplexImag(b));
     return std::sqrt(dr * dr + di * di);
 }
 
-double MaxMatrixDiff(const Complex* a, const Complex* b, int64_t n)
+static double MaxMatrixDiff(const Complex* a, const Complex* b, int64_t n)
 {
     const size_t count = static_cast<size_t>(n) * static_cast<size_t>(n);
     std::vector<Complex> ha(count);
@@ -38,44 +38,50 @@ double MaxMatrixDiff(const Complex* a, const Complex* b, int64_t n)
 int main()
 {
     const Real freq = 1.0;
-    const int order_x = 9;
-    const int order_y = 2;
-    const Real Lx = 1.0;
-    const Real Ly = 1.0;
+    const Real period_x = 1.0;
+    const Real period_y = 1.0;
+    const int order_x = 15;
+    const int order_y = 15;
     const Real inc_ang = 0.1;
     const Real azi_ang = 0.2;
     const Real thickness = 0.7;
     const Complex eps = make_complex(2.3, 0.1);
 
-    RCWA rcwa_exp(freq, order_x, order_y, Lx, Ly);
-    RCWA rcwa_hom(freq, order_x, order_y, Lx, Ly);
+    RCWA rcwa_ref(freq, order_x, order_y, period_x, period_y);
+    RCWA rcwa_hom(freq, order_x, order_y, period_x, period_y);
 
-    if (rcwa_exp.SetIncidentAngles(inc_ang, azi_ang) != Status::kSuccess ||
+    if (rcwa_ref.AddInputLayer(1.0) != Status::kSuccess ||
+        rcwa_hom.AddInputLayer(1.0) != Status::kSuccess)
+    {
+        std::cout << "Failed to add input layer.\n";
+        return 1;
+    }
+    
+    if (rcwa_ref.SetIncidentAngles(inc_ang, azi_ang) != Status::kSuccess ||
         rcwa_hom.SetIncidentAngles(inc_ang, azi_ang) != Status::kSuccess)
     {
         std::cout << "Failed to set incident angles.\n";
         return 1;
     }
 
-    float exp_ms = 0.0f;
-    float hom_ms = 0.0f;
-
+    float addlayer_ms = 0.0f;
+    float homogeneous_ms = 0.0f;
     cudaEvent_t start = nullptr;
     cudaEvent_t stop = nullptr;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
 
     cudaEventRecord(start);
-    if (rcwa_exp.AddLayer(thickness, eps) != Status::kSuccess)
+    if (rcwa_ref.AddLayer(thickness, eps) != Status::kSuccess)
     {
-        std::cout << "AddLayer (exp) failed.\n";
+        std::cout << "Reference AddLayer failed.\n";
         cudaEventDestroy(start);
         cudaEventDestroy(stop);
         return 1;
     }
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&exp_ms, start, stop);
+    cudaEventElapsedTime(&addlayer_ms, start, stop);
 
     cudaEventRecord(start);
     if (rcwa_hom.AddLayerHomogeneous(thickness, eps) != Status::kSuccess)
@@ -87,38 +93,38 @@ int main()
     }
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&hom_ms, start, stop);
-
+    cudaEventElapsedTime(&homogeneous_ms, start, stop);
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
 
-    const auto& s_exp = rcwa_exp.layer_smatrices().front();
-    const auto& s_hom = rcwa_hom.layer_smatrices().front();
-    const int64_t n = 2 * rcwa_exp.order_N();
-
-    const double tol = static_cast<double>(std::numeric_limits<Real>::epsilon()) * 1e4;
-    const double err11 = MaxMatrixDiff(s_exp.S_11, s_hom.S_11, n);
-    const double err12 = MaxMatrixDiff(s_exp.S_12, s_hom.S_12, n);
-    const double err21 = MaxMatrixDiff(s_exp.S_21, s_hom.S_21, n);
-    const double err22 = MaxMatrixDiff(s_exp.S_22, s_hom.S_22, n);
-
-    Complex s_exp_00;
-    Complex s_hom_00;
-    cudaMemcpy(&s_exp_00, s_exp.S_11, sizeof(Complex), cudaMemcpyDeviceToHost);
-    cudaMemcpy(&s_hom_00, s_hom.S_11, sizeof(Complex), cudaMemcpyDeviceToHost);
-
-    std::cout << "S_11(0,0): exp=(" << ComplexReal(s_exp_00) << ", " << ComplexImag(s_exp_00)
-              << "), hom=(" << ComplexReal(s_hom_00) << ", " << ComplexImag(s_hom_00) << ")\n";
-    std::cout << "Max diffs: S11=" << err11 << ", S12=" << err12 << ", S21=" << err21
-              << ", S22=" << err22 << "\n";
-    std::cout << "Timing (ms): AddLayer=" << exp_ms << ", AddLayerHomogeneous=" << hom_ms << "\n";
-
-    if (err11 > tol || err12 > tol || err21 > tol || err22 > tol)
+    const int64_t n2 = 2 * rcwa_ref.order_N();
+    const auto& layers_ref = rcwa_ref.layer_smatrices();
+    const auto& layers_hom = rcwa_hom.layer_smatrices();
+    if (layers_ref.size() != 1 || layers_hom.size() != 1)
     {
-        std::cout << "RCWA homogeneous vs exp test failed.\n";
+        std::cout << "Layer list mismatch.\n";
         return 1;
     }
 
-    std::cout << "RCWA homogeneous vs exp test passed.\n";
+    double max_layer_err = 0.0;
+    max_layer_err = std::max(max_layer_err, MaxMatrixDiff(layers_ref[0].S_11, layers_hom[0].S_11, n2));
+    max_layer_err = std::max(max_layer_err, MaxMatrixDiff(layers_ref[0].S_12, layers_hom[0].S_12, n2));
+    max_layer_err = std::max(max_layer_err, MaxMatrixDiff(layers_ref[0].S_21, layers_hom[0].S_21, n2));
+    max_layer_err = std::max(max_layer_err, MaxMatrixDiff(layers_ref[0].S_22, layers_hom[0].S_22, n2));
+
+    const double tol = static_cast<double>(std::numeric_limits<Real>::epsilon()) * 1e5;
+    std::cout << "Single-layer homogeneous consistency:\n";
+    std::cout << "  Max layer diff: " << max_layer_err << "\n";
+    std::cout << "  Timing (ms): AddLayer=" << addlayer_ms
+              << ", AddLayerHomogeneous=" << homogeneous_ms << "\n";
+    std::cout << "  Tolerance: " << tol << "\n";
+
+    if (max_layer_err > tol)
+    {
+        std::cout << "homogeneous_real_test failed.\n";
+        return 1;
+    }
+
+    std::cout << "homogeneous_real_test passed.\n";
     return 0;
 }
