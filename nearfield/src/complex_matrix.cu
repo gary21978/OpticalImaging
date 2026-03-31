@@ -142,6 +142,41 @@ __global__ void CopyBlockKernel(const Complex* src,
     }
 }
 
+__global__ void CopyBlockDirectKernel(const Complex* src,
+                                      int64_t n,
+                                      Complex* dst,
+                                      int64_t dst_n,
+                                      int64_t row_offset,
+                                      int64_t col_offset)
+{
+    int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    int64_t total = n * n;
+    if (idx < total)
+    {
+        int64_t row = idx % n;
+        int64_t col = idx / n;
+        dst[(col + col_offset) * dst_n + (row + row_offset)] = src[col * n + row];
+    }
+}
+
+__global__ void CopyBlockNegatedKernel(const Complex* src,
+                                       int64_t n,
+                                       Complex* dst,
+                                       int64_t dst_n,
+                                       int64_t row_offset,
+                                       int64_t col_offset)
+{
+    int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    int64_t total = n * n;
+    if (idx < total)
+    {
+        int64_t row = idx % n;
+        int64_t col = idx / n;
+        const Complex value = src[col * n + row];
+        dst[(col + col_offset) * dst_n + (row + row_offset)] = make_complex(-value.x, -value.y);
+    }
+}
+
 __global__ void AddDiagonalKernel(Complex* A, const Complex* diag, int64_t n, Complex scale)
 {
     int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -834,6 +869,44 @@ Status CopyBlock(const Complex* src,
     int blocks = static_cast<int>((total + CUDA_THREADS - 1) / CUDA_THREADS);
     CopyBlockKernel<<<blocks, CUDA_THREADS, 0, stream>>>(
         src, n, dst, dst_n, row_offset, col_offset, scale);
+    return StatusFromCuda(cudaGetLastError());
+}
+
+Status CopyBlockDirect(const Complex* src,
+                       int64_t n,
+                       Complex* dst,
+                       int64_t dst_n,
+                       int64_t row_offset,
+                       int64_t col_offset,
+                       cudaStream_t stream)
+{
+    if (!src || !dst || n <= 0 || dst_n <= 0)
+    {
+        return Status::kInvalidValue;
+    }
+    int64_t total = n * n;
+    int blocks = static_cast<int>((total + CUDA_THREADS - 1) / CUDA_THREADS);
+    CopyBlockDirectKernel<<<blocks, CUDA_THREADS, 0, stream>>>(
+        src, n, dst, dst_n, row_offset, col_offset);
+    return StatusFromCuda(cudaGetLastError());
+}
+
+Status CopyBlockNegated(const Complex* src,
+                        int64_t n,
+                        Complex* dst,
+                        int64_t dst_n,
+                        int64_t row_offset,
+                        int64_t col_offset,
+                        cudaStream_t stream)
+{
+    if (!src || !dst || n <= 0 || dst_n <= 0)
+    {
+        return Status::kInvalidValue;
+    }
+    int64_t total = n * n;
+    int blocks = static_cast<int>((total + CUDA_THREADS - 1) / CUDA_THREADS);
+    CopyBlockNegatedKernel<<<blocks, CUDA_THREADS, 0, stream>>>(
+        src, n, dst, dst_n, row_offset, col_offset);
     return StatusFromCuda(cudaGetLastError());
 }
 

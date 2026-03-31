@@ -97,5 +97,23 @@ Status CopyBlock(const Complex* src,
                  int64_t col_offset,
                  Complex scale,
                  cudaStream_t stream = nullptr);
+
+// Helper functions for CopyBlock with scale of 1.0 or -1.0
+Status CopyBlockDirect(const Complex* src,
+                       int64_t n,
+                       Complex* dst,
+                       int64_t dst_n,
+                       int64_t row_offset,
+                       int64_t col_offset,
+                       cudaStream_t stream = nullptr);
+
+Status CopyBlockNegated(const Complex* src,
+                        int64_t n,
+                        Complex* dst,
+                        int64_t dst_n,
+                        int64_t row_offset,
+                        int64_t col_offset,
+                        cudaStream_t stream = nullptr);
+
 Status
 ComputeMatrixNorm1(const Complex* A, int64_t n, double* out_norm, cudaStream_t stream = nullptr);

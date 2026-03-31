@@ -1556,10 +1556,10 @@ Status RCWA::MaterialConv(const Complex* material,
 
     CufftPlan plan;
 #if USE_DOUBLE_PRECISION
-    CHECK(StatusFromCufft(
+        CHECK(StatusFromCufft(
         cufftPlan2d(&plan.handle, static_cast<int>(nx), static_cast<int>(ny), CUFFT_Z2Z)));
 #else
-    CHECK(StatusFromCufft(
+        CHECK(StatusFromCufft(
         cufftPlan2d(&plan.handle, static_cast<int>(nx), static_cast<int>(ny), CUFFT_C2C)));
 #endif
     CHECK(StatusFromCufft(cufftSetStream(plan.handle, use_stream)));
@@ -1638,7 +1638,7 @@ Status RCWA::RSProd(const SMatrix& Sm,
     const int64_t rhs_cols = 2 * n;
     DeviceMatrix rhs;
     CHECK(rhs.Allocate(n, rhs_cols));
-    CHECK(CopyBlock(Sm.S_11, n, rhs.get(), n, 0, 0, one, use_stream));
+    CHECK(CopyBlockDirect(Sm.S_11, n, rhs.get(), n, 0, 0, use_stream));
     Complex* X1 = rhs.get();
     Complex* X2 = rhs.get() + static_cast<size_t>(n) * n;
     CHECK(MatMul(ops, Sm.S_12, Sn.S_22, X2, n));
@@ -1983,9 +1983,37 @@ Status RCWA::BuildPQ(const Complex* eps_conv, int64_t n, Complex* P, Complex* Q)
     CHECK(EiKx.Allocate(n, n));
     CHECK(EiKy.Allocate(n, n));
 
-    const Status solve_kx = ops.Solve(eps_conv, KxMat.get(), EiKx.get(), n);
-    const Status solve_ky = ops.Solve(eps_conv, KyMat.get(), EiKy.get(), n);
-    const bool fallback = (solve_kx != Status::kSuccess || solve_ky != Status::kSuccess);
+
+    //const Status solve_kx = ops.Solve(eps_conv, KxMat.get(), EiKx.get(), n);
+    //const Status solve_ky = ops.Solve(eps_conv, KyMat.get(), EiKy.get(), n);
+    // Optimized: merge KxMat and KyMat into one 2n-column RHS so that eps_conv is
+    // LU-factorized only once.  combined = [KxMat | KyMat], solve in-place, then
+    // split the solution back into EiKx (left half) and EiKy (right half).
+    const int64_t nrhs = 2 * n;
+    DeviceMatrix combined;
+    CHECK(combined.Allocate(n, nrhs));
+    // CopyBlock's dst_n argument is the number of rows of the destination matrix
+    // (the leading dimension in column-major storage).
+    CHECK(CopyBlockDirect(KxMat.get(), n, combined.get(), n, 0, 0, stream_));
+    CHECK(CopyBlockDirect(KyMat.get(), n, combined.get(), n, 0, n, stream_));
+    const Status solve_combined = ops.Solve(eps_conv, combined.get(), combined.get(), n, nrhs);
+    const bool fallback = (solve_combined != Status::kSuccess);
+    if (!fallback)
+    {
+        // In column-major (ld=n), columns 0..n-1 occupy elements [0, n*n-1] and
+        // columns n..2n-1 occupy elements [n*n, 2*n*n-1] — both regions are contiguous.
+        const size_t half_bytes = static_cast<size_t>(n) * static_cast<size_t>(n) * sizeof(Complex);
+        CHECK(StatusFromCuda(cudaMemcpyAsync(EiKx.get(),
+                                             combined.get(),
+                                             half_bytes,
+                                             cudaMemcpyDeviceToDevice,
+                                             stream_)));
+        CHECK(StatusFromCuda(cudaMemcpyAsync(EiKy.get(),
+                                             combined.get() + static_cast<size_t>(n) * n,
+                                             half_bytes,
+                                             cudaMemcpyDeviceToDevice,
+                                             stream_)));
+    }
 
     DeviceMatrix KxEiKy;
     DeviceMatrix KyEiKy;
@@ -2030,21 +2058,18 @@ Status RCWA::BuildPQ(const Complex* eps_conv, int64_t n, Complex* P, Complex* Q)
     CHECK(ScaleInPlace(Q21.get(), n, make_complex(-1.0, 0.0), stream_));
     CHECK(AddDiagonalInPlace(Q21.get(), KxKxDiag.get(), n, make_complex(1.0, 0.0), stream_));
 
-    const Complex one = make_complex(1.0, 0.0);
-    const Complex neg_one = make_complex(-1.0, 0.0);
-
     CHECK(StatusFromCuda(cudaMemsetAsync(
         Q, 0, static_cast<size_t>(2 * n) * static_cast<size_t>(2 * n) * sizeof(Complex), stream_)));
 
-    CHECK(CopyBlock(KxEiKy.get(), n, P, 2 * n, 0, 0, one, stream_));
-    CHECK(CopyBlock(P21.get(), n, P, 2 * n, 0, n, one, stream_));
-    CHECK(CopyBlock(P12.get(), n, P, 2 * n, n, 0, one, stream_));
-    CHECK(CopyBlock(KyEiKx.get(), n, P, 2 * n, n, n, neg_one, stream_));
+    CHECK(CopyBlockDirect(KxEiKy.get(), n, P, 2 * n, 0, 0, stream_));
+    CHECK(CopyBlockDirect(P21.get(), n, P, 2 * n, 0, n, stream_));
+    CHECK(CopyBlockDirect(P12.get(), n, P, 2 * n, n, 0, stream_));
+    CHECK(CopyBlockNegated(KyEiKx.get(), n, P, 2 * n, n, n, stream_));
 
-    CHECK(CopyDiagonalBlock(KxKyDiag.get(), n, Q, 2 * n, 0, 0, neg_one, stream_));
-    CHECK(CopyBlock(Q21.get(), n, Q, 2 * n, 0, n, one, stream_));
-    CHECK(CopyBlock(Q12.get(), n, Q, 2 * n, n, 0, one, stream_));
-    CHECK(CopyDiagonalBlock(KxKyDiag.get(), n, Q, 2 * n, n, n, one, stream_));
+    CHECK(CopyDiagonalBlock(KxKyDiag.get(), n, Q, 2 * n, 0, 0, make_complex(-1.0, 0.0), stream_));
+    CHECK(CopyBlockDirect(Q21.get(), n, Q, 2 * n, 0, n, stream_));
+    CHECK(CopyBlockDirect(Q12.get(), n, Q, 2 * n, n, 0, stream_));
+    CHECK(CopyDiagonalBlock(KxKyDiag.get(), n, Q, 2 * n, n, n, make_complex(1.0, 0.0), stream_));
 
     return Status::kSuccess;
 }
