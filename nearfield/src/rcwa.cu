@@ -1601,6 +1601,19 @@ Status RCWA::RSProd(const SMatrix& Sm,
                     SMatrix* out,
                     cudaStream_t stream) const
 {
+    cudaStream_t use_stream = stream ? stream : stream_;
+    ComplexMatrixOps ops(use_stream);
+    CHECK(ops.SetStream(use_stream));
+    return RSProd(Sm, Sn, n, out, ops, use_stream);
+}
+
+Status RCWA::RSProd(const SMatrix& Sm,
+                    const SMatrix& Sn,
+                    int64_t n,
+                    SMatrix* out,
+                    ComplexMatrixOps& ops,
+                    cudaStream_t stream) const
+{
     if (!out || !Sm.S_11 || !Sm.S_12 || !Sm.S_21 || !Sm.S_22 || !Sn.S_11 || !Sn.S_12 || !Sn.S_21 ||
         !Sn.S_22 || n <= 0)
     {
@@ -1612,9 +1625,6 @@ Status RCWA::RSProd(const SMatrix& Sm,
     out->S_12 = nullptr;
     out->S_21 = nullptr;
     out->S_22 = nullptr;
-
-    ComplexMatrixOps ops(use_stream);
-    CHECK(ops.SetStream(use_stream));
 
     const Complex one = make_complex(1.0, 0.0);
     const Complex minus_one = make_complex(-1.0, 0.0);
@@ -1638,7 +1648,8 @@ Status RCWA::RSProd(const SMatrix& Sm,
     {
         DeviceMatrix S11;
         CHECK(S11.Allocate(n, n));
-        CHECK(MatMul(ops, Sn.S_11, Sm.S_11, S11.get(), n));
+        CHECK(StatusFromCuda(
+            cudaMemsetAsync(S11.get(), 0, static_cast<size_t>(n) * n * sizeof(Complex), use_stream)));
 
         DeviceMatrix S12;
         CHECK(S12.Allocate(n, n));
@@ -1650,8 +1661,7 @@ Status RCWA::RSProd(const SMatrix& Sm,
 
         DeviceMatrix S22;
         CHECK(S22.Allocate(n, n));
-        CHECK(StatusFromCuda(
-            cudaMemsetAsync(S22.get(), 0, static_cast<size_t>(n) * n * sizeof(Complex), use_stream)));
+        CHECK(MatMul(ops, Sm.S_22, Sn.S_22, S22.get(), n));
 
         out->S_11 = S11.Release();
         out->S_12 = S12.Release();
@@ -1706,6 +1716,9 @@ Status RCWA::SolveGlobalSMatrix(SMatrix* S,
     S->S_21 = nullptr;
     S->S_22 = nullptr;
 
+    ComplexMatrixOps ops(use_stream);
+    CHECK(ops.SetStream(use_stream));
+
     SMatrix current{};
     if (layer_smatrices_.empty())
     {
@@ -1758,7 +1771,7 @@ Status RCWA::SolveGlobalSMatrix(SMatrix* S,
     {
         const SMatrix& next_layer = layer_smatrices_[i];
         SMatrix next{};
-        CHECK(RSProd(current, next_layer, n, &next, use_stream));
+        CHECK(RSProd(current, next_layer, n, &next, ops, use_stream));
         SAFEFREE(current.S_11);
         SAFEFREE(current.S_12);
         SAFEFREE(current.S_21);
@@ -1777,7 +1790,7 @@ Status RCWA::SolveGlobalSMatrix(SMatrix* S,
             return Status::kInvalidValue;
         }
         SMatrix next{};
-        CHECK(RSProd(*S_in, current, n, &next, use_stream));
+        CHECK(RSProd(*S_in, current, n, &next, ops, use_stream));
         SAFEFREE(current.S_11);
         SAFEFREE(current.S_12);
         SAFEFREE(current.S_21);
@@ -1796,7 +1809,7 @@ Status RCWA::SolveGlobalSMatrix(SMatrix* S,
             return Status::kInvalidValue;
         }
         SMatrix next{};
-        CHECK(RSProd(current, *S_out, n, &next, use_stream));
+        CHECK(RSProd(current, *S_out, n, &next, ops, use_stream));
         SAFEFREE(current.S_11);
         SAFEFREE(current.S_12);
         SAFEFREE(current.S_21);

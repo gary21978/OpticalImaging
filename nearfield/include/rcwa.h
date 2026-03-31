@@ -30,6 +30,8 @@ struct VMatrix
     Complex* V_22 = nullptr;
 };
 
+class ComplexMatrixOps;
+
 class RCWA
 {
   public:
@@ -95,6 +97,7 @@ class RCWA
 
     int64_t order_N() const { return order_N_; }
     const std::vector<SMatrix>& layer_smatrices() const { return layer_smatrices_; }
+    const SMatrix& global_smatrix() const { return global_smatrix_; }
 
   private:
     Status BuildKxKy(Real inc_ang, Real azi_ang, Real eps_ref);
@@ -106,6 +109,12 @@ class RCWA
                   int64_t n,
                   SMatrix* out,
                   cudaStream_t stream = nullptr) const;
+    Status RSProd(const SMatrix& Sm,
+                  const SMatrix& Sn,
+                  int64_t n,
+                  SMatrix* out,
+                  ComplexMatrixOps& ops,
+                  cudaStream_t stream) const;
 
     void FreeLayers();
     void FreeKVectors();
