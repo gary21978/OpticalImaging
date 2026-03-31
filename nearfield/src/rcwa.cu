@@ -206,18 +206,16 @@ struct DeviceRealBuffer
     }
 };
 
-__global__ void BuildHomogeneousSBlocksKernel(const Complex* kx_diag,
-                                              const Complex* ky_diag,
+__global__ void BuildHomogeneousSBlocksKernel(const Complex* __restrict__ kx_diag,
+                                              const Complex* __restrict__ ky_diag,
                                               Complex eps,
-                                              Real omega,
-                                              Real thickness,
-                                              Complex* S11,
-                                              Complex* S12,
-                                              Complex* S21,
-                                              Complex* S22,
+                                              Real k0d,
+                                              Complex* __restrict__ S11,
+                                              Complex* __restrict__ S12,
+                                              Complex* __restrict__ S21,
+                                              Complex* __restrict__ S22,
                                               int* singular_flag,
-                                              int64_t n,
-                                              int64_t n2)
+                                              int64_t n)
 {
     const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (idx >= n)
@@ -256,61 +254,69 @@ __global__ void BuildHomogeneousSBlocksKernel(const Complex* kx_diag,
     const Complex d = ComplexSub(ComplexMul(tau, ky2), kz_over_kz0);
     const Complex2x2 U(a, b, b, d);
 
-    const Complex kzt = ComplexMul(kz, make_complex(omega * thickness, 0.0));
+    const Complex kzt = ComplexMul(kz, make_complex(k0d, 0.0));
     const Complex u = ComplexExpI(kzt);
     const Complex2x2 I(one, zero, zero, one);
 
-    const Complex2x2 A = Mat2x2Sub(I, U);
-    const Complex2x2 B = Mat2x2Scale(Mat2x2Add(I, U), u);
+    Complex2x2 A = Mat2x2Sub(I, U);
+    Complex2x2 tmp = Mat2x2Add(I, U);
+    Complex2x2 B = Mat2x2Scale(tmp, u);
 
     bool ok = false;
-    const Complex2x2 A_inv = Mat2x2Inv(A, ok);
+    tmp = Mat2x2Inv(A, ok);
     if (!ok)
     {
         atomicExch(singular_flag, 1);
         return;
     }
 
-    const Complex2x2 G = Mat2x2Mul(B, A_inv);
-    const Complex2x2 GB = Mat2x2Mul(G, B);
-    const Complex2x2 A_minus_GB = Mat2x2Sub(A, GB);
+    const Complex2x2 G = Mat2x2Mul(B, tmp);
+    tmp = Mat2x2Mul(G, B);
+    A = Mat2x2Sub(A, tmp);
 
-    const Complex2x2 inv_A_minus_GB = Mat2x2Inv(A_minus_GB, ok);
+    tmp = Mat2x2Inv(A, ok);
     if (!ok)
     {
         atomicExch(singular_flag, 1);
         return;
     }
 
-    const Complex2x2 C = Mat2x2Scale(inv_A_minus_GB, two);
-    const Complex2x2 D = Mat2x2Scale(Mat2x2Mul(C, G), neg_one);
+    const Complex2x2 C = Mat2x2Scale(tmp, two);
+    tmp = Mat2x2Mul(C, G);
+    const Complex2x2 D = Mat2x2Scale(tmp, neg_one);
     const Complex2x2 S11_block = Mat2x2Add(Mat2x2Scale(C, u), D);
-    const Complex2x2 S12_block = Mat2x2Sub(Mat2x2Add(Mat2x2Scale(D, u), C), I);
+    tmp = Mat2x2Scale(D, u);
+    tmp = Mat2x2Add(tmp, C);
+    const Complex2x2 S12_block = Mat2x2Sub(tmp, I);
 
     const int64_t row0 = idx;
     const int64_t row1 = idx + n;
-    const int64_t col0 = idx;
-    const int64_t col1 = idx + n;
+    const int64_t base_col0 = 2 * row0 * n;
+    const int64_t base_col1 = 2 * row1 * n;
+    const int64_t i00 = base_col0 + row0;
+    const int64_t i10 = base_col0 + row1;
+    const int64_t i01 = base_col1 + row0;
+    const int64_t i11 = base_col1 + row1;
 
-    S11[col0 * n2 + row0] = S11_block.m00;
-    S11[col0 * n2 + row1] = S11_block.m10;
-    S11[col1 * n2 + row0] = S11_block.m01;
-    S11[col1 * n2 + row1] = S11_block.m11;
+    S11[i00] = S11_block.m00;
+    S11[i10] = S11_block.m10;
+    S11[i01] = S11_block.m01;
+    S11[i11] = S11_block.m11;
 
-    S12[col0 * n2 + row0] = S12_block.m00;
-    S12[col0 * n2 + row1] = S12_block.m10;
-    S12[col1 * n2 + row0] = S12_block.m01;
-    S12[col1 * n2 + row1] = S12_block.m11;
+    S12[i00] = S12_block.m00;
+    S12[i10] = S12_block.m10;
+    S12[i01] = S12_block.m01;
+    S12[i11] = S12_block.m11;
 
-    S21[col0 * n2 + row0] = S12_block.m00;
-    S21[col0 * n2 + row1] = S12_block.m10;
-    S21[col1 * n2 + row0] = S12_block.m01;
-    S21[col1 * n2 + row1] = S12_block.m11;
+    S21[i00] = S12_block.m00;
+    S21[i10] = S12_block.m10;
+    S21[i01] = S12_block.m01;
+    S21[i11] = S12_block.m11;
 
-    S22[col0 * n2 + row0] = S11_block.m00;
-    S22[col0 * n2 + row1] = S11_block.m10;
-    S22[col1 * n2 + row0] = S11_block.m01;
-    S22[col1 * n2 + row1] = S11_block.m11;
+    S22[i00] = S11_block.m00;
+    S22[i10] = S11_block.m10;
+    S22[i01] = S11_block.m01;
+    S22[i11] = S11_block.m11;
 }
 
 __global__ void ScaleComplexKernel(Complex* data, int64_t n, Real scale)
@@ -1432,36 +1438,33 @@ Status RCWA::AddLayerHomogeneous(Real thickness, Complex eps)
 
     int* dev_singular_flag = nullptr;
     CHECK(StatusFromCuda(cudaMalloc(&dev_singular_flag, sizeof(int))));
-    const auto singular_flag_cleanup = [&]()
-    {
-        if (dev_singular_flag)
-        {
-            cudaFree(dev_singular_flag);
-            dev_singular_flag = nullptr;
-        }
-    };
     CHECK(StatusFromCuda(cudaMemsetAsync(dev_singular_flag, 0, sizeof(int), stream_)));
 
+    const Real k0d = omega_ * thickness;
     const int blocks = static_cast<int>((n + CUDA_THREADS - 1) / CUDA_THREADS);
     BuildHomogeneousSBlocksKernel<<<blocks, CUDA_THREADS, 0, stream_>>>(kx_diag_,
-                                                                         ky_diag_,
-                                                                         eps,
-                                                                         omega_,
-                                                                         thickness,
-                                                                         S11.get(),
-                                                                         S12.get(),
-                                                                         S21.get(),
-                                                                         S22.get(),
-                                                                         dev_singular_flag,
-                                                                         n,
-                                                                         n2);
+                                                                        ky_diag_,
+                                                                        eps,
+                                                                        k0d,
+                                                                        S11.get(),
+                                                                        S12.get(),
+                                                                        S21.get(),
+                                                                        S22.get(),
+                                                                        dev_singular_flag,
+                                                                        n);
     CHECK(StatusFromCuda(cudaGetLastError()));
 
     int singular_flag_host = 0;
     CHECK(StatusFromCuda(cudaMemcpyAsync(
         &singular_flag_host, dev_singular_flag, sizeof(int), cudaMemcpyDeviceToHost, stream_)));
     CHECK(StatusFromCuda(cudaStreamSynchronize(stream_)));
-    singular_flag_cleanup();
+
+    if (dev_singular_flag)
+    {
+        cudaFree(dev_singular_flag);
+        dev_singular_flag = nullptr;
+    }
+
     if (singular_flag_host != 0)
     {
         return Status::kInvalidValue;
