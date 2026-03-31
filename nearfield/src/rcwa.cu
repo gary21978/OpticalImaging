@@ -1602,7 +1602,7 @@ Status RCWA::RSProd(const SMatrix& Sm,
                     cudaStream_t stream) const
 {
     if (!out || !Sm.S_11 || !Sm.S_12 || !Sm.S_21 || !Sm.S_22 || !Sn.S_11 || !Sn.S_12 || !Sn.S_21 ||
-        !Sn.S_22)
+        !Sn.S_22 || n <= 0)
     {
         return Status::kInvalidValue;
     }
@@ -1617,29 +1617,21 @@ Status RCWA::RSProd(const SMatrix& Sm,
     CHECK(ops.SetStream(use_stream));
 
     const Complex one = make_complex(1.0, 0.0);
-    const size_t block_bytes = static_cast<size_t>(n) * static_cast<size_t>(n) * sizeof(Complex);
-
-    DeviceMatrix I;
-    CHECK(I.Allocate(n, n));
-    CHECK(MakeIdentity(I.get(), n, use_stream));
-
-    DeviceMatrix Sm12Sn21;
-    CHECK(Sm12Sn21.Allocate(n, n));
-    CHECK(MatMul(ops, Sm.S_12, Sn.S_21, Sm12Sn21.get(), n));
+    const Complex minus_one = make_complex(-1.0, 0.0);
 
     DeviceMatrix T;
     CHECK(T.Allocate(n, n));
-    CHECK(SubMatrix(ops, I.get(), Sm12Sn21.get(), T.get(), n));
-
-    DeviceMatrix Sm12Sn22;
-    CHECK(Sm12Sn22.Allocate(n, n));
-    CHECK(MatMul(ops, Sm.S_12, Sn.S_22, Sm12Sn22.get(), n));
+    CHECK(MatMul(ops, Sm.S_12, Sn.S_21, T.get(), n));
+    CHECK(ScaleInPlace(T.get(), n, minus_one, use_stream));
+    CHECK(AddDiagonalConstantInPlace(T.get(), n, one, use_stream));
 
     const int64_t rhs_cols = 2 * n;
     DeviceMatrix rhs;
     CHECK(rhs.Allocate(n, rhs_cols));
     CHECK(CopyBlock(Sm.S_11, n, rhs.get(), n, 0, 0, one, use_stream));
-    CHECK(CopyBlock(Sm12Sn22.get(), n, rhs.get(), n, 0, n, one, use_stream));
+    Complex* X1 = rhs.get();
+    Complex* X2 = rhs.get() + static_cast<size_t>(n) * n;
+    CHECK(MatMul(ops, Sm.S_12, Sn.S_22, X2, n));
 
     const Status solver = ops.Solve(T.get(), rhs.get(), rhs.get(), n, rhs_cols);
     if (solver != Status::kSuccess)
@@ -1668,51 +1660,27 @@ Status RCWA::RSProd(const SMatrix& Sm,
         return Status::kSuccess;
     }
 
-    DeviceMatrix X1;
-    DeviceMatrix X3;
-    CHECK(X1.Allocate(n, n));
-    CHECK(X3.Allocate(n, n));
-    CHECK(StatusFromCuda(
-        cudaMemcpyAsync(X1.get(), rhs.get(), block_bytes, cudaMemcpyDeviceToDevice, use_stream)));
-    CHECK(StatusFromCuda(cudaMemcpyAsync(X3.get(),
-                                         rhs.get() + static_cast<size_t>(n) * n,
-                                         block_bytes,
-                                         cudaMemcpyDeviceToDevice,
-                                         use_stream)));
-
     DeviceMatrix S11;
     CHECK(S11.Allocate(n, n));
-    CHECK(MatMul(ops, Sn.S_11, X1.get(), S11.get(), n));
+    CHECK(MatMul(ops, Sn.S_11, X1, S11.get(), n));
 
-    DeviceMatrix Sn21X1;
-    CHECK(Sn21X1.Allocate(n, n));
-    CHECK(MatMul(ops, Sn.S_21, X1.get(), Sn21X1.get(), n));
-    DeviceMatrix Sm22Sn21X1;
-    CHECK(Sm22Sn21X1.Allocate(n, n));
-    CHECK(MatMul(ops, Sm.S_22, Sn21X1.get(), Sm22Sn21X1.get(), n));
     DeviceMatrix S21;
     CHECK(S21.Allocate(n, n));
-    CHECK(AddMatrix(ops, Sm.S_21, Sm22Sn21X1.get(), S21.get(), n));
+    CHECK(MatMul(ops, Sn.S_21, X1, T.get(), n));
+    CHECK(MatMul(ops, Sm.S_22, T.get(), S21.get(), n));
+    CHECK(AddInPlace(ops, S21.get(), Sm.S_21, n));
 
-    DeviceMatrix Sn11X3;
-    CHECK(Sn11X3.Allocate(n, n));
-    CHECK(MatMul(ops, Sn.S_11, X3.get(), Sn11X3.get(), n));
     DeviceMatrix S12;
     CHECK(S12.Allocate(n, n));
-    CHECK(AddMatrix(ops, Sn.S_12, Sn11X3.get(), S12.get(), n));
+    CHECK(MatMul(ops, Sn.S_11, X2, S12.get(), n));
+    CHECK(AddInPlace(ops, S12.get(), Sn.S_12, n));
 
-    DeviceMatrix Sm22Sn22;
-    CHECK(Sm22Sn22.Allocate(n, n));
-    CHECK(MatMul(ops, Sm.S_22, Sn.S_22, Sm22Sn22.get(), n));
-    DeviceMatrix Sn21X3;
-    CHECK(Sn21X3.Allocate(n, n));
-    CHECK(MatMul(ops, Sn.S_21, X3.get(), Sn21X3.get(), n));
-    DeviceMatrix Sm22Sn21X3;
-    CHECK(Sm22Sn21X3.Allocate(n, n));
-    CHECK(MatMul(ops, Sm.S_22, Sn21X3.get(), Sm22Sn21X3.get(), n));
     DeviceMatrix S22;
     CHECK(S22.Allocate(n, n));
-    CHECK(AddMatrix(ops, Sm22Sn22.get(), Sm22Sn21X3.get(), S22.get(), n));
+    CHECK(MatMul(ops, Sm.S_22, Sn.S_22, S22.get(), n));
+    CHECK(MatMul(ops, Sn.S_21, X2, T.get(), n));
+    CHECK(MatMul(ops, Sm.S_22, T.get(), X1, n));
+    CHECK(AddInPlace(ops, S22.get(), X1, n));
 
     out->S_11 = S11.Release();
     out->S_12 = S12.Release();
