@@ -2074,6 +2074,76 @@ Status RCWA::BuildPQ(const Complex* eps_conv, int64_t n, Complex* P, Complex* Q)
     return Status::kSuccess;
 }
 
+#if 0
+Status RCWA::RepeatSMatrix(SMatrix* S, int repeats, int64_t n)
+{
+    if (!S || repeats <= 0 || n <= 0)
+    {
+        return Status::kInvalidValue;
+    }
+    if (!S->S_11 || !S->S_12 || !S->S_21 || !S->S_22)
+    {
+        return Status::kInvalidValue;
+    }
+
+    ComplexMatrixOps ops(stream_);
+    CHECK(ops.SetStream(stream_));
+
+    DeviceMatrix I;
+    CHECK(I.Allocate(n, n));
+    CHECK(MakeIdentity(I.get(), n, stream_));
+
+    DeviceMatrix newS11;
+    DeviceMatrix newS12;
+
+    for (int i = 0; i < repeats; ++i)
+    {
+        DeviceMatrix S12S12;
+        CHECK(S12S12.Allocate(n, n));
+        CHECK(MatMul(ops, S->S_12, S->S_12, S12S12.get(), n));
+
+        DeviceMatrix R;
+        CHECK(R.Allocate(n, n));
+        CHECK(SubMatrix(ops, I.get(), S12S12.get(), R.get(), n));
+
+        // Optimize: merge two solves into one 2n-column RHS
+        // rhs = [S_12*S_11 | S_11], solve R*rhs = rhs to get [X | Y]
+        const int64_t rhs_cols = 2 * n;
+        DeviceMatrix rhs;
+        CHECK(rhs.Allocate(n, rhs_cols));
+
+        // Left column (0): S_12*S_11
+        DeviceMatrix temp;
+        CHECK(temp.Allocate(n, n));
+        CHECK(MatMul(ops, S->S_12, S->S_11, temp.get(), n));
+        CHECK(CopyBlockDirect(temp.get(), n, rhs.get(), n, 0, 0, stream_));
+
+        // Right column (n): S_11
+        CHECK(CopyBlockDirect(S->S_11, n, rhs.get(), n, 0, n, stream_));
+
+        // Single solve: R*[X | Y] = [S_12*S_11 | S_11]
+        Complex* X = rhs.get();
+        Complex* Y = rhs.get() + static_cast<size_t>(n) * n;
+        CHECK(ops.Solve(R.get(), rhs.get(), rhs.get(), n, rhs_cols));
+
+        // newS_12 = S_12 + S_11*X
+        CHECK(newS12.Allocate(n, n));
+        CHECK(MatMul(ops, S->S_11, X, newS12.get(), n));
+        CHECK(AddInPlace(ops, newS12.get(), S->S_12, n));
+
+        // newS_11 = S_11*Y
+        CHECK(newS11.Allocate(n, n));
+        CHECK(MatMul(ops, S->S_11, Y, newS11.get(), n));
+
+        CHECK(CopyMatrix(newS11.get(), S->S_11, n, stream_));
+        CHECK(CopyMatrix(newS12.get(), S->S_12, n, stream_));
+    }
+
+    CHECK(CopyMatrix(S->S_12, S->S_21, n, stream_));
+    CHECK(CopyMatrix(S->S_11, S->S_22, n, stream_));
+    return Status::kSuccess;
+}
+#else
 Status RCWA::RepeatSMatrix(SMatrix* S, int repeats, int64_t n)
 {
     if (!S || repeats <= 0 || n <= 0)
@@ -2130,3 +2200,4 @@ Status RCWA::RepeatSMatrix(SMatrix* S, int repeats, int64_t n)
     CHECK(CopyMatrix(S->S_11, S->S_22, n, stream_));
     return Status::kSuccess;
 }
+#endif
