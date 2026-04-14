@@ -97,20 +97,22 @@ int main()
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
 
-    const int64_t n2 = 2 * rcwa_ref.order_N();
-    const auto& layers_ref = rcwa_ref.layer_smatrices();
-    const auto& layers_hom = rcwa_hom.layer_smatrices();
-    if (layers_ref.size() != 1 || layers_hom.size() != 1)
+    if (rcwa_ref.SolveGlobalSMatrix() != Status::kSuccess ||
+        rcwa_hom.SolveGlobalSMatrix() != Status::kSuccess)
     {
-        std::cout << "Layer list mismatch.\n";
+        std::cout << "SolveGlobalSMatrix failed.\n";
         return 1;
     }
 
+    const int64_t n2 = 2 * rcwa_ref.order_N();
+    const auto& s_ref = rcwa_ref.global_smatrix();
+    const auto& s_hom = rcwa_hom.global_smatrix();
+
     double max_layer_err = 0.0;
-    max_layer_err = std::max(max_layer_err, MaxMatrixDiff(layers_ref[0].S_11, layers_hom[0].S_11, n2));
-    max_layer_err = std::max(max_layer_err, MaxMatrixDiff(layers_ref[0].S_12, layers_hom[0].S_12, n2));
-    max_layer_err = std::max(max_layer_err, MaxMatrixDiff(layers_ref[0].S_21, layers_hom[0].S_21, n2));
-    max_layer_err = std::max(max_layer_err, MaxMatrixDiff(layers_ref[0].S_22, layers_hom[0].S_22, n2));
+    max_layer_err = std::max(max_layer_err, MaxMatrixDiff(s_ref.S_11, s_hom.S_11, n2));
+    max_layer_err = std::max(max_layer_err, MaxMatrixDiff(s_ref.S_12, s_hom.S_12, n2));
+    max_layer_err = std::max(max_layer_err, MaxMatrixDiff(s_ref.S_21, s_hom.S_21, n2));
+    max_layer_err = std::max(max_layer_err, MaxMatrixDiff(s_ref.S_22, s_hom.S_22, n2));
 
     const double tol = static_cast<double>(std::numeric_limits<Real>::epsilon()) * 1e5;
     std::cout << "Single-layer homogeneous consistency:\n";

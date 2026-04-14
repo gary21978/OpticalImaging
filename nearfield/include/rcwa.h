@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <vector>
 
 #include "common_utils.h"
 
@@ -97,7 +96,6 @@ class RCWA
                          cudaStream_t stream = nullptr) const;
 
     int64_t order_N() const { return order_N_; }
-    const std::vector<SMatrix>& layer_smatrices() const { return layer_smatrices_; }
     const SMatrix& global_smatrix() const { return global_smatrix_; }
     cudaStream_t stream() const { return stream_; }
 
@@ -127,7 +125,6 @@ class RCWA
     Status AccumulateLayerSMatrix(SMatrix* layer, int64_t n);
     Status CommitLayerSMatrix(SMatrix* layer, int64_t n);
 
-    void FreeLayers();
     void FreeKVectors();
     void FreeGlobalSMatrix();
     void FreeSource();
@@ -148,7 +145,6 @@ class RCWA
     Complex* ky_diag_ = nullptr;
     VMatrix V0_{};
 
-    std::vector<SMatrix> layer_smatrices_;
     SMatrix global_smatrix_{};
     Complex* source_ei_ = nullptr;
     Complex eps_in_ = make_complex(1.0, 0.0);

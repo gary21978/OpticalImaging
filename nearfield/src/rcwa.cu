@@ -650,7 +650,6 @@ RCWA::RCWA(Real freq, int order_x, int order_y, Real Lx, Real Ly, cudaStream_t s
 
 RCWA::~RCWA()
 {
-    FreeLayers();
     FreeKVectors();
     FreeGlobalSMatrix();
     FreeSource();
@@ -749,15 +748,6 @@ Status RCWA::CommitLayerSMatrix(SMatrix* layer, int64_t n)
     }
 
     return AccumulateLayerSMatrix(layer, n);
-}
-
-void RCWA::FreeLayers()
-{
-    for (auto& layer : layer_smatrices_)
-    {
-        FreeSMatrix(&layer);
-    }
-    layer_smatrices_.clear();
 }
 
 void RCWA::FreeKVectors()
