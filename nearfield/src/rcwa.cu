@@ -315,6 +315,103 @@ __global__ void BuildHomogeneousSBlocksKernel(const Complex* __restrict__ kx_dia
     S22[i11] = S11_block.m11;
 }
 
+__global__ void BuildPortSBlocksKernel(const Complex* __restrict__ v0_11,
+                                       const Complex* __restrict__ v0_12,
+                                       const Complex* __restrict__ v0_21,
+                                       const Complex* __restrict__ v0_22,
+                                       const Complex* __restrict__ vp_11,
+                                       const Complex* __restrict__ vp_12,
+                                       const Complex* __restrict__ vp_21,
+                                       const Complex* __restrict__ vp_22,
+                                       int input_port,
+                                       Complex* __restrict__ S11,
+                                       Complex* __restrict__ S12,
+                                       Complex* __restrict__ S21,
+                                       Complex* __restrict__ S22,
+                                       int64_t n)
+{
+    const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (idx >= n)
+    {
+        return;
+    }
+
+    const Complex zero = make_complex(0.0, 0.0);
+    const Complex one = make_complex(1.0, 0.0);
+    const Complex two = make_complex(2.0, 0.0);
+    const Complex minus_one = make_complex(-1.0, 0.0);
+
+    const Complex2x2 V0(v0_11[idx], v0_21[idx], v0_12[idx], v0_22[idx]);
+    const Complex2x2 Vp(vp_11[idx], vp_21[idx], vp_12[idx], vp_22[idx]);
+    const Complex2x2 I(one, zero, zero, one);
+
+    const Complex2x2 Vsum = Mat2x2Add(Vp, V0);
+    const Complex2x2 Vdiff = Mat2x2Sub(Vp, V0);
+
+    bool ok = false;
+    const Complex2x2 Vsum_inv = Mat2x2Inv(Vsum, ok);
+
+    Complex2x2 S11_block;
+    Complex2x2 S12_block;
+    Complex2x2 S21_block;
+    Complex2x2 S22_block;
+
+    if (!ok)
+    {
+        S11_block = I;
+        S12_block = Complex2x2();
+        S21_block = Complex2x2();
+        S22_block = I;
+    }
+    else
+    {
+        const Complex2x2 coupling = Mat2x2Mul(Vsum_inv, Vdiff);
+        if (input_port)
+        {
+            S11_block = Mat2x2Scale(Mat2x2Mul(Vsum_inv, Vp), two);
+            S12_block = Mat2x2Scale(coupling, minus_one);
+            S21_block = coupling;
+            S22_block = Mat2x2Scale(Mat2x2Mul(Vsum_inv, V0), two);
+        }
+        else
+        {
+            S11_block = Mat2x2Scale(Mat2x2Mul(Vsum_inv, V0), two);
+            S12_block = coupling;
+            S21_block = Mat2x2Scale(coupling, minus_one);
+            S22_block = Mat2x2Scale(Mat2x2Mul(Vsum_inv, Vp), two);
+        }
+    }
+
+    const int64_t row0 = idx;
+    const int64_t row1 = idx + n;
+    const int64_t base_col0 = 2 * row0 * n;
+    const int64_t base_col1 = 2 * row1 * n;
+    const int64_t i00 = base_col0 + row0;
+    const int64_t i10 = base_col0 + row1;
+    const int64_t i01 = base_col1 + row0;
+    const int64_t i11 = base_col1 + row1;
+
+    S11[i00] = S11_block.m00;
+    S11[i10] = S11_block.m10;
+    S11[i01] = S11_block.m01;
+    S11[i11] = S11_block.m11;
+
+    S12[i00] = S12_block.m00;
+    S12[i10] = S12_block.m10;
+    S12[i01] = S12_block.m01;
+    S12[i11] = S12_block.m11;
+
+    S21[i00] = S21_block.m00;
+    S21[i10] = S21_block.m10;
+    S21[i01] = S21_block.m01;
+    S21[i11] = S21_block.m11;
+
+    S22[i00] = S22_block.m00;
+    S22[i10] = S22_block.m10;
+    S22[i01] = S22_block.m01;
+    S22[i11] = S22_block.m11;
+}
+
 __global__ void ScaleComplexKernel(Complex* data, int64_t n, Real scale)
 {
     const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -650,6 +747,7 @@ RCWA::RCWA(Real freq, int order_x, int order_y, Real Lx, Real Ly, cudaStream_t s
 
 RCWA::~RCWA()
 {
+    FreeSMatrix(&stack_smatrix_);
     FreeKVectors();
     FreeGlobalSMatrix();
     FreeSource();
@@ -707,16 +805,93 @@ Status RCWA::CopySMatrix(const SMatrix& src, int64_t n, SMatrix* dst, cudaStream
     return Status::kSuccess;
 }
 
-Status RCWA::AccumulateLayerSMatrix(SMatrix* layer, int64_t n)
+Status RCWA::BuildPortSMatrix(Complex eps, bool input_port, SMatrix* S, cudaStream_t stream) const
+{
+    if (!S || !kvectors_ready_ || !kx_diag_ || !ky_diag_ || !V0_.V_11 || !V0_.V_12 || !V0_.V_21 ||
+        !V0_.V_22)
+    {
+        return Status::kInvalidValue;
+    }
+
+    cudaStream_t use_stream = stream ? stream : stream_;
+    const int64_t n = order_N_;
+    const int64_t n2 = 2 * n;
+
+    S->S_11 = nullptr;
+    S->S_12 = nullptr;
+    S->S_21 = nullptr;
+    S->S_22 = nullptr;
+
+    DeviceVector port11;
+    DeviceVector port12;
+    DeviceVector port21;
+    DeviceVector port22;
+    CHECK(port11.Allocate(static_cast<size_t>(n)));
+    CHECK(port12.Allocate(static_cast<size_t>(n)));
+    CHECK(port21.Allocate(static_cast<size_t>(n)));
+    CHECK(port22.Allocate(static_cast<size_t>(n)));
+
+    const int blocks = static_cast<int>((n + CUDA_THREADS - 1) / CUDA_THREADS);
+    BuildV0Kernel<<<blocks, CUDA_THREADS, 0, use_stream>>>(kx_diag_,
+                                                            ky_diag_,
+                                                            eps,
+                                                            port11.get(),
+                                                            port12.get(),
+                                                            port21.get(),
+                                                            port22.get(),
+                                                            n);
+    CHECK(StatusFromCuda(cudaGetLastError()));
+
+    DeviceMatrix S11;
+    DeviceMatrix S12;
+    DeviceMatrix S21;
+    DeviceMatrix S22;
+    CHECK(S11.Allocate(n2, n2));
+    CHECK(S12.Allocate(n2, n2));
+    CHECK(S21.Allocate(n2, n2));
+    CHECK(S22.Allocate(n2, n2));
+
+    const size_t matrix_bytes = static_cast<size_t>(n2) * static_cast<size_t>(n2) * sizeof(Complex);
+    CHECK(StatusFromCuda(cudaMemsetAsync(S11.get(), 0, matrix_bytes, use_stream)));
+    CHECK(StatusFromCuda(cudaMemsetAsync(S12.get(), 0, matrix_bytes, use_stream)));
+    CHECK(StatusFromCuda(cudaMemsetAsync(S21.get(), 0, matrix_bytes, use_stream)));
+    CHECK(StatusFromCuda(cudaMemsetAsync(S22.get(), 0, matrix_bytes, use_stream)));
+
+    BuildPortSBlocksKernel<<<blocks, CUDA_THREADS, 0, use_stream>>>(V0_.V_11,
+                                                                    V0_.V_12,
+                                                                    V0_.V_21,
+                                                                    V0_.V_22,
+                                                                    port11.get(),
+                                                                    port12.get(),
+                                                                    port21.get(),
+                                                                    port22.get(),
+                                                                    input_port ? 1 : 0,
+                                                                    S11.get(),
+                                                                    S12.get(),
+                                                                    S21.get(),
+                                                                    S22.get(),
+                                                                    n);
+    CHECK(StatusFromCuda(cudaGetLastError()));
+
+    S->S_11 = S11.Release();
+    S->S_12 = S12.Release();
+    S->S_21 = S21.Release();
+    S->S_22 = S22.Release();
+    return Status::kSuccess;
+}
+
+Status RCWA::CommitLayerSMatrix(SMatrix* layer, int64_t n)
 {
     if (!layer || !HasSMatrix(*layer) || n <= 0)
     {
         return Status::kInvalidValue;
     }
 
-    if (!HasSMatrix(global_smatrix_))
+    FreeGlobalSMatrix();
+
+    if (!HasSMatrix(stack_smatrix_))
     {
-        global_smatrix_ = *layer;
+        stack_smatrix_ = *layer;
         *layer = {};
         return Status::kSuccess;
     }
@@ -726,7 +901,7 @@ Status RCWA::AccumulateLayerSMatrix(SMatrix* layer, int64_t n)
     CHECK(ops.SetStream(use_stream));
 
     SMatrix next{};
-    const Status status = RSProd(global_smatrix_, *layer, n, &next, ops, use_stream);
+    const Status status = RSProd(stack_smatrix_, *layer, n, &next, ops, use_stream);
     if (status != Status::kSuccess)
     {
         FreeSMatrix(&next);
@@ -734,20 +909,10 @@ Status RCWA::AccumulateLayerSMatrix(SMatrix* layer, int64_t n)
         return status;
     }
 
-    FreeSMatrix(&global_smatrix_);
+    FreeSMatrix(&stack_smatrix_);
     FreeSMatrix(layer);
-    global_smatrix_ = next;
+    stack_smatrix_ = next;
     return Status::kSuccess;
-}
-
-Status RCWA::CommitLayerSMatrix(SMatrix* layer, int64_t n)
-{
-    if (!layer || !HasSMatrix(*layer))
-    {
-        return Status::kInvalidValue;
-    }
-
-    return AccumulateLayerSMatrix(layer, n);
 }
 
 void RCWA::FreeKVectors()
@@ -784,6 +949,7 @@ Status RCWA::AddInputLayer(Real eps) { return AddInputLayer(make_complex(eps, 0.
 Status RCWA::AddInputLayer(Complex eps)
 {
     eps_in_ = eps;
+    FreeGlobalSMatrix();
     return Status::kSuccess;
 }
 
@@ -792,6 +958,7 @@ Status RCWA::AddOutputLayer(Real eps) { return AddOutputLayer(make_complex(eps, 
 Status RCWA::AddOutputLayer(Complex eps)
 {
     eps_out_ = eps;
+    FreeGlobalSMatrix();
     return Status::kSuccess;
 }
 
@@ -1797,6 +1964,22 @@ Status RCWA::SolveGlobalSMatrix(SMatrix* S,
         return CopySMatrix(global_smatrix_, n, S, use_stream);
     }
 
+    SMatrix auto_in{};
+    SMatrix auto_out{};
+    const SMatrix* use_S_in = S_in;
+    const SMatrix* use_S_out = S_out;
+
+    if (!S_in)
+    {
+        CHECK(BuildPortSMatrix(eps_in_, true, &auto_in, use_stream));
+        use_S_in = &auto_in;
+    }
+    if (!S_out)
+    {
+        CHECK(BuildPortSMatrix(eps_out_, false, &auto_out, use_stream));
+        use_S_out = &auto_out;
+    }
+
     S->S_11 = nullptr;
     S->S_12 = nullptr;
     S->S_21 = nullptr;
@@ -1806,9 +1989,9 @@ Status RCWA::SolveGlobalSMatrix(SMatrix* S,
     CHECK(ops.SetStream(use_stream));
 
     SMatrix current{};
-    if (HasSMatrix(global_smatrix_))
+    if (HasSMatrix(stack_smatrix_))
     {
-        CHECK(CopySMatrix(global_smatrix_, n, &current, use_stream));
+        CHECK(CopySMatrix(stack_smatrix_, n, &current, use_stream));
     }
     else
     {
@@ -1832,44 +2015,38 @@ Status RCWA::SolveGlobalSMatrix(SMatrix* S,
         current.S_22 = S22.Release();
     }
 
-    if (S_in)
+    if (use_S_in)
     {
-        if (!S_in->S_11 || !S_in->S_12 || !S_in->S_21 || !S_in->S_22)
+        if (!use_S_in->S_11 || !use_S_in->S_12 || !use_S_in->S_21 || !use_S_in->S_22)
         {
-            SAFEFREE(current.S_11);
-            SAFEFREE(current.S_12);
-            SAFEFREE(current.S_21);
-            SAFEFREE(current.S_22);
+            FreeSMatrix(&current);
+            FreeSMatrix(&auto_in);
+            FreeSMatrix(&auto_out);
             return Status::kInvalidValue;
         }
         SMatrix next{};
-        CHECK(RSProd(*S_in, current, n, &next, ops, use_stream));
-        SAFEFREE(current.S_11);
-        SAFEFREE(current.S_12);
-        SAFEFREE(current.S_21);
-        SAFEFREE(current.S_22);
+        CHECK(RSProd(*use_S_in, current, n, &next, ops, use_stream));
+        FreeSMatrix(&current);
         current = next;
     }
 
-    if (S_out)
+    if (use_S_out)
     {
-        if (!S_out->S_11 || !S_out->S_12 || !S_out->S_21 || !S_out->S_22)
+        if (!use_S_out->S_11 || !use_S_out->S_12 || !use_S_out->S_21 || !use_S_out->S_22)
         {
-            SAFEFREE(current.S_11);
-            SAFEFREE(current.S_12);
-            SAFEFREE(current.S_21);
-            SAFEFREE(current.S_22);
+            FreeSMatrix(&current);
+            FreeSMatrix(&auto_in);
+            FreeSMatrix(&auto_out);
             return Status::kInvalidValue;
         }
         SMatrix next{};
-        CHECK(RSProd(current, *S_out, n, &next, ops, use_stream));
-        SAFEFREE(current.S_11);
-        SAFEFREE(current.S_12);
-        SAFEFREE(current.S_21);
-        SAFEFREE(current.S_22);
+        CHECK(RSProd(current, *use_S_out, n, &next, ops, use_stream));
+        FreeSMatrix(&current);
         current = next;
     }
 
+    FreeSMatrix(&auto_in);
+    FreeSMatrix(&auto_out);
     S->S_11 = current.S_11;
     S->S_12 = current.S_12;
     S->S_21 = current.S_21;

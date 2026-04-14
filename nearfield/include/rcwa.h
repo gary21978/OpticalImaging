@@ -122,7 +122,10 @@ class RCWA
                        int64_t n,
                        SMatrix* dst,
                        cudaStream_t stream = nullptr) const;
-    Status AccumulateLayerSMatrix(SMatrix* layer, int64_t n);
+    Status BuildPortSMatrix(Complex eps,
+                            bool input_port,
+                            SMatrix* S,
+                            cudaStream_t stream = nullptr) const;
     Status CommitLayerSMatrix(SMatrix* layer, int64_t n);
 
     void FreeKVectors();
@@ -145,6 +148,7 @@ class RCWA
     Complex* ky_diag_ = nullptr;
     VMatrix V0_{};
 
+    SMatrix stack_smatrix_{};
     SMatrix global_smatrix_{};
     Complex* source_ei_ = nullptr;
     Complex eps_in_ = make_complex(1.0, 0.0);
