@@ -214,7 +214,6 @@ __global__ void BuildHomogeneousSBlocksKernel(const Complex* __restrict__ kx_dia
                                               Complex* __restrict__ S12,
                                               Complex* __restrict__ S21,
                                               Complex* __restrict__ S22,
-                                              int* singular_flag,
                                               int64_t n)
 {
     const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -241,7 +240,6 @@ __global__ void BuildHomogeneousSBlocksKernel(const Complex* __restrict__ kx_dia
     const Real tiny = static_cast<Real>(1e-12);
     if (ComplexAbs(kz) <= tiny || ComplexAbs(kz0) <= tiny)
     {
-        atomicExch(singular_flag, 1);
         return;
     }
 
@@ -266,7 +264,6 @@ __global__ void BuildHomogeneousSBlocksKernel(const Complex* __restrict__ kx_dia
     tmp = Mat2x2Inv(A, ok);
     if (!ok)
     {
-        atomicExch(singular_flag, 1);
         return;
     }
 
@@ -277,7 +274,6 @@ __global__ void BuildHomogeneousSBlocksKernel(const Complex* __restrict__ kx_dia
     tmp = Mat2x2Inv(A, ok);
     if (!ok)
     {
-        atomicExch(singular_flag, 1);
         return;
     }
 
@@ -660,14 +656,106 @@ RCWA::~RCWA()
     FreeSource();
 }
 
+Status RCWA::SetStream(cudaStream_t stream)
+{
+    stream_ = stream;
+    return Status::kSuccess;
+}
+
+void RCWA::FreeSMatrix(SMatrix* matrix) const
+{
+    if (!matrix)
+    {
+        return;
+    }
+    SAFEFREE(matrix->S_11);
+    SAFEFREE(matrix->S_12);
+    SAFEFREE(matrix->S_21);
+    SAFEFREE(matrix->S_22);
+}
+
+bool RCWA::HasSMatrix(const SMatrix& matrix) const
+{
+    return matrix.S_11 && matrix.S_12 && matrix.S_21 && matrix.S_22;
+}
+
+Status RCWA::CopySMatrix(const SMatrix& src, int64_t n, SMatrix* dst, cudaStream_t stream) const
+{
+    if (!dst || !HasSMatrix(src) || n <= 0)
+    {
+        return Status::kInvalidValue;
+    }
+
+    cudaStream_t use_stream = stream ? stream : stream_;
+    FreeSMatrix(dst);
+
+    DeviceMatrix S11;
+    DeviceMatrix S12;
+    DeviceMatrix S21;
+    DeviceMatrix S22;
+    CHECK(S11.Allocate(n, n));
+    CHECK(S12.Allocate(n, n));
+    CHECK(S21.Allocate(n, n));
+    CHECK(S22.Allocate(n, n));
+    CHECK(CopyMatrix(src.S_11, S11.get(), n, use_stream));
+    CHECK(CopyMatrix(src.S_12, S12.get(), n, use_stream));
+    CHECK(CopyMatrix(src.S_21, S21.get(), n, use_stream));
+    CHECK(CopyMatrix(src.S_22, S22.get(), n, use_stream));
+    dst->S_11 = S11.Release();
+    dst->S_12 = S12.Release();
+    dst->S_21 = S21.Release();
+    dst->S_22 = S22.Release();
+    return Status::kSuccess;
+}
+
+Status RCWA::AccumulateLayerSMatrix(SMatrix* layer, int64_t n)
+{
+    if (!layer || !HasSMatrix(*layer) || n <= 0)
+    {
+        return Status::kInvalidValue;
+    }
+
+    if (!HasSMatrix(global_smatrix_))
+    {
+        global_smatrix_ = *layer;
+        *layer = {};
+        return Status::kSuccess;
+    }
+
+    cudaStream_t use_stream = stream_;
+    ComplexMatrixOps ops(use_stream);
+    CHECK(ops.SetStream(use_stream));
+
+    SMatrix next{};
+    const Status status = RSProd(global_smatrix_, *layer, n, &next, ops, use_stream);
+    if (status != Status::kSuccess)
+    {
+        FreeSMatrix(&next);
+        FreeSMatrix(layer);
+        return status;
+    }
+
+    FreeSMatrix(&global_smatrix_);
+    FreeSMatrix(layer);
+    global_smatrix_ = next;
+    return Status::kSuccess;
+}
+
+Status RCWA::CommitLayerSMatrix(SMatrix* layer, int64_t n)
+{
+    if (!layer || !HasSMatrix(*layer))
+    {
+        return Status::kInvalidValue;
+    }
+
+    return AccumulateLayerSMatrix(layer, n);
+}
+
 void RCWA::FreeLayers()
 {
     for (auto& layer : layer_smatrices_)
     {
-        SAFEFREE(layer.S_11);
-        SAFEFREE(layer.S_12);
-        SAFEFREE(layer.S_21);
-        SAFEFREE(layer.S_22);
+        FreeSMatrix(&layer);
     }
     layer_smatrices_.clear();
 }
@@ -683,13 +771,7 @@ void RCWA::FreeKVectors()
     kvectors_ready_ = false;
 }
 
-void RCWA::FreeGlobalSMatrix()
-{
-    SAFEFREE(global_smatrix_.S_11);
-    SAFEFREE(global_smatrix_.S_12);
-    SAFEFREE(global_smatrix_.S_21);
-    SAFEFREE(global_smatrix_.S_22);
-}
+void RCWA::FreeGlobalSMatrix() { FreeSMatrix(&global_smatrix_); }
 
 void RCWA::FreeSource() { SAFEFREE(source_ei_); }
 
@@ -1083,6 +1165,28 @@ Status RCWA::ComputeTFromPQOrder12(const Complex* P,
     ComplexMatrixOps ops(use_stream);
     CHECK(ops.SetStream(use_stream));
 
+    struct ScopedCudaStream
+    {
+        cudaStream_t stream = nullptr;
+        ~ScopedCudaStream()
+        {
+            if (stream)
+            {
+                cudaStreamDestroy(stream);
+            }
+        }
+    };
+    struct ScopedCudaEvent
+    {
+        cudaEvent_t event = nullptr;
+        ~ScopedCudaEvent()
+        {
+            if (event)
+            {
+                cudaEventDestroy(event);
+            }
+        }
+    };
     // Matrix exponential via scaling/squaring + [5/5] Padé on block matrix:
     // A = [0, -P; Q, 0], then T = exp(A * k0d).
     double Pnorm = 0.0;
@@ -1436,9 +1540,6 @@ Status RCWA::AddLayerHomogeneous(Real thickness, Complex eps)
     CHECK(StatusFromCuda(cudaMemsetAsync(S21.get(), 0, matrix_bytes, stream_)));
     CHECK(StatusFromCuda(cudaMemsetAsync(S22.get(), 0, matrix_bytes, stream_)));
 
-    int* dev_singular_flag = nullptr;
-    CHECK(StatusFromCuda(cudaMalloc(&dev_singular_flag, sizeof(int))));
-    CHECK(StatusFromCuda(cudaMemsetAsync(dev_singular_flag, 0, sizeof(int), stream_)));
 
     const Real k0d = omega_ * thickness;
     const int blocks = static_cast<int>((n + CUDA_THREADS - 1) / CUDA_THREADS);
@@ -1450,33 +1551,15 @@ Status RCWA::AddLayerHomogeneous(Real thickness, Complex eps)
                                                                         S12.get(),
                                                                         S21.get(),
                                                                         S22.get(),
-                                                                        dev_singular_flag,
                                                                         n);
     CHECK(StatusFromCuda(cudaGetLastError()));
-
-    int singular_flag_host = 0;
-    CHECK(StatusFromCuda(cudaMemcpyAsync(
-        &singular_flag_host, dev_singular_flag, sizeof(int), cudaMemcpyDeviceToHost, stream_)));
-    CHECK(StatusFromCuda(cudaStreamSynchronize(stream_)));
-
-    if (dev_singular_flag)
-    {
-        cudaFree(dev_singular_flag);
-        dev_singular_flag = nullptr;
-    }
-
-    if (singular_flag_host != 0)
-    {
-        return Status::kInvalidValue;
-    }
 
     SMatrix S{};
     S.S_11 = S11.Release();
     S.S_12 = S12.Release();
     S.S_21 = S21.Release();
     S.S_22 = S22.Release();
-    layer_smatrices_.push_back(S);
-    return Status::kSuccess;
+    return CommitLayerSMatrix(&S, n2);
 }
 
 Status RCWA::AddLayer(Real thickness, const Complex* eps_conv)
@@ -1529,8 +1612,7 @@ Status RCWA::AddLayer(Real thickness, const Complex* eps_conv)
         CHECK(RepeatSMatrix(&S, n_repeated, n2));
     }
 
-    layer_smatrices_.push_back(S);
-    return Status::kSuccess;
+    return CommitLayerSMatrix(&S, n2);
 }
 
 Status RCWA::MaterialConv(const Complex* material,
@@ -1711,6 +1793,20 @@ Status RCWA::SolveGlobalSMatrix(SMatrix* S,
     const int64_t n = 2 * order_N_;
 
     cudaStream_t use_stream = stream ? stream : stream_;
+
+    if (!S_in && !S_out && HasSMatrix(global_smatrix_))
+    {
+        if (S == &global_smatrix_)
+        {
+            return Status::kSuccess;
+        }
+        S->S_11 = nullptr;
+        S->S_12 = nullptr;
+        S->S_21 = nullptr;
+        S->S_22 = nullptr;
+        return CopySMatrix(global_smatrix_, n, S, use_stream);
+    }
+
     S->S_11 = nullptr;
     S->S_12 = nullptr;
     S->S_21 = nullptr;
@@ -1720,7 +1816,11 @@ Status RCWA::SolveGlobalSMatrix(SMatrix* S,
     CHECK(ops.SetStream(use_stream));
 
     SMatrix current{};
-    if (layer_smatrices_.empty())
+    if (HasSMatrix(global_smatrix_))
+    {
+        CHECK(CopySMatrix(global_smatrix_, n, &current, use_stream));
+    }
+    else
     {
         DeviceMatrix S11;
         DeviceMatrix S12;
@@ -1740,43 +1840,6 @@ Status RCWA::SolveGlobalSMatrix(SMatrix* S,
         current.S_12 = S12.Release();
         current.S_21 = S21.Release();
         current.S_22 = S22.Release();
-    }
-    else
-    {
-        const SMatrix& first = layer_smatrices_[0];
-        if (!first.S_11 || !first.S_12 || !first.S_21 || !first.S_22)
-        {
-            return Status::kInvalidValue;
-        }
-
-        DeviceMatrix S11;
-        DeviceMatrix S12;
-        DeviceMatrix S21;
-        DeviceMatrix S22;
-        CHECK(S11.Allocate(n, n));
-        CHECK(S12.Allocate(n, n));
-        CHECK(S21.Allocate(n, n));
-        CHECK(S22.Allocate(n, n));
-        CHECK(CopyMatrix(first.S_11, S11.get(), n, use_stream));
-        CHECK(CopyMatrix(first.S_12, S12.get(), n, use_stream));
-        CHECK(CopyMatrix(first.S_21, S21.get(), n, use_stream));
-        CHECK(CopyMatrix(first.S_22, S22.get(), n, use_stream));
-        current.S_11 = S11.Release();
-        current.S_12 = S12.Release();
-        current.S_21 = S21.Release();
-        current.S_22 = S22.Release();
-    }
-
-    for (size_t i = 1; i < layer_smatrices_.size(); ++i)
-    {
-        const SMatrix& next_layer = layer_smatrices_[i];
-        SMatrix next{};
-        CHECK(RSProd(current, next_layer, n, &next, ops, use_stream));
-        SAFEFREE(current.S_11);
-        SAFEFREE(current.S_12);
-        SAFEFREE(current.S_21);
-        SAFEFREE(current.S_22);
-        current = next;
     }
 
     if (S_in)
@@ -1826,6 +1889,11 @@ Status RCWA::SolveGlobalSMatrix(SMatrix* S,
 
 Status RCWA::SolveGlobalSMatrix()
 {
+    if (HasSMatrix(global_smatrix_))
+    {
+        return Status::kSuccess;
+    }
+
     FreeGlobalSMatrix();
     const Status status = SolveGlobalSMatrix(&global_smatrix_, nullptr, nullptr, stream_);
     if (status != Status::kSuccess)

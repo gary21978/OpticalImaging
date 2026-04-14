@@ -656,26 +656,6 @@ ComplexMatrixOps::Solve(const Complex* A, const Complex* B, Complex* X, int64_t 
         return Status::kCusolverError;
     }
 
-    {
-        int info_host = 0;
-        if (StatusFromCuda(cudaMemcpyAsync(
-                &info_host, dev_info, sizeof(int), cudaMemcpyDeviceToHost, stream_)) !=
-            Status::kSuccess)
-        {
-            cleanup();
-            return Status::kCudaError;
-        }
-        if (StatusFromCuda(cudaStreamSynchronize(stream_)) != Status::kSuccess)
-        {
-            cleanup();
-            return Status::kCudaError;
-        }
-        if (info_host != 0)
-        {
-            cleanup();
-            return Status::kCusolverError;
-        }
-    }
 
     cleanup();
     return Status::kSuccess;

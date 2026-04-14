@@ -41,6 +41,7 @@ class RCWA
     RCWA(const RCWA&) = delete;
     RCWA& operator=(const RCWA&) = delete;
 
+    Status SetStream(cudaStream_t stream);
     Status SetIncidentAngles(Real inc_ang, Real azi_ang, Real eps_ref = 1.0);
     Status SetIncidentAngles(Real inc_ang, Real azi_ang, const char* angle_layer);
 
@@ -98,6 +99,7 @@ class RCWA
     int64_t order_N() const { return order_N_; }
     const std::vector<SMatrix>& layer_smatrices() const { return layer_smatrices_; }
     const SMatrix& global_smatrix() const { return global_smatrix_; }
+    cudaStream_t stream() const { return stream_; }
 
   private:
     Status BuildKxKy(Real inc_ang, Real azi_ang, Real eps_ref);
@@ -115,6 +117,15 @@ class RCWA
                   SMatrix* out,
                   ComplexMatrixOps& ops,
                   cudaStream_t stream) const;
+
+    void FreeSMatrix(SMatrix* matrix) const;
+    bool HasSMatrix(const SMatrix& matrix) const;
+    Status CopySMatrix(const SMatrix& src,
+                       int64_t n,
+                       SMatrix* dst,
+                       cudaStream_t stream = nullptr) const;
+    Status AccumulateLayerSMatrix(SMatrix* layer, int64_t n);
+    Status CommitLayerSMatrix(SMatrix* layer, int64_t n);
 
     void FreeLayers();
     void FreeKVectors();
