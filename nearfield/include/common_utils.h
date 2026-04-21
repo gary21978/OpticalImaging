@@ -134,15 +134,16 @@ __device__ inline Complex ComplexSqrtImPos(Complex z)
 
 __device__ inline Complex ComplexSqrt_RCWA(Complex z)
 {
-    Real x = ComplexReal(z);
-    Real y = ComplexImag(z);
+    Real a = ComplexReal(z);
+    Real b = ComplexImag(z);
     Real r = ComplexAbs(z);
-    Real p = RealSqrt(Real(0.5) * (r + RealAbs(x)));
-    Real q = (p > Real(0)) ? Real(0.5) * y / p : Real(0);
-    Real s = Real(x >= Real(0)) * (RealAbs(q) - p);
-    Real u = q - copysign(s, q);
-    Real v = p + s;
-    return make_complex(u, v);
+    Real t = RealSqrt(Real(0.5) * (r + RealAbs(a)));
+    Real u = (t > Real(0)) ? Real(0.5) * b / t : Real(0);
+    Real sign_a = Real(a < Real(0));
+    Real abs_u = RealAbs(u);
+    Real re = t + sign_a * (abs_u - t);
+    Real im = abs_u + sign_a * (t - abs_u);
+    return make_complex(re, im);
 }
 
 __device__ inline Complex ComplexReciprocal(Complex z)

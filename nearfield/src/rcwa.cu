@@ -234,8 +234,8 @@ __global__ void BuildHomogeneousSBlocksKernel(const Complex* __restrict__ kx_dia
     const Complex kxky = ComplexMul(kx, ky);
     const Complex sum = ComplexAdd(kx2, ky2);
 
-    const Complex kz = ComplexSqrtImPos(ComplexSub(eps, sum));
-    const Complex kz0 = ComplexSqrtImPos(ComplexSub(one, sum));
+    const Complex kz = ComplexSqrt_RCWA(ComplexSub(eps, sum));
+    const Complex kz0 = ComplexSqrt_RCWA(ComplexSub(one, sum));
 
     const Real tiny = static_cast<Real>(1e-12);
     if (ComplexAbs(kz) <= tiny || ComplexAbs(kz0) <= tiny)
@@ -425,7 +425,7 @@ __global__ void BuildKzKernel(const Complex* kx,
     const Complex kyv = ky[idx];
     const Complex sum = ComplexAdd(ComplexMul(kxv, kxv), ComplexMul(kyv, kyv));
     const Complex diff = ComplexSub(eps, sum);
-    Complex kzz = ComplexSqrtImPos(diff);
+    Complex kzz = ComplexSqrt_RCWA(diff);
 
     if (!input_layer)
     {
@@ -594,7 +594,7 @@ __global__ void BuildV0Kernel(const Complex* kx_diag,
     const Complex ky2 = ComplexMul(ky, ky);
     const Complex sum = ComplexAdd(kx2, ky2);
     const Complex diff = ComplexSub(eps, sum);
-    Complex kz = ComplexSqrtImPos(diff);
+    Complex kz = ComplexSqrt_RCWA(diff);
     const Complex kz_inv = ComplexReciprocal(kz);
     const Complex kxky = ComplexMul(kx, ky);
     v0_11[idx] = ComplexMul(make_complex(-1.0, 0.0), ComplexMul(kxky, kz_inv));
