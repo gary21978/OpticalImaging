@@ -2070,6 +2070,17 @@ Status RCWA::SolveGlobalSMatrix()
     return status;
 }
 
+Status RCWA::RepeatCurrentStackSMatrix(int repeats)
+{
+    if (!HasSMatrix(stack_smatrix_))
+    {
+        return Status::kInvalidValue;
+    }
+
+    FreeGlobalSMatrix();
+    return RepeatSMatrix(&stack_smatrix_, repeats, 2 * order_N_);
+}
+
 Status RCWA::FieldXY(const Real* x_axis,
                      int64_t x_count,
                      const Real* y_axis,
@@ -2309,7 +2320,6 @@ Status RCWA::BuildPQ(const Complex* eps_conv, int64_t n, Complex* P, Complex* Q)
     return Status::kSuccess;
 }
 
-#if 0
 Status RCWA::RepeatSMatrix(SMatrix* S, int repeats, int64_t n)
 {
     if (!S || repeats <= 0 || n <= 0)
@@ -2378,61 +2388,3 @@ Status RCWA::RepeatSMatrix(SMatrix* S, int repeats, int64_t n)
     CHECK(CopyMatrix(S->S_11, S->S_22, n, stream_));
     return Status::kSuccess;
 }
-#else
-Status RCWA::RepeatSMatrix(SMatrix* S, int repeats, int64_t n)
-{
-    if (!S || repeats <= 0 || n <= 0)
-    {
-        return Status::kInvalidValue;
-    }
-    if (!S->S_11 || !S->S_12 || !S->S_21 || !S->S_22)
-    {
-        return Status::kInvalidValue;
-    }
-
-    ComplexMatrixOps ops(stream_);
-    CHECK(ops.SetStream(stream_));
-
-    DeviceMatrix I;
-    CHECK(I.Allocate(n, n));
-    CHECK(MakeIdentity(I.get(), n, stream_));
-
-    DeviceMatrix S12S12;
-    DeviceMatrix R;
-    DeviceMatrix S12S11;
-    DeviceMatrix X;
-    DeviceMatrix S11X;
-    DeviceMatrix newS12;
-    DeviceMatrix Y;
-    DeviceMatrix newS11;
-
-    for (int i = 0; i < repeats; ++i)
-    {
-        CHECK(S12S12.Allocate(n, n));
-        CHECK(MatMul(ops, S->S_12, S->S_12, S12S12.get(), n));
-        CHECK(R.Allocate(n, n));
-        CHECK(SubMatrix(ops, I.get(), S12S12.get(), R.get(), n));
-
-        CHECK(S12S11.Allocate(n, n));
-        CHECK(MatMul(ops, S->S_12, S->S_11, S12S11.get(), n));
-        CHECK(X.Allocate(n, n));
-        CHECK(ops.Solve(R.get(), S12S11.get(), X.get(), n));
-        CHECK(S11X.Allocate(n, n));
-        CHECK(MatMul(ops, S->S_11, X.get(), S11X.get(), n));
-        CHECK(newS12.Allocate(n, n));
-        CHECK(AddMatrix(ops, S->S_12, S11X.get(), newS12.get(), n));
-
-        CHECK(Y.Allocate(n, n));
-        CHECK(ops.Solve(R.get(), S->S_11, Y.get(), n));
-        CHECK(newS11.Allocate(n, n));
-        CHECK(MatMul(ops, S->S_11, Y.get(), newS11.get(), n));
-
-        CHECK(CopyMatrix(newS11.get(), S->S_11, n, stream_));
-        CHECK(CopyMatrix(newS12.get(), S->S_12, n, stream_));
-    }
-
-    CHECK(CopyMatrix(S->S_12, S->S_21, n, stream_));
-    CHECK(CopyMatrix(S->S_11, S->S_22, n, stream_));
-    return Status::kSuccess;
-}
-#endif

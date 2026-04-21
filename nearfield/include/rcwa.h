@@ -94,6 +94,7 @@ class RCWA
                          int64_t n,
                          SMatrix* S,
                          cudaStream_t stream = nullptr) const;
+    Status RepeatCurrentStackSMatrix(int repeats);
 
     int64_t order_N() const { return order_N_; }
     const SMatrix& global_smatrix() const { return global_smatrix_; }
