@@ -336,7 +336,7 @@ __device__ inline Complex2x2 Mat2x2Scale(const Complex2x2& A, Complex scalar)
  *   1/(ad-bc) * [d  -b]
  *               [-c  a]
  */
-__device__ inline Complex2x2 Mat2x2Inv(const Complex2x2& A, bool& success)
+__device__ inline Complex2x2 Mat2x2Inv(const Complex2x2& A)
 {
     // Compute determinant: det = a00*a11 - a01*a10
     Complex det = ComplexSub(
@@ -348,9 +348,7 @@ __device__ inline Complex2x2 Mat2x2Inv(const Complex2x2& A, bool& success)
     Real det_magnitude = ComplexAbs(det);
     const Real epsilon = 1e-15;
     
-    success = (det_magnitude >= epsilon);
-    
-    if (!success)
+    if (det_magnitude < epsilon)
     {
         return Complex2x2();  // Return zero matrix on failure
     }

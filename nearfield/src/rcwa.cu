@@ -260,23 +260,11 @@ __global__ void BuildHomogeneousSBlocksKernel(const Complex* __restrict__ kx_dia
     Complex2x2 tmp = Mat2x2Add(I, U);
     Complex2x2 B = Mat2x2Scale(tmp, u);
 
-    bool ok = false;
-    tmp = Mat2x2Inv(A, ok);
-    if (!ok)
-    {
-        return;
-    }
-
+    tmp = Mat2x2Inv(A);
     const Complex2x2 G = Mat2x2Mul(B, tmp);
     tmp = Mat2x2Mul(G, B);
     A = Mat2x2Sub(A, tmp);
-
-    tmp = Mat2x2Inv(A, ok);
-    if (!ok)
-    {
-        return;
-    }
-
+    tmp = Mat2x2Inv(A);
     const Complex2x2 C = Mat2x2Scale(tmp, two);
     tmp = Mat2x2Mul(C, G);
     const Complex2x2 D = Mat2x2Scale(tmp, neg_one);
@@ -348,38 +336,27 @@ __global__ void BuildPortSBlocksKernel(const Complex* __restrict__ v0_11,
     const Complex2x2 Vsum = Mat2x2Add(Vp, V0);
     const Complex2x2 Vdiff = Mat2x2Sub(Vp, V0);
 
-    bool ok = false;
-    const Complex2x2 Vsum_inv = Mat2x2Inv(Vsum, ok);
+    const Complex2x2 Vsum_inv = Mat2x2Inv(Vsum);
 
     Complex2x2 S11_block;
     Complex2x2 S12_block;
     Complex2x2 S21_block;
     Complex2x2 S22_block;
 
-    if (!ok)
+    const Complex2x2 coupling = Mat2x2Mul(Vsum_inv, Vdiff);
+    if (input_port)
     {
-        S11_block = I;
-        S12_block = Complex2x2();
-        S21_block = Complex2x2();
-        S22_block = I;
+        S11_block = Mat2x2Scale(Mat2x2Mul(Vsum_inv, Vp), two);
+        S12_block = Mat2x2Scale(coupling, minus_one);
+        S21_block = coupling;
+        S22_block = Mat2x2Scale(Mat2x2Mul(Vsum_inv, V0), two);
     }
     else
     {
-        const Complex2x2 coupling = Mat2x2Mul(Vsum_inv, Vdiff);
-        if (input_port)
-        {
-            S11_block = Mat2x2Scale(Mat2x2Mul(Vsum_inv, Vp), two);
-            S12_block = Mat2x2Scale(coupling, minus_one);
-            S21_block = coupling;
-            S22_block = Mat2x2Scale(Mat2x2Mul(Vsum_inv, V0), two);
-        }
-        else
-        {
-            S11_block = Mat2x2Scale(Mat2x2Mul(Vsum_inv, V0), two);
-            S12_block = coupling;
-            S21_block = Mat2x2Scale(coupling, minus_one);
-            S22_block = Mat2x2Scale(Mat2x2Mul(Vsum_inv, Vp), two);
-        }
+        S11_block = Mat2x2Scale(Mat2x2Mul(Vsum_inv, V0), two);
+        S12_block = coupling;
+        S21_block = Mat2x2Scale(coupling, minus_one);
+        S22_block = Mat2x2Scale(Mat2x2Mul(Vsum_inv, Vp), two);
     }
 
     const int64_t row0 = idx;
@@ -832,14 +809,8 @@ Status RCWA::BuildPortSMatrix(Complex eps, bool input_port, SMatrix* S, cudaStre
     CHECK(port22.Allocate(static_cast<size_t>(n)));
 
     const int blocks = static_cast<int>((n + CUDA_THREADS - 1) / CUDA_THREADS);
-    BuildV0Kernel<<<blocks, CUDA_THREADS, 0, use_stream>>>(kx_diag_,
-                                                            ky_diag_,
-                                                            eps,
-                                                            port11.get(),
-                                                            port12.get(),
-                                                            port21.get(),
-                                                            port22.get(),
-                                                            n);
+    BuildV0Kernel<<<blocks, CUDA_THREADS, 0, use_stream>>>(
+        kx_diag_, ky_diag_, eps, port11.get(), port12.get(), port21.get(), port22.get(), n);
     CHECK(StatusFromCuda(cudaGetLastError()));
 
     DeviceMatrix S11;
@@ -1697,18 +1668,10 @@ Status RCWA::AddLayerHomogeneous(Real thickness, Complex eps)
     CHECK(StatusFromCuda(cudaMemsetAsync(S21.get(), 0, matrix_bytes, stream_)));
     CHECK(StatusFromCuda(cudaMemsetAsync(S22.get(), 0, matrix_bytes, stream_)));
 
-
     const Real k0d = omega_ * thickness;
     const int blocks = static_cast<int>((n + CUDA_THREADS - 1) / CUDA_THREADS);
-    BuildHomogeneousSBlocksKernel<<<blocks, CUDA_THREADS, 0, stream_>>>(kx_diag_,
-                                                                        ky_diag_,
-                                                                        eps,
-                                                                        k0d,
-                                                                        S11.get(),
-                                                                        S12.get(),
-                                                                        S21.get(),
-                                                                        S22.get(),
-                                                                        n);
+    BuildHomogeneousSBlocksKernel<<<blocks, CUDA_THREADS, 0, stream_>>>(
+        kx_diag_, ky_diag_, eps, k0d, S11.get(), S12.get(), S21.get(), S22.get(), n);
     CHECK(StatusFromCuda(cudaGetLastError()));
 
     SMatrix S{};
@@ -1795,10 +1758,10 @@ Status RCWA::MaterialConv(const Complex* material,
 
     CufftPlan plan;
 #if USE_DOUBLE_PRECISION
-        CHECK(StatusFromCufft(
+    CHECK(StatusFromCufft(
         cufftPlan2d(&plan.handle, static_cast<int>(nx), static_cast<int>(ny), CUFFT_Z2Z)));
 #else
-        CHECK(StatusFromCufft(
+    CHECK(StatusFromCufft(
         cufftPlan2d(&plan.handle, static_cast<int>(nx), static_cast<int>(ny), CUFFT_C2C)));
 #endif
     CHECK(StatusFromCufft(cufftSetStream(plan.handle, use_stream)));
@@ -1887,8 +1850,8 @@ Status RCWA::RSProd(const SMatrix& Sm,
     {
         DeviceMatrix S11;
         CHECK(S11.Allocate(n, n));
-        CHECK(StatusFromCuda(
-            cudaMemsetAsync(S11.get(), 0, static_cast<size_t>(n) * n * sizeof(Complex), use_stream)));
+        CHECK(StatusFromCuda(cudaMemsetAsync(
+            S11.get(), 0, static_cast<size_t>(n) * n * sizeof(Complex), use_stream)));
 
         DeviceMatrix S12;
         CHECK(S12.Allocate(n, n));
@@ -2229,12 +2192,11 @@ Status RCWA::BuildPQ(const Complex* eps_conv, int64_t n, Complex* P, Complex* Q)
     CHECK(EiKx.Allocate(n, n));
     CHECK(EiKy.Allocate(n, n));
 
-
-    //const Status solve_kx = ops.Solve(eps_conv, KxMat.get(), EiKx.get(), n);
-    //const Status solve_ky = ops.Solve(eps_conv, KyMat.get(), EiKy.get(), n);
-    // Optimized: merge KxMat and KyMat into one 2n-column RHS so that eps_conv is
-    // LU-factorized only once.  combined = [KxMat | KyMat], solve in-place, then
-    // split the solution back into EiKx (left half) and EiKy (right half).
+    // const Status solve_kx = ops.Solve(eps_conv, KxMat.get(), EiKx.get(), n);
+    // const Status solve_ky = ops.Solve(eps_conv, KyMat.get(), EiKy.get(), n);
+    //  Optimized: merge KxMat and KyMat into one 2n-column RHS so that eps_conv is
+    //  LU-factorized only once.  combined = [KxMat | KyMat], solve in-place, then
+    //  split the solution back into EiKx (left half) and EiKy (right half).
     const int64_t nrhs = 2 * n;
     DeviceMatrix combined;
     CHECK(combined.Allocate(n, nrhs));
@@ -2249,11 +2211,8 @@ Status RCWA::BuildPQ(const Complex* eps_conv, int64_t n, Complex* P, Complex* Q)
         // In column-major (ld=n), columns 0..n-1 occupy elements [0, n*n-1] and
         // columns n..2n-1 occupy elements [n*n, 2*n*n-1] — both regions are contiguous.
         const size_t half_bytes = static_cast<size_t>(n) * static_cast<size_t>(n) * sizeof(Complex);
-        CHECK(StatusFromCuda(cudaMemcpyAsync(EiKx.get(),
-                                             combined.get(),
-                                             half_bytes,
-                                             cudaMemcpyDeviceToDevice,
-                                             stream_)));
+        CHECK(StatusFromCuda(cudaMemcpyAsync(
+            EiKx.get(), combined.get(), half_bytes, cudaMemcpyDeviceToDevice, stream_)));
         CHECK(StatusFromCuda(cudaMemcpyAsync(EiKy.get(),
                                              combined.get() + static_cast<size_t>(n) * n,
                                              half_bytes,
@@ -2365,11 +2324,8 @@ Status RCWA::RepeatSMatrix(SMatrix* S, int repeats, int64_t n)
         CHECK(S11XY.Allocate(n, rhs_cols));
         CHECK(ops.MatMul(S->S_11, rhs.get(), S11XY.get(), n, rhs_cols, n));
 
-        CHECK(StatusFromCuda(cudaMemcpyAsync(S->S_21,
-                                             S11XY.get(),
-                                             half_bytes,
-                                             cudaMemcpyDeviceToDevice,
-                                             stream_)));
+        CHECK(StatusFromCuda(
+            cudaMemcpyAsync(S->S_21, S11XY.get(), half_bytes, cudaMemcpyDeviceToDevice, stream_)));
         CHECK(AddInPlace(ops, S->S_21, S->S_12, n));
 
         CHECK(StatusFromCuda(cudaMemcpyAsync(S->S_22,
