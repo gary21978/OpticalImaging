@@ -2,10 +2,127 @@
 #include <chrono>
 #include <cstdint>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <limits>
+#include <sstream>
+#include <string>
 #include <vector>
 
 #include "rcwa.h"
+
+namespace
+{
+using Clock = std::chrono::steady_clock;
+
+double ElapsedMillis(const Clock::time_point& start, const Clock::time_point& end)
+{
+    return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
+std::string FormatComplexCompact(const Complex& value)
+{
+    double real = static_cast<double>(ComplexReal(value));
+    double imag = static_cast<double>(ComplexImag(value));
+    const double eps = static_cast<double>(std::numeric_limits<Real>::epsilon()) * 10.0;
+
+    if (std::abs(real) <= eps)
+    {
+        real = 0.0;
+    }
+    if (std::abs(imag) <= eps)
+    {
+        imag = 0.0;
+    }
+
+    std::ostringstream oss;
+    oss << std::setprecision(6);
+
+    if (imag == 0.0)
+    {
+        oss << real;
+        return oss.str();
+    }
+    if (real == 0.0)
+    {
+        oss << imag << "i";
+        return oss.str();
+    }
+
+    oss << real;
+    if (imag > 0.0)
+    {
+        oss << "+";
+    }
+    oss << imag << "i";
+    return oss.str();
+}
+
+void PrintTopLeft2x2Compact(const char* name, const Complex* device_matrix, int n)
+{
+    const size_t element_count = static_cast<size_t>(n) * static_cast<size_t>(n);
+    std::vector<Complex> host_matrix(element_count);
+    const cudaError_t copy_status = cudaMemcpy(host_matrix.data(),
+                                               device_matrix,
+                                               element_count * sizeof(Complex),
+                                               cudaMemcpyDeviceToHost);
+    if (copy_status != cudaSuccess)
+    {
+        std::cerr << "ERROR: failed to copy " << name << ": "
+                  << cudaGetErrorString(copy_status) << std::endl;
+        std::exit(EXIT_FAILURE);
+    }
+
+    std::cout << name << " =\n";
+    constexpr int limit = 2;
+    std::vector<std::string> formatted(limit * limit);
+    std::vector<size_t> widths(limit, 0);
+
+    for (int row = 0; row < limit; ++row)
+    {
+        for (int col = 0; col < limit; ++col)
+        {
+            const size_t idx = static_cast<size_t>(col) * limit + row;
+            formatted[idx] = FormatComplexCompact(host_matrix[static_cast<size_t>(col) * n + row]);
+            widths[static_cast<size_t>(col)] =
+                std::max(widths[static_cast<size_t>(col)], formatted[idx].size());
+        }
+    }
+
+    for (int row = 0; row < limit; ++row)
+    {
+        for (int col = 0; col < limit; ++col)
+        {
+            const size_t idx = static_cast<size_t>(col) * limit + row;
+            std::cout << std::setw(static_cast<int>(widths[static_cast<size_t>(col)]))
+                      << formatted[idx];
+            if (col + 1 < limit)
+            {
+                std::cout << "  ";
+            }
+        }
+        std::cout << std::endl;
+    }
+}
+
+void PrintGlobalSMatrixTopLeft2x2(const SMatrix& s, int n_smatrix)
+{
+    PrintTopLeft2x2Compact("S_11(2x2)", s.S_11, n_smatrix);
+    PrintTopLeft2x2Compact("S_12(2x2)", s.S_12, n_smatrix);
+    PrintTopLeft2x2Compact("S_21(2x2)", s.S_21, n_smatrix);
+    PrintTopLeft2x2Compact("S_22(2x2)", s.S_22, n_smatrix);
+}
+
+void RequireStatus(Status status, const char* step)
+{
+    if (status != Status::kSuccess)
+    {
+        std::cerr << "ERROR: " << step << " failed with status " << static_cast<int>(status)
+                  << std::endl;
+        std::exit(EXIT_FAILURE);
+    }
+}
+} // namespace
 
 __global__ void MagnitudeKernel(const Complex* input, Real* output, int64_t count)
 {
@@ -368,13 +485,13 @@ int main()
               << "single" << std::endl;
 #endif
 
-    using Clock = std::chrono::high_resolution_clock;
+    const auto t_pipeline_start = Clock::now();
 
     const Real period_x = 3000.0;
     const Real period_y = 1500.0;
     const Real wavelength = 365.0;
     const Real freq = 1.0 / wavelength;
-    const int order = 9;
+    const int order = 13;
     const int order_x = order;
     const int order_y = order;
 
@@ -387,8 +504,8 @@ int main()
     std::vector<Real> geometry;
     const auto t_geom_start = Clock::now();
     LoadGeometry(geometry, geom_x, geom_y);
-    const auto t_geom_end = Clock::now();
     WriteMaskPng("geometry_mask.png", geometry, geom_x, geom_y);
+    const double t_geometry = ElapsedMillis(t_geom_start, Clock::now());
 
     DeviceBuffer d_material;
     cudaMalloc(reinterpret_cast<void**>(&d_material.ptr),
@@ -418,35 +535,29 @@ int main()
         Complex* eps_conv = nullptr;
 
         auto t_conv_start = Clock::now();
-        rcwa.MaterialConv(d_material.get(), geom_x, geom_y, &eps_conv);
-        auto t_conv_end = Clock::now();
-        t_conv += std::chrono::duration<double, std::milli>(t_conv_end - t_conv_start).count();
+        RequireStatus(rcwa.MaterialConv(d_material.get(), geom_x, geom_y, &eps_conv),
+                      "MaterialConv");
+        t_conv += ElapsedMillis(t_conv_start, Clock::now());
 
         auto t_addlayer_start = Clock::now();
-        rcwa.AddLayer(thicknesses[i], eps_conv);
-        auto t_addlayer_end = Clock::now();
-        t_scatter +=
-            std::chrono::duration<double, std::milli>(t_addlayer_end - t_addlayer_start).count();
+        RequireStatus(rcwa.AddLayer(thicknesses[i], eps_conv), "AddLayer");
+        t_scatter += ElapsedMillis(t_addlayer_start, Clock::now());
         SAFEFREE(eps_conv);
     }
 
     const auto t_hom_start = Clock::now();
-    rcwa.AddLayerHomogeneous(20.0, n_SIN * n_SIN);
-    rcwa.AddLayerHomogeneous(5.0, n_sub * n_sub);
-    const auto t_hom_end = Clock::now();
-    const auto t_hom = std::chrono::duration<double, std::milli>(t_hom_end - t_hom_start).count();
+    RequireStatus(rcwa.AddLayerHomogeneous(20.0, n_SIN * n_SIN), "AddLayerHomogeneous SIN");
+    RequireStatus(rcwa.AddLayerHomogeneous(5.0, n_sub * n_sub), "AddLayerHomogeneous substrate");
+    const double t_hom = ElapsedMillis(t_hom_start, Clock::now());
 
     const auto t_global_start = Clock::now();
-    rcwa.SolveGlobalSMatrix();
-    const auto t_global_end = Clock::now();
-    const auto t_global =
-        std::chrono::duration<double, std::milli>(t_global_end - t_global_start).count();
+    RequireStatus(rcwa.SolveGlobalSMatrix(), "SolveGlobalSMatrix");
+    const double t_global = ElapsedMillis(t_global_start, Clock::now());
+    PrintGlobalSMatrixTopLeft2x2(rcwa.global_smatrix(), static_cast<int>(2 * rcwa.order_N()));
 
     const auto t_source_start = Clock::now();
-    rcwa.SourcePlanewave(0.0, 1.0, "forward");
-    const auto t_source_end = Clock::now();
-    const auto t_source =
-        std::chrono::duration<double, std::milli>(t_source_end - t_source_start).count();
+    RequireStatus(rcwa.SourcePlanewave(0.0, 1.0, "forward"), "SourcePlanewave");
+    const double t_source = ElapsedMillis(t_source_start, Clock::now());
 
     const int scatter_x = 256;
     const int scatter_y = 128;
@@ -465,10 +576,9 @@ int main()
     Complex* Ey = nullptr;
     Complex* Ez = nullptr;
     const auto t_field_start = Clock::now();
-    rcwa.FieldXY(xs.data(), scatter_x, ys.data(), scatter_y, &Ex, &Ey, &Ez);
-    const auto t_field_end = Clock::now();
-    const auto t_field =
-        std::chrono::duration<double, std::milli>(t_field_end - t_field_start).count();
+    RequireStatus(rcwa.FieldXY(xs.data(), scatter_x, ys.data(), scatter_y, &Ex, &Ey, &Ez),
+                  "FieldXY");
+    const double t_field = ElapsedMillis(t_field_start, Clock::now());
 
     std::vector<Real> host_mag;
     DeviceRealBuffer device_mag;
@@ -478,18 +588,22 @@ int main()
     SaveFieldImage("scatter_ez.png", Ez, scatter_x, scatter_y, host_mag, device_mag);
     SaveIntensityImage(
         "scatter_intensity.png", Ex, Ey, Ez, scatter_x, scatter_y, host_mag, device_mag);
-    const auto t_image_end = Clock::now();
-    const auto t_image =
-        std::chrono::duration<double, std::milli>(t_image_end - t_image_start).count();
+    const double t_image = ElapsedMillis(t_image_start, Clock::now());
 
-    printf("conv\t%.1f ms\nscatter\t%.1f ms\nhomo\t%.1f ms\nglobal\t%.1f ms\nfield\t%.1f "
-           "ms\nimage\t%.1f ms\n",
+    const double t_pipeline_wall = ElapsedMillis(t_pipeline_start, Clock::now());
+
+    printf("geometry\t%.1f ms\nconv\t%.1f ms\nscatter\t%.1f ms\nhomo\t%.1f ms\n"
+           "global\t%.1f ms\nsource\t%.1f ms\nfield\t%.1f ms\nimage\t%.1f ms\n"
+           "pipeline_wall\t%.1f ms\n",
+           t_geometry,
            t_conv,
            t_scatter,
            t_hom,
            t_global,
+           t_source,
            t_field,
-           t_image);
+           t_image,
+           t_pipeline_wall);
 
     rcwa.FreeDeviceTensor(Ex);
     rcwa.FreeDeviceTensor(Ey);
