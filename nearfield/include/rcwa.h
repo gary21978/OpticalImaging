@@ -89,6 +89,11 @@ class RCWA
                                  Real k0d,
                                  TMatrix* T,
                                  cudaStream_t stream = nullptr) const;
+    Status ComputeCosSinFromThetaOrder12(const Complex* Theta,
+                                          int64_t n,
+                                          Complex* Cos,
+                                          Complex* Sin,
+                                          cudaStream_t stream = nullptr) const;
     Status ComputeCosSinFromThetaOrder18(const Complex* Theta,
                                           int64_t n,
                                           Complex* Cos,

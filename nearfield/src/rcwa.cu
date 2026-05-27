@@ -1271,16 +1271,169 @@ Status RCWA::ComputeTFromPQOrder18(const Complex* P,
     return Status::kSuccess;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Compute cos(Θ) and sin(Θ) via block-structured [9/9] Padé + scaling/squaring.
-//
-// Exploits the identity:
-//   exp([0, −Θ; Θ, 0]) = [cos(Θ), −sin(Θ); sin(Θ), cos(Θ)]
-//
-// Uses the same kExpConstantOrder18 table and Case II block simplification:
-// even powers are block-diagonal (±Θ²ᵏ), odd powers are block-off-diagonal.
-// No matrix inversions — better numerical stability than Padé + inv.
-// ─────────────────────────────────────────────────────────────────────────────
+Status RCWA::ComputeCosSinFromThetaOrder12(const Complex* Theta,
+                                            int64_t n,
+                                            Complex* Cos,
+                                            Complex* Sin,
+                                            cudaStream_t stream) const
+{
+    if (!Theta || !Cos || !Sin || n <= 0) { return Status::kInvalidValue; }
+
+    cudaStream_t use_stream = stream ? stream : stream_;
+    ComplexMatrixOps ops(use_stream);
+    CHECK(ops.SetStream(use_stream));
+
+    // Scaling factor
+    double ThetaNorm = 0.0;
+    CHECK(ComputeMatrixNorm1(Theta, n, &ThetaNorm, use_stream));
+    int m = 0;
+    if (ThetaNorm > 0.0)
+    {
+        m = static_cast<int>(std::ceil(std::log2(ThetaNorm)));
+        if (m < 0) { m = 0; }
+    }
+    const Complex scale = make_complex(static_cast<Real>(std::pow(2.0, -m)), 0.0);
+    const Complex neg_one = make_complex(-1.0, 0.0);
+
+    // ── Phase 1: block powers  A¹, A², A³ ───────────────────────────────
+    DeviceMatrix A1;
+    CHECK(A1.Allocate(n, n));
+    CHECK(ScaleMatrix(Theta, A1.get(), n, scale, use_stream));
+
+    DeviceMatrix A2;
+    CHECK(A2.Allocate(n, n));
+    CHECK(MatMul(ops, A1.get(), A1.get(), A2.get(), n));
+
+    DeviceMatrix A3;
+    CHECK(A3.Allocate(n, n));
+    CHECK(MatMul(ops, A1.get(), A2.get(), A3.get(), n));
+
+    // ── Phase 2: intermediate matrices B₁⁽ⁱ⁾, B₂⁽ⁱ⁾  (i=0..3) ──────────
+    DeviceMatrix I_mat;
+    CHECK(I_mat.Allocate(n, n));
+    CHECK(MakeIdentity(I_mat.get(), n, use_stream));
+
+    // Pre-allocate scratch workspace once, reused throughout
+    DeviceMatrix scratch;
+    CHECK(scratch.Allocate(n, n));
+
+    DeviceMatrix B1[4], B2[4];
+    for (int i = 0; i < 4; ++i)
+    {
+        const Complex c0 = make_complex(static_cast<Real>(kExpConstantOrder12[i][0]), 0.0);
+        const Complex c1 = make_complex(static_cast<Real>(kExpConstantOrder12[i][1]), 0.0);
+        const Complex c2 = make_complex(static_cast<Real>(kExpConstantOrder12[i][2]), 0.0);
+        const Complex c3 = make_complex(static_cast<Real>(kExpConstantOrder12[i][3]), 0.0);
+
+        // B₁⁽ⁱ⁾ = a₀ᵢ·I − a₂ᵢ·A²
+        CHECK(B1[i].Allocate(n, n));
+        CHECK(ScaleMatrix(I_mat.get(), B1[i].get(), n, c0, use_stream));
+        CHECK(ScaleMatrix(A2.get(), scratch.get(), n,
+                          make_complex(-ComplexReal(c2), -ComplexImag(c2)), use_stream));
+        CHECK(AddInPlace(ops, B1[i].get(), scratch.get(), n));
+
+        // B₂⁽ⁱ⁾ = a₁ᵢ·A¹ − a₃ᵢ·A³
+        CHECK(B2[i].Allocate(n, n));
+        CHECK(ScaleMatrix(A1.get(), B2[i].get(), n, c1, use_stream));
+        CHECK(ScaleMatrix(A3.get(), scratch.get(), n,
+                          make_complex(-ComplexReal(c3), -ComplexImag(c3)), use_stream));
+        CHECK(AddInPlace(ops, B2[i].get(), scratch.get(), n));
+    }
+
+    A1.Reset();
+    A2.Reset();
+    A3.Reset();
+    I_mat.Reset();
+
+    // ── Phase 3: combine to get scaled Cos/Sin ──────────────────────────
+    //  A₁⁽⁶⁾ = B₁⁽³⁾·B₁⁽³⁾ − B₂⁽³⁾·B₂⁽³⁾ + B₁⁽²⁾
+    //  A₂⁽⁶⁾ = B₂⁽³⁾·B₁⁽³⁾ + B₁⁽³⁾·B₂⁽³⁾ + B₂⁽²⁾
+    DeviceMatrix A6_1, A6_2;
+    CHECK(A6_1.Allocate(n, n));
+    CHECK(MatMul(ops, B1[3].get(), B1[3].get(), A6_1.get(), n));
+    CHECK(MatMul(ops, B2[3].get(), B2[3].get(), scratch.get(), n));
+    CHECK(ScaleMatrix(scratch.get(), scratch.get(), n, neg_one, use_stream));
+    CHECK(AddInPlace(ops, A6_1.get(), scratch.get(), n));
+    CHECK(AddInPlace(ops, A6_1.get(), B1[2].get(), n));
+
+    CHECK(A6_2.Allocate(n, n));
+    CHECK(MatMul(ops, B2[3].get(), B1[3].get(), A6_2.get(), n));
+    CHECK(MatMul(ops, B1[3].get(), B2[3].get(), scratch.get(), n));
+    CHECK(AddInPlace(ops, A6_2.get(), scratch.get(), n));
+    CHECK(AddInPlace(ops, A6_2.get(), B2[2].get(), n));
+
+    // Recycle dead B matrices: B1[2], B2[2], B1[3], B2[3] are dead after A6
+    // computation.  Reuse their memory as workspace for the C/S assembly.
+    //
+    //  C = B₁⁽⁰⁾ + (B₁⁽¹⁾+A₁⁽⁶⁾)·A₁⁽⁶⁾ − (B₂⁽¹⁾+A₂⁽⁶⁾)·A₂⁽⁶⁾
+    //  S = B₂⁽⁰⁾ + (B₂⁽¹⁾+A₂⁽⁶⁾)·A₁⁽⁶⁾ + (B₁⁽¹⁾+A₁⁽⁶⁾)·A₂⁽⁶⁾
+
+    // ws1 = B1[1] + A6_1  (→ B1[2])
+    Complex* ws1 = B1[2].get();
+    CHECK(AddMatrix(ops, B1[1].get(), A6_1.get(), ws1, n));
+
+    // ws2 = B2[1] + A6_2  (→ B2[2])
+    Complex* ws2 = B2[2].get();
+    CHECK(AddMatrix(ops, B2[1].get(), A6_2.get(), ws2, n));
+
+    // P1 = ws1 × A6_1  (→ B1[3])
+    Complex* ws3 = B1[3].get();
+    CHECK(MatMul(ops, ws1, A6_1.get(), ws3, n));
+
+    // P2 = ws2 × A6_2  (→ B2[3])
+    Complex* ws4 = B2[3].get();
+    CHECK(MatMul(ops, ws2, A6_2.get(), ws4, n));
+
+    // C = B1[0] + P1 − P2
+    DeviceMatrix C;
+    CHECK(C.Allocate(n, n));
+    CHECK(AddMatrix(ops, B1[0].get(), ws3, C.get(), n));
+    CHECK(ScaleMatrix(ws4, scratch.get(), n, neg_one, use_stream));
+    CHECK(AddInPlace(ops, C.get(), scratch.get(), n));
+
+    // P1, P2 are dead now — reuse ws3, ws4 for the S assembly multiplies
+    // P3 = ws2 × A6_1  (→ B1[3], overwrites P1)
+    CHECK(MatMul(ops, ws2, A6_1.get(), ws3, n));
+
+    // P4 = ws1 × A6_2  (→ B2[3], overwrites P2)
+    CHECK(MatMul(ops, ws1, A6_2.get(), ws4, n));
+
+    // S = B2[0] + P3 + P4
+    DeviceMatrix S;
+    CHECK(S.Allocate(n, n));
+    CHECK(AddMatrix(ops, B2[0].get(), ws3, S.get(), n));
+    CHECK(AddInPlace(ops, S.get(), ws4, n));
+
+    // ── Phase 4: repeated squaring ──────────────────────────────────────
+    DeviceMatrix tmpC, tmpS;
+    for (int i = 0; i < m; ++i)
+    {
+        // C_new = C² − S²
+        CHECK(tmpC.Allocate(n, n));
+        CHECK(MatMul(ops, C.get(), C.get(), tmpC.get(), n));
+        CHECK(MatMul(ops, S.get(), S.get(), scratch.get(), n));
+        CHECK(ScaleMatrix(scratch.get(), scratch.get(), n, neg_one, use_stream));
+        CHECK(AddInPlace(ops, tmpC.get(), scratch.get(), n));
+
+        // S_new = 2·C·S
+        CHECK(tmpS.Allocate(n, n));
+        CHECK(MatMul(ops, C.get(), S.get(), tmpS.get(), n));
+        {
+            const Complex two = make_complex(2.0, 0.0);
+            CHECK(ScaleInPlace(tmpS.get(), n, two, use_stream));
+        }
+
+        C.Swap(tmpC);
+        S.Swap(tmpS);
+    }
+
+    // Copy results to output
+    const size_t bytes = static_cast<size_t>(n) * static_cast<size_t>(n) * sizeof(Complex);
+    CHECK(StatusFromCuda(cudaMemcpyAsync(Cos, C.get(), bytes, cudaMemcpyDeviceToDevice, use_stream)));
+    CHECK(StatusFromCuda(cudaMemcpyAsync(Sin, S.get(), bytes, cudaMemcpyDeviceToDevice, use_stream)));
+    return Status::kSuccess;
+}
+
 Status RCWA::ComputeCosSinFromThetaOrder18(const Complex* Theta,
                                             int64_t n,
                                             Complex* Cos,
@@ -1327,8 +1480,11 @@ Status RCWA::ComputeCosSinFromThetaOrder18(const Complex* Theta,
     CHECK(I_mat.Allocate(n, n));
     CHECK(MakeIdentity(I_mat.get(), n, use_stream));
 
-    DeviceMatrix B1[5], B2[5];
+    // Pre-allocate scratch workspace once, reused throughout
     DeviceMatrix scratch;
+    CHECK(scratch.Allocate(n, n));
+
+    DeviceMatrix B1[5], B2[5];
     for (int i = 0; i < 5; ++i)
     {
         const Complex c0 = make_complex(static_cast<Real>(kExpConstantOrder18[i][0]), 0.0);
@@ -1340,7 +1496,6 @@ Status RCWA::ComputeCosSinFromThetaOrder18(const Complex* Theta,
         // B₁⁽ⁱ⁾ = a₀ᵢ·I − a₂ᵢ·A² − a₄ᵢ·A⁶
         CHECK(B1[i].Allocate(n, n));
         CHECK(ScaleMatrix(I_mat.get(), B1[i].get(), n, c0, use_stream));
-        CHECK(scratch.Allocate(n, n));
         CHECK(ScaleMatrix(A2.get(), scratch.get(), n,
                           make_complex(-ComplexReal(c2), -ComplexImag(c2)), use_stream));
         CHECK(AddInPlace(ops, B1[i].get(), scratch.get(), n));
@@ -1360,6 +1515,7 @@ Status RCWA::ComputeCosSinFromThetaOrder18(const Complex* Theta,
     A2.Reset();
     A3.Reset();
     A6.Reset();
+    I_mat.Reset();
 
     // ── Phase 3: combine to get scaled Cos/Sin ──────────────────────────
     //  A₁⁽⁹⁾ = B₁⁽⁰⁾·B₁⁽⁴⁾ − B₂⁽⁰⁾·B₂⁽⁴⁾ + B₁⁽³⁾
@@ -1367,7 +1523,6 @@ Status RCWA::ComputeCosSinFromThetaOrder18(const Complex* Theta,
     DeviceMatrix A9_1, A9_2;
     CHECK(A9_1.Allocate(n, n));
     CHECK(MatMul(ops, B1[0].get(), B1[4].get(), A9_1.get(), n));
-    CHECK(scratch.Allocate(n, n));
     CHECK(MatMul(ops, B2[0].get(), B2[4].get(), scratch.get(), n));
     CHECK(ScaleMatrix(scratch.get(), scratch.get(), n, neg_one, use_stream));
     CHECK(AddInPlace(ops, A9_1.get(), scratch.get(), n));
@@ -1375,43 +1530,51 @@ Status RCWA::ComputeCosSinFromThetaOrder18(const Complex* Theta,
 
     CHECK(A9_2.Allocate(n, n));
     CHECK(MatMul(ops, B2[0].get(), B1[4].get(), A9_2.get(), n));
-    CHECK(scratch.Allocate(n, n));
     CHECK(MatMul(ops, B1[0].get(), B2[4].get(), scratch.get(), n));
     CHECK(AddInPlace(ops, A9_2.get(), scratch.get(), n));
     CHECK(AddInPlace(ops, A9_2.get(), B2[3].get(), n));
 
+    // Recycle dead B matrices: B1[0], B2[0], B1[3], B2[3], B1[4], B2[4] are all
+    // dead after A9 computation.  Reuse their memory as workspace.
+    //
     //  C = B₁⁽¹⁾ + (B₁⁽²⁾+A₁⁽⁹⁾)·A₁⁽⁹⁾ − (B₂⁽²⁾+A₂⁽⁹⁾)·A₂⁽⁹⁾
     //  S = B₂⁽¹⁾ + (B₂⁽²⁾+A₂⁽⁹⁾)·A₁⁽⁹⁾ + (B₁⁽²⁾+A₁⁽⁹⁾)·A₂⁽⁹⁾
-    DeviceMatrix temp1, temp2, temp3;
 
-    // C
-    CHECK(temp1.Allocate(n, n));
-    CHECK(AddMatrix(ops, B1[2].get(), A9_1.get(), temp1.get(), n));
-    CHECK(temp2.Allocate(n, n));
-    CHECK(MatMul(ops, temp1.get(), A9_1.get(), temp2.get(), n));
-    CHECK(temp1.Allocate(n, n));
-    CHECK(AddMatrix(ops, B2[2].get(), A9_2.get(), temp1.get(), n));
-    CHECK(temp3.Allocate(n, n));
-    CHECK(MatMul(ops, temp1.get(), A9_2.get(), temp3.get(), n));
+    // ws1 = B1[2] + A9_1  (→ B1[0])
+    Complex* ws1 = B1[0].get();
+    CHECK(AddMatrix(ops, B1[2].get(), A9_1.get(), ws1, n));
+
+    // ws2 = B2[2] + A9_2  (→ B2[0])
+    Complex* ws2 = B2[0].get();
+    CHECK(AddMatrix(ops, B2[2].get(), A9_2.get(), ws2, n));
+
+    // P1 = ws1 × A9_1  (→ B1[3])
+    Complex* ws3 = B1[3].get();
+    CHECK(MatMul(ops, ws1, A9_1.get(), ws3, n));
+
+    // P2 = ws2 × A9_2  (→ B2[3])
+    Complex* ws4 = B2[3].get();
+    CHECK(MatMul(ops, ws2, A9_2.get(), ws4, n));
+
+    // C = B1[1] + P1 − P2
     DeviceMatrix C;
     CHECK(C.Allocate(n, n));
-    CHECK(AddMatrix(ops, B1[1].get(), temp2.get(), C.get(), n));
-    CHECK(ScaleMatrix(temp3.get(), scratch.get(), n, neg_one, use_stream));
+    CHECK(AddMatrix(ops, B1[1].get(), ws3, C.get(), n));
+    CHECK(ScaleMatrix(ws4, scratch.get(), n, neg_one, use_stream));
     CHECK(AddInPlace(ops, C.get(), scratch.get(), n));
 
-    // S
-    CHECK(temp1.Allocate(n, n));
-    CHECK(AddMatrix(ops, B2[2].get(), A9_2.get(), temp1.get(), n));
-    CHECK(temp2.Allocate(n, n));
-    CHECK(MatMul(ops, temp1.get(), A9_1.get(), temp2.get(), n));
-    CHECK(temp1.Allocate(n, n));
-    CHECK(AddMatrix(ops, B1[2].get(), A9_1.get(), temp1.get(), n));
-    CHECK(temp3.Allocate(n, n));
-    CHECK(MatMul(ops, temp1.get(), A9_2.get(), temp3.get(), n));
+    // P1, P2 dead — reuse ws3, ws4 for S multiplies
+    // P3 = ws2 × A9_1  (→ B1[3], overwrites P1)
+    CHECK(MatMul(ops, ws2, A9_1.get(), ws3, n));
+
+    // P4 = ws1 × A9_2  (→ B2[3], overwrites P2)
+    CHECK(MatMul(ops, ws1, A9_2.get(), ws4, n));
+
+    // S = B2[1] + P3 + P4
     DeviceMatrix S;
     CHECK(S.Allocate(n, n));
-    CHECK(AddMatrix(ops, B2[1].get(), temp2.get(), S.get(), n));
-    CHECK(AddInPlace(ops, S.get(), temp3.get(), n));
+    CHECK(AddMatrix(ops, B2[1].get(), ws3, S.get(), n));
+    CHECK(AddInPlace(ops, S.get(), ws4, n));
 
     // ── Phase 4: repeated squaring ──────────────────────────────────────
     DeviceMatrix tmpC, tmpS;
@@ -1420,7 +1583,6 @@ Status RCWA::ComputeCosSinFromThetaOrder18(const Complex* Theta,
         // C_new = C² − S²
         CHECK(tmpC.Allocate(n, n));
         CHECK(MatMul(ops, C.get(), C.get(), tmpC.get(), n));
-        CHECK(scratch.Allocate(n, n));
         CHECK(MatMul(ops, S.get(), S.get(), scratch.get(), n));
         CHECK(ScaleMatrix(scratch.get(), scratch.get(), n, neg_one, use_stream));
         CHECK(AddInPlace(ops, tmpC.get(), scratch.get(), n));
