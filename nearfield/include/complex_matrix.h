@@ -47,7 +47,12 @@ class ComplexMatrixOps
     Status MatSub(const Complex* A, const Complex* B, Complex* C, int64_t m, int64_t n);
     Status MatSub(const Complex* A, const Complex* B, Complex* C, int64_t n);
 
-    Status Solve(const Complex* A, const Complex* B, Complex* X, int64_t n, int64_t nrhs);
+    Status Solve(const Complex* A,
+                 const Complex* B,
+                 Complex* X,
+                 int64_t n,
+                 int64_t nrhs,
+                 cublasOperation_t trans = CUBLAS_OP_N);
     Status Solve(const Complex* A, const Complex* B, Complex* X, int64_t n);
 
   private:
@@ -88,6 +93,8 @@ Status MultiplyDiagonalVectors(const Complex* a,
 Status
 ScaleMatrix(const Complex* A, Complex* C, int64_t n, Complex scalar, cudaStream_t stream = nullptr);
 Status ScaleInPlace(Complex* A, int64_t n, Complex scalar, cudaStream_t stream = nullptr);
+Status
+TransposeMatrix(const Complex* src, Complex* dst, int64_t n, cudaStream_t stream = nullptr);
 Status CopyMatrix(const Complex* src, Complex* dst, int64_t n, cudaStream_t stream = nullptr);
 Status CopyBlock(const Complex* src,
                  int64_t n,
@@ -117,3 +124,9 @@ Status CopyBlockNegated(const Complex* src,
 
 Status
 ComputeMatrixNorm1(const Complex* A, int64_t n, double* out_norm, cudaStream_t stream = nullptr);
+
+Status ComputeMatrixNorm1WithDiagOffset(const Complex* A,
+                                         int64_t n,
+                                         Complex diag_offset,
+                                         double* out_norm,
+                                         cudaStream_t stream = nullptr);

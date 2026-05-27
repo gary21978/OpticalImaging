@@ -89,16 +89,30 @@ class RCWA
                                  Real k0d,
                                  TMatrix* T,
                                  cudaStream_t stream = nullptr) const;
+    Status ComputeCosSinFromThetaOrder18(const Complex* Theta,
+                                          int64_t n,
+                                          Complex* Cos,
+                                          Complex* Sin,
+                                          cudaStream_t stream = nullptr) const;
     Status ComputeSFromT(const TMatrix& T,
                          const VMatrix& V,
                          int64_t n,
                          SMatrix* S,
                          cudaStream_t stream = nullptr) const;
+    Status ComputeSMatrixSQRT(const Complex* P,
+                               const Complex* Q,
+                               int64_t n,
+                               Real k0d,
+                               const VMatrix& V,
+                               SMatrix* S,
+                               cudaStream_t stream = nullptr) const;
     Status RepeatCurrentStackSMatrix(int repeats);
 
     int64_t order_N() const { return order_N_; }
     const SMatrix& global_smatrix() const { return global_smatrix_; }
     cudaStream_t stream() const { return stream_; }
+    void SetExpmMethod(char method) { expm_method_ = method; }
+    char expm_method() const { return expm_method_; }
 
   private:
     Status BuildKxKy(Real inc_ang, Real azi_ang, Real eps_ref);
@@ -143,6 +157,7 @@ class RCWA
     int order_y_ = 0;
     int64_t order_N_ = 0;
     bool kvectors_ready_ = false;
+    char expm_method_ = 'G';
     cudaStream_t stream_ = nullptr;
 
     Complex* kx_diag_ = nullptr;

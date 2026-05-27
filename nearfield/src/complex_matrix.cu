@@ -66,6 +66,16 @@ __global__ void ScaleKernel(const Complex* A, Complex* C, int64_t count, Complex
     }
 }
 
+__global__ void TransposeKernel(const Complex* src, Complex* dst, int64_t n)
+{
+    int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    int64_t total = n * n;
+    if (idx >= total) { return; }
+    int64_t row = idx % n;
+    int64_t col = idx / n;
+    dst[idx] = src[row * n + col];  // dst[col*n+row] = src[row*n+col] = src(col,row) = srcᵀ(row,col)
+}
+
 __global__ void IdentityKernel(Complex* A, int64_t n)
 {
     int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -256,6 +266,38 @@ __global__ void ColumnSumKernel(const Complex* A, int64_t n, Real* col_sums)
     {
         col_sums[col] = shared[0];
     }
+}
+
+__global__ void ColumnSumWithDiagOffsetKernel(const Complex* A,
+                                                int64_t n,
+                                                Complex diag_offset,
+                                                Real* col_sums)
+{
+    const int64_t col = static_cast<int64_t>(blockIdx.x);
+    if (col >= n) { return; }
+
+    Real sum = 0.0;
+    for (int64_t row = threadIdx.x; row < n; row += blockDim.x)
+    {
+        Complex val = A[col * n + row];
+        if (row == col)
+        {
+            val = ComplexSub(val, diag_offset);
+        }
+        sum += ComplexAbs(val);
+    }
+
+    __shared__ Real shared[kReduceBlockSize];
+    shared[threadIdx.x] = sum;
+    __syncthreads();
+
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1)
+    {
+        if (threadIdx.x < stride) { shared[threadIdx.x] += shared[threadIdx.x + stride]; }
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0) { col_sums[col] = shared[0]; }
 }
 
 __global__ void MaxReduceKernel(const Real* input, int64_t n, Real* output)
@@ -536,8 +578,12 @@ Status ComplexMatrixOps::MatSub(const Complex* A, const Complex* B, Complex* C, 
     return MatSub(A, B, C, n, n);
 }
 
-Status
-ComplexMatrixOps::Solve(const Complex* A, const Complex* B, Complex* X, int64_t n, int64_t nrhs)
+Status ComplexMatrixOps::Solve(const Complex* A,
+                               const Complex* B,
+                               Complex* X,
+                               int64_t n,
+                               int64_t nrhs,
+                               cublasOperation_t trans)
 {
     if (!A || !B || !X || !cusolver_handle_)
     {
@@ -642,7 +688,7 @@ ComplexMatrixOps::Solve(const Complex* A, const Complex* B, Complex* X, int64_t 
     }
 
     if (StatusFromCusolver(CUSOLVER_GETRS(cusolver_handle_,
-                                          CUBLAS_OP_N,
+                                          trans,
                                           n_int,
                                           nrhs_int,
                                           A_work,
@@ -821,6 +867,16 @@ Status ScaleInPlace(Complex* A, int64_t n, Complex scalar, cudaStream_t stream)
     return ScaleMatrix(A, A, n, scalar, stream);
 }
 
+Status
+TransposeMatrix(const Complex* src, Complex* dst, int64_t n, cudaStream_t stream)
+{
+    if (!src || !dst || n <= 0) { return Status::kInvalidValue; }
+    int64_t total = n * n;
+    int blocks = static_cast<int>((total + CUDA_THREADS - 1) / CUDA_THREADS);
+    TransposeKernel<<<blocks, CUDA_THREADS, 0, stream>>>(src, dst, n);
+    return StatusFromCuda(cudaGetLastError());
+}
+
 Status CopyMatrix(const Complex* src, Complex* dst, int64_t n, cudaStream_t stream)
 {
     if (!src || !dst || n <= 0)
@@ -933,9 +989,53 @@ Status ComputeMatrixNorm1(const Complex* A, int64_t n, double* out_norm, cudaStr
 
     Real host_value = 0.0;
     CHECK(StatusFromCuda(
-        cudaMemcpyAsync(&host_value, input, sizeof(Real), cudaMemcpyDeviceToHost, stream)));
-    CHECK(StatusFromCuda(cudaStreamSynchronize(stream)));
+        cudaMemcpy(&host_value, input, sizeof(Real), cudaMemcpyDeviceToHost)));
 
+    *out_norm = static_cast<double>(host_value);
+    return Status::kSuccess;
+}
+
+Status ComputeMatrixNorm1WithDiagOffset(const Complex* A,
+                                         int64_t n,
+                                         Complex diag_offset,
+                                         double* out_norm,
+                                         cudaStream_t stream)
+{
+    if (!A || !out_norm || n <= 0) { return Status::kInvalidValue; }
+    if (n > std::numeric_limits<int>::max()) { return Status::kInvalidValue; }
+
+    const size_t count = static_cast<size_t>(n);
+    const int block = kReduceBlockSize;
+    const int grid = static_cast<int>(count);
+    const size_t temp_count = (count + block - 1) / block;
+
+    DeviceRealVector col_sums;
+    DeviceRealVector temp;
+    CHECK(col_sums.Allocate(count));
+    CHECK(temp.Allocate(temp_count));
+
+    ColumnSumWithDiagOffsetKernel<<<grid, block, 0, stream>>>(A, n, diag_offset, col_sums.get());
+    CHECK(StatusFromCuda(cudaGetLastError()));
+
+    size_t current = count;
+    Real* input = col_sums.get();
+    Real* output = temp.get();
+
+    while (current > 1)
+    {
+        const size_t blocks = (current + block - 1) / block;
+        MaxReduceKernel<<<static_cast<int>(blocks), block, 0, stream>>>(
+            input, static_cast<int64_t>(current), output);
+        CHECK(StatusFromCuda(cudaGetLastError()));
+        current = blocks;
+        Real* swap = input;
+        input = output;
+        output = swap;
+    }
+
+    Real host_value = 0.0;
+    CHECK(StatusFromCuda(
+        cudaMemcpy(&host_value, input, sizeof(Real), cudaMemcpyDeviceToHost)));
     *out_norm = static_cast<double>(host_value);
     return Status::kSuccess;
 }
