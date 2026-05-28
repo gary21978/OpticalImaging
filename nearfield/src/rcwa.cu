@@ -48,6 +48,81 @@ static constexpr double kExpConstantOrder12[4][4] = {
      0.01078627793157924250},
     {0.0, -0.13181061013830184015, -0.02027855540589259079, -0.00675951846863086359}};
 
+// ═══════════════════════════════════════════════════════════════════════════════
+//  GPU Memory Estimation Guide
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+//  Each method allocates n₂ × n₂ matrices of Complex on the GPU.
+//
+//      M_peak = N_peak × n₂² × sizeof(Complex)
+//
+//  where  n₂ = 2·(2k+1)²  (k = order_x = order_y)
+//  sizeof(Complex) = 16 B (double) or 8 B (single)
+//
+// ── Reference GPU VRAM ──────────────────────────────────────────────────────
+//
+//   GPU            | VRAM
+//   ───────────────┼──────
+//   RTX 5060 Laptop|  8 GB
+//   RTX 4090D      | 24 GB
+//   H100           | 80 GB
+//
+// ── Peak live matrix counts per method (N_peak) ─────────────────────────────
+//
+//   Method                        | N_peak | Peak phase
+//   ──────────────────────────────┼────────┼──────────────────────────────────
+//   ComputeTFromPQOrder18 (GEMM)  |   30   | Phase 2: B⁽ⁱ⁾ loop (5 terms)
+//   ComputeTFromPQOrder12 (GEMM)  |   24   | Phase 2: B⁽ⁱ⁾ loop (4 terms)
+//   ComputeCosSinFromThetaOrder18 |   16   | Phase 2: B₁/B₂ construction
+//   ComputeCosSinFromThetaOrder12 |   14   | Phase 2: B₁/B₂ (4 terms)
+//   ComputeCosSincFromPQOrder18   |   15   | Phase 4: A⁹ + B + B̄ + tmp
+//   ComputeCosSincFromPQOrder12   |   13   | Phase 3: A⁶ + B + B̄ + tmp
+//   MatrixSqrt                    |   10   | Iteration: X,X²,X³,P,Q,F,…
+//
+//   End-to-end paths (stacked intermediates):
+//   GEMM (G) = ComputeTFromPQ + ComputeSFromT       → same as above
+//   SQRT (S) = MatrixSqrt + CosSinFromTheta + K/E/F → ~16
+//   FREE (F) = ComputeCosSincFromPQ + E/F            → same as above
+//
+// ── Peak memory table (double precision, GB) ─────────────────────────────────
+//
+//  N_peak → |  24    30   |  14    16   |  13    15   |
+//   order   |  G12   G18  |  S12   S18  |  F12   F18  |
+//   ────────┼─────────────┼─────────────┼─────────────┤
+//      6    |  0.0   0.1  |  0.0   0.0  |  0.0   0.0  |
+//      8    |  0.1   0.1  |  0.1   0.1  |  0.1   0.1  |
+//     10    |  0.3   0.3  |  0.2   0.2  |  0.2   0.2  |
+//     12    |  0.6   0.7  |  0.3   0.4  |  0.3   0.3  |
+//     14    |  1.0   1.3  |  0.6   0.7  |  0.5   0.6  |
+//     16    |  1.7   2.1  |  1.0   1.1  |  0.9   1.1  |
+//     18    |  2.7   3.4  |  1.6   1.8  |  1.5   1.7  |
+//     20    |  4.0   5.1  |  2.4   2.7  |  2.2   2.5  |
+//     22    |  5.9   7.3  |  3.4   3.9  |  3.2   3.7  |
+//     24    |  8.2  10.3  |  4.8   5.5  |  4.5   5.1  |
+//     26    | 11.3  14.1  |  6.6   7.5  |  6.1   7.1  |
+//     28    | 15.1  18.9  |  8.8  10.1  |  8.2   9.4  |
+//     30    | 19.8  24.7  | 11.5  13.2  | 10.7  12.4  |
+//
+// ── Maximum feasible order per GPU (double precision) ────────────────────────
+//
+//   GPU (VRAM)       |  G12 |  G18 | S12/S18 | F12/F18
+//   ─────────────────┼──────┼──────┼─────────┼─────────
+//   RTX 5060L   (8)  |  22  |  20  |   28    |   28
+//   RTX 4090D  (24)  |  28  |  25  |   36    |   38
+//   H100       (80)  |  38  |  35  |   52    |   54
+//
+//  For single precision: halve all MB/GB values → roughly +6 orders.
+//
+// ── Estimation rules ────────────────────────────────────────────────────────
+//
+//  1. Allocate() with same element count is a no‑op — scratch matrices are
+//     allocated once and reused throughout.
+//  2. Swap() exchanges pointers without allocating — does not increase
+//     the live matrix count.
+//  3. The peak is almost always in the B‑coefficient loop (Phase 2).  After
+//     Phase 2 cleanup the count drops and never recovers to Phase 2 levels.
+// ═══════════════════════════════════════════════════════════════════════════════
+
 struct DeviceMatrix
 {
     Complex* ptr = nullptr;
