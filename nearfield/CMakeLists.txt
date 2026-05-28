@@ -32,8 +32,8 @@ target_link_libraries(homogeneous_test PRIVATE complex_ops)
 add_executable(pipeline_test ${CMAKE_CURRENT_SOURCE_DIR}/examples/pipeline_test.cu)
 target_link_libraries(pipeline_test PRIVATE complex_ops)
 
-add_executable(method_compare_test ${CMAKE_CURRENT_SOURCE_DIR}/examples/method_compare_test.cu)
-target_link_libraries(method_compare_test PRIVATE complex_ops)
+add_executable(method_compare_full ${CMAKE_CURRENT_SOURCE_DIR}/examples/method_compare_full.cu)
+target_link_libraries(method_compare_full PRIVATE complex_ops)
 
 if(USE_DOUBLE_PRECISION)
   set(PRECISION_DEF USE_DOUBLE_PRECISION=1)
@@ -46,7 +46,7 @@ target_compile_definitions(T_matrix_test PRIVATE ${PRECISION_DEF})
 target_compile_definitions(S_matrix_test PRIVATE ${PRECISION_DEF})
 target_compile_definitions(homogeneous_test PRIVATE ${PRECISION_DEF})
 target_compile_definitions(pipeline_test PRIVATE ${PRECISION_DEF})
-target_compile_definitions(method_compare_test PRIVATE ${PRECISION_DEF})
+target_compile_definitions(method_compare_full PRIVATE ${PRECISION_DEF})
 
 # Optimization
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -march=native -ffast-math -funroll-loops")

@@ -1029,8 +1029,18 @@ Status RCWA::ComputeTFromPQOrder18(const Complex* P,
     ComplexMatrixOps ops(use_stream);
     CHECK(ops.SetStream(use_stream));
 
-    // Matrix exponential via scaling/squaring + [5/5] Padé on block matrix:
-    // A = [0, -P; Q, 0], then T = exp(A * k0d).
+    // ── Phase 0: scaling ──────────────────────────────────────────────────
+    // T = exp(A · k₀d)  where  A = [0, −P; Q, 0]  (2n₂ × 2n₂ block matrix).
+    // 18th-order optimized Taylor expansion (Bader, Blanes & Casas, 2019)
+    // combined with scaling-and-squaring.
+    //
+    // Phases:
+    //   0. Scaling:  m = ⌈log₂ max(‖P‖₁, ‖Q‖₁)·k₀d⌉,  s = 2⁻ᵐ·k₀d
+    //   1. Block powers A², A³, A⁶  (n₂ × n₂ blocks)
+    //   2. B⁽ⁱ⁾ = a₀ᵢ·I + a₂ᵢ·A² + a₄ᵢ·A⁶  (i = 0..4, 5 × 4 blocks)
+    //   3. A⁽⁹⁾ blocks from B⁽⁰⁾·B⁽⁴⁾ + B⁽³⁾
+    //   4. T blocks from (B⁽²⁾ + A⁽⁹⁾)·A⁽⁹⁾ + B⁽¹⁾
+    //   5. Repeated squaring (m rounds)
     double Pnorm = 0.0;
     double Qnorm = 0.0;
     CHECK(ComputeMatrixNorm1(P, n, &Pnorm, use_stream));
@@ -1088,6 +1098,7 @@ Status RCWA::ComputeTFromPQOrder18(const Complex* P,
     CHECK(A6_22.Allocate(n, n));
     CHECK(MatMul(ops, A3_21.get(), A3_12.get(), A6_22.get(), n));
 
+    // ── Phase 2: B⁽ⁱ⁾ = a₀ᵢ·I + a₂ᵢ·A² + a₄ᵢ·A⁶  (i = 0..4) ────────────
     DeviceMatrix scratch;
     DeviceMatrix B_11[5];
     DeviceMatrix B_12[5];
@@ -1128,6 +1139,7 @@ Status RCWA::ComputeTFromPQOrder18(const Complex* P,
         CHECK(AddInPlace(ops, B_22[i].get(), scratch.get(), n));
     }
 
+    // Phase 2 cleanup: free consumed powers, identity, and full A-matrix blocks
     A2_11.Reset();
     A2_22.Reset();
     A3_12.Reset();
@@ -1139,6 +1151,8 @@ Status RCWA::ComputeTFromPQOrder18(const Complex* P,
     I2.Reset();
     A_12.Reset();
     A_21.Reset();
+
+    // ── Phase 3: A⁽⁹⁾ blocks = B⁽⁰⁾·B⁽⁴⁾ + B⁽³⁾ ──────────────────────────
 
     DeviceMatrix A9_11;
     CHECK(A9_11.Allocate(n, n));
@@ -1172,13 +1186,14 @@ Status RCWA::ComputeTFromPQOrder18(const Complex* P,
     CHECK(AddInPlace(ops, A9_22.get(), scratch.get(), n));
     CHECK(AddInPlace(ops, A9_22.get(), B_22[3].get(), n));
 
-    // Free B[0], B[3], B[4] — no longer needed after A9 blocks are built
+    // Phase 3 cleanup: free B[0],B[3],B[4] — consumed by A⁽⁹⁾ blocks
     for (int i : {0, 3, 4})
     {
         B_11[i].Reset(); B_12[i].Reset();
         B_21[i].Reset(); B_22[i].Reset();
     }
 
+    // ── Phase 4: T blocks = (B⁽²⁾ + A⁽⁹⁾)·A⁽⁹⁾ + B⁽¹⁾ ─────────────────
     DeviceMatrix temp1;
     DeviceMatrix temp2;
     DeviceMatrix temp3;
@@ -1243,7 +1258,9 @@ Status RCWA::ComputeTFromPQOrder18(const Complex* P,
         CHECK(AddInPlace(ops, T_22.get(), temp3.get(), n));
     }
 
-    // Free B[1], B[2], A9 blocks, and temp matrices — none are used in squaring
+    // Phase 4 cleanup: free B[1],B[2], all A⁽⁹⁾ blocks, and temps —
+    // none are needed in Phase 5 squaring.  Peak memory drops to
+    // 1×scratch + 4×T + 4×tmp = 9 matrices.
     for (int i : {1, 2})
     {
         B_11[i].Reset(); B_12[i].Reset();
@@ -1252,6 +1269,8 @@ Status RCWA::ComputeTFromPQOrder18(const Complex* P,
     A9_11.Reset(); A9_12.Reset(); A9_21.Reset(); A9_22.Reset();
     temp1.Reset(); temp2.Reset(); temp3.Reset();
 
+    // ── Phase 5: repeated squaring (m rounds) ─────────────────────────────
+    // T ← T²  where T is a 2×2 block matrix:  [T₁₁, T₁₂; T₂₁, T₂₂]
     DeviceMatrix tmp11;
     DeviceMatrix tmp12;
     DeviceMatrix tmp21;
@@ -1304,7 +1323,8 @@ Status RCWA::ComputeCosSinFromThetaOrder12(const Complex* Theta,
     ComplexMatrixOps ops(use_stream);
     CHECK(ops.SetStream(use_stream));
 
-    // Scaling factor
+    // ── Phase 0: scaling ──────────────────────────────────────────────────
+    // m = ⌈log₂‖Θ‖₁⌉,  s = 2⁻ᵐ,  so that ‖s·Θ‖₁ ≤ 1 for Taylor convergence.
     double ThetaNorm = 0.0;
     CHECK(ComputeMatrixNorm1(Theta, n, &ThetaNorm, use_stream));
     int m = 0;
@@ -1358,11 +1378,11 @@ Status RCWA::ComputeCosSinFromThetaOrder12(const Complex* Theta,
         CHECK(AddInPlace(ops, B2[i].get(), scratch.get(), n));
     }
 
-    // A¹, A², A³, I are no longer needed after B construction —
-    // reuse their buffers for A⁽⁶⁾₁, A⁽⁶⁾₂, C, S respectively.
+    // A¹, A², A³, I_mat no longer needed — reuse buffers:
+    //   A1 → A⁽⁶⁾₁,  A2 → A⁽⁶⁾₂,  A3 → C,  A6 → S
     DeviceMatrix A6_1, A6_2;
-    A6_1.Swap(A1);
-    A6_2.Swap(A2);
+    A6_1.Swap(A1);    // takes ownership of A1's buffer, A1 becomes empty
+    A6_2.Swap(A2);    // takes ownership of A2's buffer, A2 becomes empty
 
     // ── Phase 3: A⁽⁶⁾₁₂ from B⁽³⁾, B⁽²⁾, then C, S ─────────────────────
     //
@@ -1379,21 +1399,22 @@ Status RCWA::ComputeCosSinFromThetaOrder12(const Complex* Theta,
     CHECK(AddInPlace(ops, A6_2.get(), scratch.get(), n));
     CHECK(AddInPlace(ops, A6_2.get(), B2[2].get(), n));
 
-    // B⁽²⁾ and B⁽³⁾ are no longer needed — reuse as workspace for C/S.
+    // B⁽²⁾, B⁽³⁾ no longer needed — reuse their buffers:
+    //   B1[2] → TA,  B2[2] → TB,  B1[3] → TA1,  B2[3] → TB2
     //
     //  C = B₁⁽⁰⁾ + (B₁⁽¹⁾ + A⁽⁶⁾₁)·A⁽⁶⁾₁ − (B₂⁽¹⁾ + A⁽⁶⁾₂)·A⁽⁶⁾₂
     //  S = B₂⁽⁰⁾ + (B₂⁽¹⁾ + A⁽⁶⁾₂)·A⁽⁶⁾₁ + (B₁⁽¹⁾ + A⁽⁶⁾₁)·A⁽⁶⁾₂
 
-    Complex* TA  = B1[2].get();  // T_A = B₁⁽¹⁾ + A⁽⁶⁾₁
+    Complex* TA  = B1[2].get();  // TA = B₁⁽¹⁾ + A⁽⁶⁾₁  (reuses B1[2])
     CHECK(AddMatrix(ops, B1[1].get(), A6_1.get(), TA, n));
 
-    Complex* TB  = B2[2].get();  // T_B = B₂⁽¹⁾ + A⁽⁶⁾₂
+    Complex* TB  = B2[2].get();  // TB = B₂⁽¹⁾ + A⁽⁶⁾₂  (reuses B2[2])
     CHECK(AddMatrix(ops, B2[1].get(), A6_2.get(), TB, n));
 
-    Complex* TA1 = B1[3].get();  // T_A·A⁽⁶⁾₁
+    Complex* TA1 = B1[3].get();  // TA1 = TA·A⁽⁶⁾₁  (reuses B1[3])
     CHECK(MatMul(ops, TA, A6_1.get(), TA1, n));
 
-    Complex* TB2 = B2[3].get();  // T_B·A⁽⁶⁾₂
+    Complex* TB2 = B2[3].get();  // TB2 = TB·A⁽⁶⁾₂  (reuses B2[3])
     CHECK(MatMul(ops, TB, A6_2.get(), TB2, n));
 
     DeviceMatrix C;
@@ -1444,7 +1465,8 @@ Status RCWA::ComputeCosSinFromThetaOrder18(const Complex* Theta,
     ComplexMatrixOps ops(use_stream);
     CHECK(ops.SetStream(use_stream));
 
-    // Scaling factor
+    // ── Phase 0: scaling ──────────────────────────────────────────────────
+    // m = ⌈log₂‖Θ‖₁⌉,  s = 2⁻ᵐ,  so that ‖s·Θ‖₁ ≤ 1 for Taylor convergence.
     double ThetaNorm = 0.0;
     CHECK(ComputeMatrixNorm1(Theta, n, &ThetaNorm, use_stream));
     int m = 0;
@@ -1506,11 +1528,11 @@ Status RCWA::ComputeCosSinFromThetaOrder18(const Complex* Theta,
         CHECK(AddInPlace(ops, B2[i].get(), scratch.get(), n));
     }
 
-    // A¹, A², A³, A⁶ are no longer needed after B construction —
-    // reuse their buffers for A⁽⁹⁾₁, A⁽⁹⁾₂, C, S respectively.
+    // A¹, A², A³, A⁶ no longer needed — reuse buffers:
+    //   A1 → A⁽⁹⁾₁,  A2 → A⁽⁹⁾₂,  A3 → C,  A6 → S
     DeviceMatrix A9_1, A9_2;
-    A9_1.Swap(A1);
-    A9_2.Swap(A2);
+    A9_1.Swap(A1);    // takes ownership of A1's buffer
+    A9_2.Swap(A2);    // takes ownership of A2's buffer
     I_mat.Reset();
 
     // ── Phase 3: A⁽⁹⁾₁₂ from B⁽⁰⁾, B⁽⁴⁾, B⁽³⁾, then C, S ─────────────
@@ -1528,21 +1550,22 @@ Status RCWA::ComputeCosSinFromThetaOrder18(const Complex* Theta,
     CHECK(AddInPlace(ops, A9_2.get(), scratch.get(), n));
     CHECK(AddInPlace(ops, A9_2.get(), B2[3].get(), n));
 
-    // B⁽⁰⁾, B⁽³⁾, B⁽⁴⁾ are no longer needed — reuse as workspace for C/S.
+    // B⁽⁰⁾, B⁽³⁾, B⁽⁴⁾ no longer needed — reuse their buffers:
+    //   B1[0] → TA,  B2[0] → TB,  B1[3] → TA1,  B2[3] → TB2
     //
     //  C = B₁⁽¹⁾ + (B₁⁽²⁾ + A⁽⁹⁾₁)·A⁽⁹⁾₁ − (B₂⁽²⁾ + A⁽⁹⁾₂)·A⁽⁹⁾₂
     //  S = B₂⁽¹⁾ + (B₂⁽²⁾ + A⁽⁹⁾₂)·A⁽⁹⁾₁ + (B₁⁽²⁾ + A⁽⁹⁾₁)·A⁽⁹⁾₂
 
-    Complex* TA  = B1[0].get();  // T_A = B₁⁽²⁾ + A⁽⁹⁾₁
+    Complex* TA  = B1[0].get();  // TA = B₁⁽²⁾ + A⁽⁹⁾₁  (reuses B1[0])
     CHECK(AddMatrix(ops, B1[2].get(), A9_1.get(), TA, n));
 
-    Complex* TB  = B2[0].get();  // T_B = B₂⁽²⁾ + A⁽⁹⁾₂
+    Complex* TB  = B2[0].get();  // TB = B₂⁽²⁾ + A⁽⁹⁾₂  (reuses B2[0])
     CHECK(AddMatrix(ops, B2[2].get(), A9_2.get(), TB, n));
 
-    Complex* TA1 = B1[3].get();  // T_A·A⁽⁹⁾₁
+    Complex* TA1 = B1[3].get();  // TA1 = TA·A⁽⁹⁾₁  (reuses B1[3])
     CHECK(MatMul(ops, TA, A9_1.get(), TA1, n));
 
-    Complex* TB2 = B2[3].get();  // T_B·A⁽⁹⁾₂
+    Complex* TB2 = B2[3].get();  // TB2 = TB·A⁽⁹⁾₂  (reuses B2[3])
     CHECK(MatMul(ops, TB, A9_2.get(), TB2, n));
 
     DeviceMatrix C;
@@ -1581,6 +1604,364 @@ Status RCWA::ComputeCosSinFromThetaOrder18(const Complex* Theta,
     return Status::kSuccess;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Compute Cos(Θ) and Sinc(Θ) ≡ Θ⁻¹·sin(Θ) directly from P·Q.
+//
+// Both are even functions of  Θ = k₀d·√(P·Q), depending only on Θ².
+// A 12th-order optimized Taylor expansion (Bader, Blanes & Casas, 2019)
+// followed by repeated double-angle squaring yields the result without
+// ever forming the matrix square root √(P·Q).
+//
+// Phases (i = 0..3):
+//   1.  A² = 2⁻²ᵐ·(k₀d)²·(P·Q),   m = ⌈½ log₂ max(‖P·Q‖₁, 1)⌉
+//   2.  B⁽ⁱ⁾  = a₀ᵢ·I − a₂ᵢ·A²,   B̄⁽ⁱ⁾ = a₁ᵢ·I − a₃ᵢ·A²
+//   3.  A⁽⁶⁾  = (B⁽³⁾)² − A²·(B̄⁽³⁾)² + B⁽²⁾,
+//       Ā⁽⁶⁾  = B̄⁽³⁾·B⁽³⁾ + B⁽³⁾·B̄⁽³⁾ + B̄⁽²⁾
+//   4.  C     = B⁽⁰⁾ + (B⁽¹⁾ + A⁽⁶⁾)·A⁽⁶⁾ − A²·(B̄⁽¹⁾ + Ā⁽⁶⁾)·Ā⁽⁶⁾
+//       Sinc  = B̄⁽⁰⁾ + (B̄⁽¹⁾ + Ā⁽⁶⁾)·A⁽⁶⁾ + (B⁽¹⁾ + A⁽⁶⁾)·Ā⁽⁶⁾
+//   5.  m rounds:  Sinc ← Sinc·C,   C ← 2·C² − I
+// ─────────────────────────────────────────────────────────────────────────────
+static Status ComputeCosSincFromPQOrder12(const Complex* P,
+                                          const Complex* Q,
+                                          int64_t n,
+                                          Real k0d,
+                                          Complex* Cos,
+                                          Complex* Sinc,
+                                          cudaStream_t use_stream)
+{
+    ComplexMatrixOps ops(use_stream);
+    CHECK(ops.SetStream(use_stream));
+
+    const Complex neg_one = make_complex(-1.0, 0.0);
+    const Complex two = make_complex(2.0, 0.0);
+    const Real k0d_sq = static_cast<Real>(k0d * k0d);
+
+    // ── 1.  A⁽²⁾ = 2⁻²ᵐ · (k₀d)² · (P·Q) ──────────────────────────────
+    DeviceMatrix PQ;
+    CHECK(PQ.Allocate(n, n));
+    CHECK(MatMul(ops, P, Q, PQ.get(), n));
+
+    double PQnorm = 0.0;
+    CHECK(ComputeMatrixNorm1(PQ.get(), n, &PQnorm, use_stream));
+    int m = static_cast<int>(std::ceil(0.5 * std::log2(std::max(PQnorm, 1.0))));
+    if (m < 0) { m = 0; }
+
+    const Real scale_sq = static_cast<Real>(std::pow(2.0, -2 * m));
+    const Complex a2_scale = make_complex(static_cast<Real>(scale_sq * k0d_sq), 0.0);
+    DeviceMatrix A2;
+    CHECK(A2.Allocate(n, n));
+    CHECK(ScaleMatrix(PQ.get(), A2.get(), n, a2_scale, use_stream));
+    PQ.Reset();   // P·Q no longer needed
+
+    // ── 2.  B⁽ⁱ⁾  and  B̄⁽ⁱ⁾  (i = 0..3) ───────────────────────────────
+    DeviceMatrix I_mat;
+    CHECK(I_mat.Allocate(n, n));
+    CHECK(MakeIdentity(I_mat.get(), n, use_stream));
+
+    DeviceMatrix scratch;
+    CHECK(scratch.Allocate(n, n));
+
+    DeviceMatrix B[4], Bbar[4];
+    for (int i = 0; i < 4; ++i)
+    {
+        const Real a0 = static_cast<Real>(kExpConstantOrder12[i][0]);
+        const Real a1 = static_cast<Real>(kExpConstantOrder12[i][1]);
+        const Real a2 = static_cast<Real>(kExpConstantOrder12[i][2]);
+        const Real a3 = static_cast<Real>(kExpConstantOrder12[i][3]);
+
+        // B⁽ⁱ⁾ = a₀ᵢ·I − a₂ᵢ·A²
+        CHECK(B[i].Allocate(n, n));
+        CHECK(ScaleMatrix(I_mat.get(), B[i].get(), n,
+                          make_complex(a0, 0.0), use_stream));
+        CHECK(ScaleMatrix(A2.get(), scratch.get(), n,
+                          make_complex(-a2, 0.0), use_stream));
+        CHECK(AddInPlace(ops, B[i].get(), scratch.get(), n));
+
+        // B̄⁽ⁱ⁾ = a₁ᵢ·I − a₃ᵢ·A²
+        CHECK(Bbar[i].Allocate(n, n));
+        CHECK(ScaleMatrix(I_mat.get(), Bbar[i].get(), n,
+                          make_complex(a1, 0.0), use_stream));
+        CHECK(ScaleMatrix(A2.get(), scratch.get(), n,
+                          make_complex(-a3, 0.0), use_stream));
+        CHECK(AddInPlace(ops, Bbar[i].get(), scratch.get(), n));
+    }
+    I_mat.Reset();  // identity consumed into B, B̄ arrays
+
+    // ── 3.  A⁽⁶⁾  and  Ā⁽⁶⁾ ────────────────────────────────────────────
+    //
+    //  A⁽⁶⁾ = (B⁽³⁾)² − A²·(B̄⁽³⁾)² + B⁽²⁾
+    //  Ā⁽⁶⁾ = B̄⁽³⁾·B⁽³⁾ + B⁽³⁾·B̄⁽³⁾ + B̄⁽²⁾
+    DeviceMatrix A6, Abar6;
+    DeviceMatrix tmp;
+    CHECK(tmp.Allocate(n, n));
+    CHECK(scratch.Allocate(n, n));  // ensure scratch is allocated (no-op if already)
+
+    // scratch = A² · (B̄⁽³⁾)²
+    CHECK(MatMul(ops, Bbar[3].get(), Bbar[3].get(), scratch.get(), n));
+    CHECK(MatMul(ops, A2.get(), scratch.get(), tmp.get(), n));
+    CHECK(ScaleMatrix(tmp.get(), scratch.get(), n, neg_one, use_stream));
+
+    // A6 = (B⁽³⁾)² + B⁽²⁾ − A²·(B̄⁽³⁾)²
+    CHECK(A6.Allocate(n, n));
+    CHECK(MatMul(ops, B[3].get(), B[3].get(), A6.get(), n));
+    CHECK(AddInPlace(ops, A6.get(), B[2].get(), n));
+    CHECK(AddInPlace(ops, A6.get(), scratch.get(), n));
+
+    // Abar6 = B̄⁽³⁾·B⁽³⁾ + B⁽³⁾·B̄⁽³⁾ + B̄⁽²⁾
+    CHECK(Abar6.Allocate(n, n));
+    CHECK(MatMul(ops, Bbar[3].get(), B[3].get(), Abar6.get(), n));
+    CHECK(MatMul(ops, B[3].get(), Bbar[3].get(), tmp.get(), n));
+    CHECK(AddInPlace(ops, Abar6.get(), tmp.get(), n));
+    CHECK(AddInPlace(ops, Abar6.get(), Bbar[2].get(), n));
+    tmp.Reset();  // temporary buffer consumed
+
+    // Free B[2],B[3],Bbar[2],Bbar[3] — consumed by A⁽⁶⁾ / Ā⁽⁶⁾
+    B[2].Reset(); B[3].Reset();
+    Bbar[2].Reset(); Bbar[3].Reset();
+
+    // ── 4.  C  and  Sinc ────────────────────────────────────────────────
+    //
+    //  T₁ = B⁽¹⁾ + A⁽⁶⁾    (into freed B[2])
+    //  T₂ = B̄⁽¹⁾ + Ā⁽⁶⁾    (into freed Bbar[2])
+    //  T₁A6 = T₁·A⁽⁶⁾      (into freed B[3])
+    //  T₂Ā6 = T₂·Ā⁽⁶⁾      (into freed Bbar[3])
+    CHECK(B[2].Allocate(n, n));
+    CHECK(AddMatrix(ops, B[1].get(), A6.get(), B[2].get(), n));
+
+    CHECK(Bbar[2].Allocate(n, n));
+    CHECK(AddMatrix(ops, Bbar[1].get(), Abar6.get(), Bbar[2].get(), n));
+
+    CHECK(B[3].Allocate(n, n));
+    CHECK(MatMul(ops, B[2].get(), A6.get(), B[3].get(), n));    // T₁A6
+
+    CHECK(Bbar[3].Allocate(n, n));
+    CHECK(MatMul(ops, Bbar[2].get(), Abar6.get(), Bbar[3].get(), n));  // T₂Ā6
+
+    // C = B⁽⁰⁾ + T₁A6 − A² · T₂Ā6
+    DeviceMatrix C_mat, Sinc_mat;
+    CHECK(C_mat.Allocate(n, n));
+    CHECK(AddMatrix(ops, B[0].get(), B[3].get(), C_mat.get(), n));
+    CHECK(MatMul(ops, A2.get(), Bbar[3].get(), scratch.get(), n));
+    CHECK(ScaleMatrix(scratch.get(), scratch.get(), n, neg_one, use_stream));
+    CHECK(AddInPlace(ops, C_mat.get(), scratch.get(), n));
+
+    // T₂A6 = T₂ · A⁽⁶⁾    (overwrite B[3] — T₁A6 already consumed into C)
+    CHECK(MatMul(ops, Bbar[2].get(), A6.get(), B[3].get(), n));
+
+    // T₁Ā6 = T₁ · Ā⁽⁶⁾    (overwrite Bbar[3] — T₂Ā6 already consumed into C)
+    CHECK(MatMul(ops, B[2].get(), Abar6.get(), Bbar[3].get(), n));
+
+    // Sinc = B̄⁽⁰⁾ + T₂A6 + T₁Ā6
+    CHECK(Sinc_mat.Allocate(n, n));
+    CHECK(AddMatrix(ops, Bbar[0].get(), B[3].get(), Sinc_mat.get(), n));
+    CHECK(AddInPlace(ops, Sinc_mat.get(), Bbar[3].get(), n));
+
+    // Free everything except C_mat, Sinc_mat, scratch
+    A2.Reset(); A6.Reset(); Abar6.Reset();
+    for (int i = 0; i < 4; ++i) { B[i].Reset(); Bbar[i].Reset(); }
+
+    // ── 5.  Repeated squaring (m rounds of double-angle) ─────────────────
+    for (int i = 0; i < m; ++i)
+    {
+        // Sinc ← Sinc·C      (sin(2x)/(2x) = cos(x)·sin(x)/x)
+        CHECK(MatMul(ops, Sinc_mat.get(), C_mat.get(), scratch.get(), n));
+        Sinc_mat.Swap(scratch);
+
+        // C ← 2·C² − I
+        CHECK(MatMul(ops, C_mat.get(), C_mat.get(), scratch.get(), n));
+        CHECK(ScaleInPlace(scratch.get(), n, two, use_stream));
+        CHECK(AddDiagonalConstantInPlace(scratch.get(), n, neg_one, use_stream));
+        C_mat.Swap(scratch);
+    }
+
+    const size_t bytes = static_cast<size_t>(n) * static_cast<size_t>(n) * sizeof(Complex);
+    CHECK(StatusFromCuda(cudaMemcpyAsync(Cos, C_mat.get(), bytes, cudaMemcpyDeviceToDevice, use_stream)));
+    CHECK(StatusFromCuda(cudaMemcpyAsync(Sinc, Sinc_mat.get(), bytes, cudaMemcpyDeviceToDevice, use_stream)));
+    return Status::kSuccess;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Compute Cos(Θ) and Sinc(Θ) ≡ Θ⁻¹·sin(Θ) — Order18 variant.
+//
+// 18th-order optimized Taylor expansion (Bader, Blanes & Casas, 2019).
+//
+// Phases (i = 0..4):
+//   1.  A² = 2⁻²ᵐ·(k₀d)²·(P·Q),   m = ⌈½ log₂ max(‖P·Q‖₁, 1)⌉
+//   2.  A⁶ = (A²)³
+//   3.  B⁽ⁱ⁾  = a₀ᵢ·I − a₂ᵢ·A² − a₄ᵢ·A⁶,   B̄⁽ⁱ⁾ = a₁ᵢ·I − a₃ᵢ·A²
+//   4.  A⁽⁹⁾  = B⁽⁰⁾·B⁽⁴⁾ − A²·(B̄⁽⁰⁾·B̄⁽⁴⁾) + B⁽³⁾
+//       Ā⁽⁹⁾  = B̄⁽⁰⁾·B⁽⁴⁾ + B⁽⁰⁾·B̄⁽⁴⁾ + B̄⁽³⁾
+//   5.  C     = B⁽¹⁾ + (B⁽²⁾ + A⁽⁹⁾)·A⁽⁹⁾ − A²·(B̄⁽²⁾ + Ā⁽⁹⁾)·Ā⁽⁹⁾
+//       Sinc  = B̄⁽¹⁾ + (B̄⁽²⁾ + Ā⁽⁹⁾)·A⁽⁹⁾ + (B⁽²⁾ + A⁽⁹⁾)·Ā⁽⁹⁾
+//   6.  m rounds:  Sinc ← Sinc·C,   C ← 2·C² − I
+// ─────────────────────────────────────────────────────────────────────────────
+static Status ComputeCosSincFromPQOrder18(const Complex* P,
+                                          const Complex* Q,
+                                          int64_t n,
+                                          Real k0d,
+                                          Complex* Cos,
+                                          Complex* Sinc,
+                                          cudaStream_t use_stream)
+{
+    ComplexMatrixOps ops(use_stream);
+    CHECK(ops.SetStream(use_stream));
+
+    const Complex neg_one = make_complex(-1.0, 0.0);
+    const Complex two = make_complex(2.0, 0.0);
+    const Real k0d_sq = static_cast<Real>(k0d * k0d);
+
+    // ── 1.  A⁽²⁾ = 2⁻²ᵐ · (k₀d)² · (P·Q) ──────────────────────────────
+    DeviceMatrix PQ;
+    CHECK(PQ.Allocate(n, n));
+    CHECK(MatMul(ops, P, Q, PQ.get(), n));
+
+    double PQnorm = 0.0;
+    CHECK(ComputeMatrixNorm1(PQ.get(), n, &PQnorm, use_stream));
+    int m = static_cast<int>(std::ceil(0.5 * std::log2(std::max(PQnorm, 1.0))));
+    if (m < 0) { m = 0; }
+
+    const Real scale_sq = static_cast<Real>(std::pow(2.0, -2 * m));
+    const Complex a2_scale = make_complex(static_cast<Real>(scale_sq * k0d_sq), 0.0);
+    DeviceMatrix A2;
+    CHECK(A2.Allocate(n, n));
+    CHECK(ScaleMatrix(PQ.get(), A2.get(), n, a2_scale, use_stream));
+    PQ.Reset();
+
+    // ── 2.  A⁽⁶⁾ = (A²)³ ────────────────────────────────────────────────
+    DeviceMatrix scratch;
+    CHECK(scratch.Allocate(n, n));
+
+    DeviceMatrix A6pow;
+    CHECK(A6pow.Allocate(n, n));
+    CHECK(MatMul(ops, A2.get(), A2.get(), scratch.get(), n));     // (A²)²
+    CHECK(MatMul(ops, scratch.get(), A2.get(), A6pow.get(), n));   // (A²)³
+
+    // ── 3.  B⁽ⁱ⁾  and  B̄⁽ⁱ⁾  (i = 0..4) ───────────────────────────────
+    DeviceMatrix I_mat;
+    CHECK(I_mat.Allocate(n, n));
+    CHECK(MakeIdentity(I_mat.get(), n, use_stream));
+
+    DeviceMatrix B[5], Bbar[5];
+    for (int i = 0; i < 5; ++i)
+    {
+        const Real a0 = static_cast<Real>(kExpConstantOrder18[i][0]);
+        const Real a1 = static_cast<Real>(kExpConstantOrder18[i][1]);
+        const Real a2 = static_cast<Real>(kExpConstantOrder18[i][2]);
+        const Real a3 = static_cast<Real>(kExpConstantOrder18[i][3]);
+        const Real a4 = static_cast<Real>(kExpConstantOrder18[i][4]);
+
+        // B⁽ⁱ⁾ = a₀ᵢ·I − a₂ᵢ·A² − a₄ᵢ·A⁶
+        CHECK(B[i].Allocate(n, n));
+        CHECK(ScaleMatrix(I_mat.get(), B[i].get(), n,
+                          make_complex(a0, 0.0), use_stream));
+        CHECK(ScaleMatrix(A2.get(), scratch.get(), n,
+                          make_complex(-a2, 0.0), use_stream));
+        CHECK(AddInPlace(ops, B[i].get(), scratch.get(), n));
+        CHECK(ScaleMatrix(A6pow.get(), scratch.get(), n,
+                          make_complex(-a4, 0.0), use_stream));
+        CHECK(AddInPlace(ops, B[i].get(), scratch.get(), n));
+
+        // B̄⁽ⁱ⁾ = a₁ᵢ·I − a₃ᵢ·A²
+        CHECK(Bbar[i].Allocate(n, n));
+        CHECK(ScaleMatrix(I_mat.get(), Bbar[i].get(), n,
+                          make_complex(a1, 0.0), use_stream));
+        CHECK(ScaleMatrix(A2.get(), scratch.get(), n,
+                          make_complex(-a3, 0.0), use_stream));
+        CHECK(AddInPlace(ops, Bbar[i].get(), scratch.get(), n));
+    }
+    I_mat.Reset();   // identity consumed into B, B̄ arrays
+    A6pow.Reset();   // A⁶ consumed into B arrays
+
+    // ── 4.  A⁽⁹⁾  and  Ā⁽⁹⁾ ────────────────────────────────────────────
+    //
+    //  A⁽⁹⁾ = B⁽⁰⁾·B⁽⁴⁾ − A²·B̄⁽⁰⁾·B̄⁽⁴⁾ + B⁽³⁾
+    //  Ā⁽⁹⁾ = B̄⁽⁰⁾·B⁽⁴⁾ + B⁽⁰⁾·B̄⁽⁴⁾ + B̄⁽³⁾
+    DeviceMatrix A9, Abar9;
+    DeviceMatrix tmp;
+    CHECK(tmp.Allocate(n, n));
+
+    // A9 = B⁽⁰⁾·B⁽⁴⁾ + B⁽³⁾ − A² · (B̄⁽⁰⁾·B̄⁽⁴⁾)
+    CHECK(A9.Allocate(n, n));
+    CHECK(MatMul(ops, B[0].get(), B[4].get(), A9.get(), n));
+    CHECK(MatMul(ops, Bbar[0].get(), Bbar[4].get(), tmp.get(), n));
+    CHECK(MatMul(ops, A2.get(), tmp.get(), scratch.get(), n));
+    CHECK(ScaleMatrix(scratch.get(), scratch.get(), n, neg_one, use_stream));
+    CHECK(AddInPlace(ops, A9.get(), B[3].get(), n));
+    CHECK(AddInPlace(ops, A9.get(), scratch.get(), n));
+
+    // Abar9 = B̄⁽⁰⁾·B⁽⁴⁾ + B⁽⁰⁾·B̄⁽⁴⁾ + B̄⁽³⁾
+    CHECK(Abar9.Allocate(n, n));
+    CHECK(MatMul(ops, Bbar[0].get(), B[4].get(), Abar9.get(), n));
+    CHECK(MatMul(ops, B[0].get(), Bbar[4].get(), tmp.get(), n));
+    CHECK(AddInPlace(ops, Abar9.get(), tmp.get(), n));
+    CHECK(AddInPlace(ops, Abar9.get(), Bbar[3].get(), n));
+    tmp.Reset();  // temporary buffer consumed
+
+    // Free B[0],B[3],B[4],Bbar[0],Bbar[3],Bbar[4] — consumed by A⁽⁹⁾ / Ā⁽⁹⁾
+    B[0].Reset(); B[3].Reset(); B[4].Reset();
+    Bbar[0].Reset(); Bbar[3].Reset(); Bbar[4].Reset();
+
+    // ── 5.  C  and  Sinc ────────────────────────────────────────────────
+    //
+    //  T₁ = B⁽²⁾ + A⁽⁹⁾    (into freed B[0])
+    //  T₂ = B̄⁽²⁾ + Ā⁽⁹⁾    (into freed Bbar[0])
+    //  T₁A9 = T₁·A⁽⁹⁾      (into freed B[3])
+    //  T₂Ā9 = T₂·Ā⁽⁹⁾      (into freed Bbar[3])
+    CHECK(B[0].Allocate(n, n));
+    CHECK(AddMatrix(ops, B[2].get(), A9.get(), B[0].get(), n));
+
+    CHECK(Bbar[0].Allocate(n, n));
+    CHECK(AddMatrix(ops, Bbar[2].get(), Abar9.get(), Bbar[0].get(), n));
+
+    CHECK(B[3].Allocate(n, n));
+    CHECK(MatMul(ops, B[0].get(), A9.get(), B[3].get(), n));          // T₁A9
+
+    CHECK(Bbar[3].Allocate(n, n));
+    CHECK(MatMul(ops, Bbar[0].get(), Abar9.get(), Bbar[3].get(), n));  // T₂Ā9
+
+    // C = B⁽¹⁾ + T₁A9 − A² · T₂Ā9
+    DeviceMatrix C_mat, Sinc_mat;
+    CHECK(C_mat.Allocate(n, n));
+    CHECK(AddMatrix(ops, B[1].get(), B[3].get(), C_mat.get(), n));
+    CHECK(MatMul(ops, A2.get(), Bbar[3].get(), scratch.get(), n));
+    CHECK(ScaleMatrix(scratch.get(), scratch.get(), n, neg_one, use_stream));
+    CHECK(AddInPlace(ops, C_mat.get(), scratch.get(), n));
+
+    // T₂A9 = T₂ · A⁽⁹⁾    (overwrite B[3] — T₁A9 already consumed into C)
+    CHECK(MatMul(ops, Bbar[0].get(), A9.get(), B[3].get(), n));
+
+    // T₁Ā9 = T₁ · Ā⁽⁹⁾    (overwrite Bbar[3] — T₂Ā9 already consumed into C)
+    CHECK(MatMul(ops, B[0].get(), Abar9.get(), Bbar[3].get(), n));
+
+    // Sinc = B̄⁽¹⁾ + T₂A9 + T₁Ā9
+    CHECK(Sinc_mat.Allocate(n, n));
+    CHECK(AddMatrix(ops, Bbar[1].get(), B[3].get(), Sinc_mat.get(), n));
+    CHECK(AddInPlace(ops, Sinc_mat.get(), Bbar[3].get(), n));
+
+    // Free everything except C_mat, Sinc_mat, scratch
+    A2.Reset(); A9.Reset(); Abar9.Reset();
+    for (int i = 0; i < 5; ++i) { B[i].Reset(); Bbar[i].Reset(); }
+
+    // ── 6.  Repeated squaring (m rounds of double-angle) ─────────────────
+    for (int i = 0; i < m; ++i)
+    {
+        // Sinc ← Sinc·C      (sin(2x)/(2x) = cos(x)·sin(x)/x)
+        CHECK(MatMul(ops, Sinc_mat.get(), C_mat.get(), scratch.get(), n));
+        Sinc_mat.Swap(scratch);
+
+        // C ← 2·C² − I
+        CHECK(MatMul(ops, C_mat.get(), C_mat.get(), scratch.get(), n));
+        CHECK(ScaleInPlace(scratch.get(), n, two, use_stream));
+        CHECK(AddDiagonalConstantInPlace(scratch.get(), n, neg_one, use_stream));
+        C_mat.Swap(scratch);
+    }
+
+    const size_t bytes = static_cast<size_t>(n) * static_cast<size_t>(n) * sizeof(Complex);
+    CHECK(StatusFromCuda(cudaMemcpyAsync(Cos, C_mat.get(), bytes, cudaMemcpyDeviceToDevice, use_stream)));
+    CHECK(StatusFromCuda(cudaMemcpyAsync(Sinc, Sinc_mat.get(), bytes, cudaMemcpyDeviceToDevice, use_stream)));
+    return Status::kSuccess;
+}
+
 Status RCWA::ComputeTFromPQOrder12(const Complex* P,
                                    const Complex* Q,
                                    int64_t n,
@@ -1603,30 +1984,18 @@ Status RCWA::ComputeTFromPQOrder12(const Complex* P,
     ComplexMatrixOps ops(use_stream);
     CHECK(ops.SetStream(use_stream));
 
-    struct ScopedCudaStream
-    {
-        cudaStream_t stream = nullptr;
-        ~ScopedCudaStream()
-        {
-            if (stream)
-            {
-                cudaStreamDestroy(stream);
-            }
-        }
-    };
-    struct ScopedCudaEvent
-    {
-        cudaEvent_t event = nullptr;
-        ~ScopedCudaEvent()
-        {
-            if (event)
-            {
-                cudaEventDestroy(event);
-            }
-        }
-    };
-    // Matrix exponential via scaling/squaring + [5/5] Padé on block matrix:
-    // A = [0, -P; Q, 0], then T = exp(A * k0d).
+    // ── Phase 0: scaling ──────────────────────────────────────────────────
+    // T = exp(A · k₀d)  where  A = [0, −P; Q, 0]  (2n₂ × 2n₂ block matrix).
+    // 12th-order optimized Taylor expansion (Bader, Blanes & Casas, 2019)
+    // combined with scaling-and-squaring.
+    //
+    // Phases:
+    //   0. Scaling:  m = ⌈log₂ max(‖P‖₁, ‖Q‖₁)·k₀d⌉,  s = 2⁻ᵐ·k₀d
+    //   1. Block powers A², A³  (n₂ × n₂ blocks)
+    //   2. B⁽ⁱ⁾ = a₀ᵢ·I − a₂ᵢ·A²  (i = 0..3, 4 × 4 blocks)
+    //   3. A⁽⁶⁾ blocks from (B⁽³⁾)² + B⁽²⁾
+    //   4. T blocks from (B⁽¹⁾ + A⁽⁶⁾)·A⁽⁶⁾ + B⁽⁰⁾
+    //   5. Repeated squaring (m rounds)
     double Pnorm = 0.0;
     double Qnorm = 0.0;
     CHECK(ComputeMatrixNorm1(P, n, &Pnorm, use_stream));
@@ -1648,6 +2017,7 @@ Status RCWA::ComputeTFromPQOrder12(const Complex* P,
     const Complex scale_pos = make_complex(static_cast<Real>(scale_A), 0.0);
     const Complex scale_neg = make_complex(static_cast<Real>(-scale_A), 0.0);
 
+    // ── Phase 1: block powers  A², A³ ─────────────────────────────────────
     DeviceMatrix I2;
     CHECK(I2.Allocate(n, n));
     CHECK(MakeIdentity(I2.get(), n, use_stream));
@@ -1676,6 +2046,7 @@ Status RCWA::ComputeTFromPQOrder12(const Complex* P,
     CHECK(A3_21.Allocate(n, n));
     CHECK(MatMul(ops, A_21.get(), A2_11.get(), A3_21.get(), n));
 
+    // ── Phase 2: B⁽ⁱ⁾ = a₀ᵢ·I − a₂ᵢ·A²  (i = 0..3) ──────────────────────
     DeviceMatrix scratch;
     DeviceMatrix B_11[4];
     DeviceMatrix B_12[4];
@@ -1711,15 +2082,18 @@ Status RCWA::ComputeTFromPQOrder12(const Complex* P,
         CHECK(AddInPlace(ops, B_22[i].get(), scratch.get(), n));
     }
 
+    // Phase 2 cleanup: free consumed powers and identity
     A2_11.Reset();
     A2_22.Reset();
     A3_12.Reset();
     A3_21.Reset();
 
-    // I2, A_12, A_21 no longer needed after B coefficients are built
+    // I2, A_12, A_21 — only needed for Phase 2 B coefficients
     I2.Reset();
     A_12.Reset();
     A_21.Reset();
+
+    // ── Phase 3: A⁽⁶⁾ blocks = (B⁽³⁾)² + B⁽²⁾ ────────────────────────────
 
     DeviceMatrix A6_11;
     CHECK(A6_11.Allocate(n, n));
@@ -1753,13 +2127,14 @@ Status RCWA::ComputeTFromPQOrder12(const Complex* P,
     CHECK(AddInPlace(ops, A6_22.get(), scratch.get(), n));
     CHECK(AddInPlace(ops, A6_22.get(), B_22[2].get(), n));
 
-    // Free B[2], B[3] — no longer needed after A6 blocks are built
+    // Phase 3 cleanup: free B[2],B[3] — consumed by A⁽⁶⁾ blocks
     for (int i : {2, 3})
     {
         B_11[i].Reset(); B_12[i].Reset();
         B_21[i].Reset(); B_22[i].Reset();
     }
 
+    // ── Phase 4: T blocks = (B⁽¹⁾ + A⁽⁶⁾)·A⁽⁶⁾ + B⁽⁰⁾ ───────────────────
     DeviceMatrix temp1;
     DeviceMatrix temp2;
     DeviceMatrix temp3;
@@ -1824,7 +2199,8 @@ Status RCWA::ComputeTFromPQOrder12(const Complex* P,
         CHECK(AddInPlace(ops, T_22.get(), temp3.get(), n));
     }
 
-    // Free B[0], B[1], A6 blocks, and temp matrices — none are used in squaring
+    // Phase 4 cleanup: free B[0],B[1], all A⁽⁶⁾ blocks, and temps —
+    // none are needed in Phase 5 squaring.
     for (int i : {0, 1})
     {
         B_11[i].Reset(); B_12[i].Reset();
@@ -1833,6 +2209,8 @@ Status RCWA::ComputeTFromPQOrder12(const Complex* P,
     A6_11.Reset(); A6_12.Reset(); A6_21.Reset(); A6_22.Reset();
     temp1.Reset(); temp2.Reset(); temp3.Reset();
 
+    // ── Phase 5: repeated squaring (m rounds) ─────────────────────────────
+    // T ← T²  where T is a 2×2 block matrix:  [T₁₁, T₁₂; T₂₁, T₂₂]
     DeviceMatrix tmp11;
     DeviceMatrix tmp12;
     DeviceMatrix tmp21;
@@ -1895,10 +2273,11 @@ Status RCWA::ComputeSFromT(const TMatrix& T,
     ComplexMatrixOps ops(use_stream);
     CHECK(ops.SetStream(use_stream));
 
-    // A = T11 + i * V0 * T21
-    // B = (i * T12 - V0 * T22) * V0
-    // C = (A + B) / 2, D = (A - B) / 2
-    // S11 = C^{-1}, S12 = -S11 * D, S21 = S12, S22 = S11
+    // T → S conversion (2n₂ × 2n₂ block T matrix to n₂ × n₂ S blocks):
+    //   A = T₁₁ + i·V₀·T₂₁
+    //   B = (i·T₁₂ − V₀·T₂₂)·V₀
+    //   C = (A + B)/2,   D = (A − B)/2
+    //   S₁₁ = C⁻¹,   S₁₂ = −S₁₁·D,   S₂₁ = S₁₂,   S₂₂ = S₁₁
     const Complex imag = make_complex(0.0, 1.0);
     const Complex half = make_complex(0.5, 0.0);
     const Complex neg_one = make_complex(-1.0, 0.0);
@@ -1958,8 +2337,16 @@ Status RCWA::ComputeSFromT(const TMatrix& T,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Matrix square root via 7th-order sign-function iteration.
-// Computes Y ≈ A^{1/2} and Z ≈ A^{-1/2}.
+// Matrix square root by cubic sign-function iteration (Higham, 2008).
+//
+// Computes Y ≈ A^{1/2} and Z ≈ A^{-1/2} via the recursion:
+//   X₀ = A,  Y₀ = A,  Z₀ = I
+//   X_{k+1} = Z_k·Y_k
+//   Y_{k+1} = Y_k·F(X_k),   F(x) = (7+35x+21x²+x³)/(1+21x+35x²+7x³)
+//   Z_{k+1} = F(X_k)·Z_k
+//
+// A branch-cut rotation (phase φ = −π/4) is applied to A before iteration
+// and undone on Y and Z after convergence.  Convergence tolerance tol ≈ 1e−12.
 // ─────────────────────────────────────────────────────────────────────────────
 static Status MatrixSqrt(const Complex* A,
                          int64_t n,
@@ -1998,21 +2385,21 @@ static Status MatrixSqrt(const Complex* A,
 
     for (int iter = 0; iter < max_iter; ++iter)
     {
-        // X2 = X * X,  X3 = X2 * X
+        // X2 = X·X,  X3 = X2·X
         CHECK(MatMul(ops, X.get(), X.get(), X2.get(), n));
         CHECK(MatMul(ops, X2.get(), X.get(), X3.get(), n));
 
-        // P = 7*I + 35*X + 21*X2 + X3
+        // P = 7·I + 35·X + 21·X² + X³  (numerator)
         CHECK(MakeIdentity(P.get(), n, stream));
         CHECK(ScaleInPlace(P.get(), n, make_complex(7.0, 0.0), stream));
-        CHECK(scratch.Allocate(n, n));
+        CHECK(scratch.Allocate(n, n));  // scratch reused throughout the loop
         CHECK(ScaleMatrix(X.get(), scratch.get(), n, make_complex(35.0, 0.0), stream));
         CHECK(AddInPlace(ops, P.get(), scratch.get(), n));
         CHECK(ScaleMatrix(X2.get(), scratch.get(), n, make_complex(21.0, 0.0), stream));
         CHECK(AddInPlace(ops, P.get(), scratch.get(), n));
         CHECK(AddInPlace(ops, P.get(), X3.get(), n));
 
-        // Q = I + 21*X + 35*X2 + 7*X3
+        // Q = I + 21·X + 35·X² + 7·X³  (denominator)
         CHECK(MakeIdentity(Q.get(), n, stream));
         CHECK(ScaleMatrix(X.get(), scratch.get(), n, make_complex(21.0, 0.0), stream));
         CHECK(AddInPlace(ops, Q.get(), scratch.get(), n));
@@ -2021,33 +2408,33 @@ static Status MatrixSqrt(const Complex* A,
         CHECK(ScaleMatrix(X3.get(), scratch.get(), n, make_complex(7.0, 0.0), stream));
         CHECK(AddInPlace(ops, Q.get(), scratch.get(), n));
 
-        // F = Q \ P
+        // F = Q⁻¹·P
         CHECK(F.Allocate(n, n));
         CHECK(ops.Solve(Q.get(), P.get(), F.get(), n));
 
-        // Y = Y * F
+        // Y_{k+1} = Y_k·F  (scratch reused, old Y goes into scratch)
         CHECK(scratch.Allocate(n, n));
         CHECK(MatMul(ops, Y->get(), F.get(), scratch.get(), n));
         Y->Swap(scratch);
 
-        // Z = F * Z
+        // Z_{k+1} = F·Z_k  (scratch reused)
         CHECK(scratch.Allocate(n, n));
         CHECK(MatMul(ops, F.get(), Z->get(), scratch.get(), n));
         Z->Swap(scratch);
 
-        // X = Z * Y
+        // X_{k+1} = Z_{k+1}·Y_{k+1}  (scratch reused)
         CHECK(scratch.Allocate(n, n));
         CHECK(MatMul(ops, Z->get(), Y->get(), scratch.get(), n));
         X.Swap(scratch);
 
-        // convergence check:  ||I - X||₁ < tol
+        // convergence check: ‖I − X‖₁ < tol
         double res = 0.0;
         CHECK(ComputeMatrixNorm1WithDiagOffset(
             X.get(), n, make_complex(1.0, 0.0), &res, stream));
         if (res < static_cast<double>(tol)) { break; }
     }
 
-    // undo branch-cut rotation
+    // Undo branch-cut rotation:  Y ← e^{-i·φ/2}·Y,  Z ← e^{i·φ/2}·Z
     CHECK(scratch.Allocate(n, n));
     CHECK(ScaleMatrix(Y->get(), scratch.get(), n, phase_Y, stream));
     Y->Swap(scratch);
@@ -2061,14 +2448,17 @@ static Status MatrixSqrt(const Complex* A,
 // ─────────────────────────────────────────────────────────────────────────────
 // Compute S-matrix via the SQRT path.
 //
-//   PQ = P·Q
-//   [G, G⁻¹] = matrix_sqrt(PQ)
-//   exp(i·k₀d·G)         ← general expm via [5/5] Padé + scaling/squaring
-//   exp(−i·k₀d·G) = inv(exp(…))
-//   Cos, Sin, K, E, F    ← matrix arithmetic
-//   S-blocks              ← same conversion as GEMM
+//   1.  PQ = P·Q
+//   2.  [G, G⁻¹] = matrix_sqrt(P·Q)
+//   3.  Θ = k₀d·G
+//   4.  [Cos, Sin] = exp(i·Θ)  via 12th/18th-order Taylor + scaling/squaring
+//   5.  K = V₀·Q·G⁻¹
+//   6.  E = Cos + i·K·Sin
+//   7.  F = (i·Sin + K·Cos)·K⁻¹
+//   8.  S-blocks from E and F  (same conversion as GEMM path)
 //
-// expm still uses GEMM, but the matrix size is n₂×n₂ instead of 2n₂×2n₂.
+// The matrix exponential still uses block-structured exponentiation, but the
+// block size is n₂×n₂ instead of 2n₂×2n₂, halving the matrix dimension.
 // ─────────────────────────────────────────────────────────────────────────────
 Status RCWA::ComputeSMatrixSQRT(const Complex* P,
                                 const Complex* Q,
@@ -2109,7 +2499,7 @@ Status RCWA::ComputeSMatrixSQRT(const Complex* P,
         use_stream));
     PQ.Reset();
 
-    // ── 3-4. Theta = k0d·G, then [Cos, Sin] via block-structured Padé ──
+    // ── 3-4. Θ = k₀d·G, then [Cos, Sin] via Taylor expansion ────────────
     DeviceMatrix Theta;
     CHECK(Theta.Allocate(n, n));
     {
@@ -2132,7 +2522,7 @@ Status RCWA::ComputeSMatrixSQRT(const Complex* P,
     }
     Theta.Reset();
 
-    // ── 7. K = V0 · Q · G_inv ──────────────────────────────────────────
+    // ── 5. K = V₀ · Q · G⁻¹ ──────────────────────────────────────────
     DeviceMatrix Q_Ginv;
     CHECK(Q_Ginv.Allocate(n, n));
     CHECK(MatMul(ops, Q, G_inv.get(), Q_Ginv.get(), n));
@@ -2141,7 +2531,7 @@ Status RCWA::ComputeSMatrixSQRT(const Complex* P,
     Q_Ginv.Reset();
     G_inv.Reset();
 
-    // ── 8. E = Cos + i·K·Sin ──────────────────────────────────────────
+    // ── 6. E = Cos + i·K·Sin ────────────────────────────────────────── ──────────────────────────────────────────
     DeviceMatrix E;
     CHECK(E.Allocate(n, n));
     CHECK(CopyMatrix(Cos.get(), E.get(), n, use_stream));
@@ -2153,8 +2543,8 @@ Status RCWA::ComputeSMatrixSQRT(const Complex* P,
         CHECK(AddInPlace(ops, E.get(), KSin.get(), n));
     }
 
-    // ── 9. F = (i·Sin + K·Cos) / K ──────────────────────────────────
-    //  9a. RHS = i·Sin + K·Cos
+    // ── 7. F = (i·Sin + K·Cos)·K⁻¹ ──────────────────────────────────
+    //  7a. RHS = i·Sin + K·Cos
     DeviceMatrix RHS;
     CHECK(RHS.Allocate(n, n));
     CHECK(ScaleMatrix(Sin.get(), RHS.get(), n, imag, use_stream));
@@ -2167,7 +2557,7 @@ Status RCWA::ComputeSMatrixSQRT(const Complex* P,
     Sin.Reset();
     Cos.Reset();
 
-    //  9b. F = RHS / K  via  Kᵀ · Fᵀ = RHSᵀ
+    //  7b. F = RHS / K  via  Kᵀ·Fᵀ = RHSᵀ
     DeviceMatrix RHS_trans;
     CHECK(RHS_trans.Allocate(n, n));
     CHECK(TransposeMatrix(RHS.get(), RHS_trans.get(), n, use_stream));
@@ -2183,9 +2573,163 @@ Status RCWA::ComputeSMatrixSQRT(const Complex* P,
     CHECK(TransposeMatrix(F_trans.get(), F.get(), n, use_stream));
     RHS.Reset();
 
-    // ── 10. S-blocks: same conversion as ComputeSFromT ─────────────────
-    // T22_layer = (E + F)/2,  T21_layer = (E − F)/2
-    // S11 = inv(T22_layer),   S12 = −S11 · T21_layer
+    // ── 8. S-blocks: same conversion as GEMM path ─────────────────────
+    // T₂₂ = (E + F)/2,  T₂₁ = (E − F)/2
+    // S₁₁ = T₂₂⁻¹,  S₁₂ = −S₁₁·T₂₁
+    DeviceMatrix T22, T21;
+    CHECK(T22.Allocate(n, n));
+    CHECK(AddMatrix(ops, E.get(), F.get(), T22.get(), n));
+    CHECK(ScaleInPlace(T22.get(), n, half, use_stream));
+    CHECK(T21.Allocate(n, n));
+    CHECK(SubMatrix(ops, E.get(), F.get(), T21.get(), n));
+    CHECK(ScaleInPlace(T21.get(), n, half, use_stream));
+
+    DeviceMatrix S11, S12;
+    {
+        DeviceMatrix I_rhs;
+        CHECK(I_rhs.Allocate(n, n));
+        CHECK(MakeIdentity(I_rhs.get(), n, use_stream));
+        CHECK(S11.Allocate(n, n));
+        CHECK(ops.Solve(T22.get(), I_rhs.get(), S11.get(), n));
+    }
+    CHECK(S12.Allocate(n, n));
+    CHECK(MatMul(ops, S11.get(), T21.get(), S12.get(), n));
+    CHECK(ScaleInPlace(S12.get(), n, neg_one, use_stream));
+
+    DeviceMatrix S21, S22;
+    CHECK(S21.Allocate(n, n));
+    CHECK(S22.Allocate(n, n));
+    CHECK(CopyMatrix(S12.get(), S21.get(), n, use_stream));
+    CHECK(CopyMatrix(S11.get(), S22.get(), n, use_stream));
+
+    S->S_11 = S11.Release();
+    S->S_12 = S12.Release();
+    S->S_21 = S21.Release();
+    S->S_22 = S22.Release();
+    return Status::kSuccess;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FREE path: avoids the matrix square root entirely by computing cos(Θ) and
+// Θ⁻¹·sin(Θ) directly from P·Q via Taylor expansion (see above).
+//
+// Both functions are even in Θ = k₀d·√(P·Q), so they depend only on
+// Θ² = (k₀d)²·(P·Q).  E and F are then assembled without ever forming G
+// or its inverse:
+//
+//   1.  [Cos, Sinc] = ComputeCosSincFromPQ(P, Q)
+//   2.  V₀Q = V₀·Q
+//   3.  E   = Cos + i·k₀d·V₀Q·Sinc
+//   4.  F   = −(i·k₀d·Sinc·P + V₀Q·Cos·Q⁻¹)·V₀
+//   5.  S-blocks from E and F  (same conversion as SQRT path)
+// ─────────────────────────────────────────────────────────────────────────────
+Status RCWA::ComputeSMatrixFREE(const Complex* P,
+                                const Complex* Q,
+                                int64_t n,
+                                Real k0d,
+                                const VMatrix& V,
+                                SMatrix* S,
+                                cudaStream_t stream) const
+{
+    if (!P || !Q || !S || n <= 0 || (n % 2) != 0)
+    {
+        return Status::kInvalidValue;
+    }
+
+    cudaStream_t use_stream = stream ? stream : stream_;
+
+    S->S_11 = nullptr;
+    S->S_12 = nullptr;
+    S->S_21 = nullptr;
+    S->S_22 = nullptr;
+
+    ComplexMatrixOps ops(use_stream);
+    CHECK(ops.SetStream(use_stream));
+
+    const Complex imag = make_complex(0.0, 1.0);
+    const Complex k0d_imag = make_complex(0.0, static_cast<Real>(k0d));
+    const Complex neg_k0d_imag = make_complex(0.0, static_cast<Real>(-k0d));
+    const Complex half = make_complex(0.5, 0.0);
+    const Complex neg_one = make_complex(-1.0, 0.0);
+
+    // ── 1. Cos, Sinc = cos(Θ), Θ⁻¹·sin(Θ)  (no sqrt) ───────────────────
+    DeviceMatrix Cos;
+    CHECK(Cos.Allocate(n, n));
+    DeviceMatrix Sinc;
+    CHECK(Sinc.Allocate(n, n));
+    if (high_order_)
+    {
+        CHECK(ComputeCosSincFromPQOrder18(P, Q, n, k0d, Cos.get(), Sinc.get(), use_stream));
+    }
+    else
+    {
+        CHECK(ComputeCosSincFromPQOrder12(P, Q, n, k0d, Cos.get(), Sinc.get(), use_stream));
+    }
+
+    // ── 2. V0Q = V₀ · Q ─────────────────────────────────────────────────
+    DeviceMatrix V0Q;
+    CHECK(ApplyV0Left(V, Q, n, &V0Q, use_stream));
+
+    // ── 3. E = Cos + i·k₀d·V₀Q·Sinc ────────────────────────────────────
+    DeviceMatrix E;
+    CHECK(E.Allocate(n, n));
+    {
+        DeviceMatrix V0Q_Sinc;
+        CHECK(V0Q_Sinc.Allocate(n, n));
+        CHECK(MatMul(ops, V0Q.get(), Sinc.get(), V0Q_Sinc.get(), n));
+        CHECK(ScaleInPlace(V0Q_Sinc.get(), n, k0d_imag, use_stream));
+        CHECK(AddMatrix(ops, Cos.get(), V0Q_Sinc.get(), E.get(), n));
+    }
+
+    // ── 4. F = −(i·k₀d·Sinc·P + V₀Q·Cos·Q⁻¹)·V₀ ─────────────────────
+    //
+    //  4a. part1 = i·k₀d·Sinc·P
+    DeviceMatrix part1;
+    CHECK(part1.Allocate(n, n));
+    CHECK(MatMul(ops, Sinc.get(), P, part1.get(), n));
+    CHECK(ScaleInPlace(part1.get(), n, k0d_imag, use_stream));
+
+    //  4b. CosQ = Cos·Q⁻¹  (solve Q^T·X = Cos^T, then transpose)
+    DeviceMatrix CosQ;
+    CHECK(CosQ.Allocate(n, n));
+    {
+        DeviceMatrix CosT;
+        CHECK(CosT.Allocate(n, n));
+        CHECK(TransposeMatrix(Cos.get(), CosT.get(), n, use_stream));
+
+        DeviceMatrix X;
+        CHECK(X.Allocate(n, n));
+        CHECK(ops.Solve(Q, CosT.get(), X.get(), n, n, CUBLAS_OP_T));
+        CHECK(TransposeMatrix(X.get(), CosQ.get(), n, use_stream));
+    }
+
+    //  4c. V0Q_CosQ = V₀Q · CosQ
+    DeviceMatrix V0Q_CosQ;
+    CHECK(V0Q_CosQ.Allocate(n, n));
+    CHECK(MatMul(ops, V0Q.get(), CosQ.get(), V0Q_CosQ.get(), n));
+    CosQ.Reset();
+
+    //  4d. F_pre = part1 + V0Q_CosQ
+    DeviceMatrix F_pre;
+    CHECK(F_pre.Allocate(n, n));
+    CHECK(AddMatrix(ops, part1.get(), V0Q_CosQ.get(), F_pre.get(), n));
+    part1.Reset();
+    V0Q_CosQ.Reset();
+
+    //  4e. F = −F_pre · V₀
+    DeviceMatrix F;
+    CHECK(F.Allocate(n, n));
+    CHECK(ApplyV0Right(V, F_pre.get(), n, &F, use_stream));
+    F_pre.Reset();
+    CHECK(ScaleInPlace(F.get(), n, neg_one, use_stream));
+
+    Sinc.Reset();
+    Cos.Reset();
+    V0Q.Reset();
+
+    // ── 5. S-blocks: same conversion as SQRT path ───────────────────────
+    // T₂₂ = (E + F)/2,  T₂₁ = (E − F)/2
+    // S₁₁ = T₂₂⁻¹,  S₁₂ = −S₁₁·T₂₁
     DeviceMatrix T22, T21;
     CHECK(T22.Allocate(n, n));
     CHECK(AddMatrix(ops, E.get(), F.get(), T22.get(), n));
@@ -2313,6 +2857,10 @@ Status RCWA::AddLayer(Real thickness, const Complex* eps_conv)
     if (expm_method_ == 'S')
     {
         CHECK(ComputeSMatrixSQRT(P.get(), Q.get(), n2, k0d, V0_, &S, stream_));
+    }
+    else if (expm_method_ == 'F')
+    {
+        CHECK(ComputeSMatrixFREE(P.get(), Q.get(), n2, k0d, V0_, &S, stream_));
     }
     else
     {
@@ -2708,8 +3256,12 @@ Status RCWA::FieldXY(const Real* x_axis,
     ComplexMatrixOps ops(use_stream);
     CHECK(ops.SetStream(use_stream));
 
-    // Exy = S_port * E_i (diffraction amplitudes), Ez = (Kx*Ex + Ky*Ey)/Kz,
-    // field(x,y) = sum_mn E_mn * exp(i * omega * (Kx*x + Ky*y)).
+    // Diffraction amplitudes:  E_xy = S·E_i (n₂ × 1).
+    // Ez is recovered from the divergence condition:
+    //   Ez = (Kx·Ex + Ky·Ey) / Kz.
+    //
+    // Field reconstruction:
+    //   field(x,y) = Σ_{mn} E_{mn} · exp(i·ω·(Kx·x + Ky·y))
     DeviceMatrix Exy;
     CHECK(Exy.Allocate(n2, 1));
     CHECK(ops.MatMul(S_port, source_ei_, Exy.get(), n2, 1, n2));
@@ -2771,11 +3323,11 @@ Status RCWA::BuildPQ(const Complex* eps_conv, int64_t n, Complex* P, Complex* Q)
     ComplexMatrixOps ops(stream_);
     CHECK(ops.SetStream(stream_));
 
-    // P/Q block structure (n x n blocks, Kx/Ky diagonal):
-    // P = [ Kx*E^{-1}*Ky , Ky*E^{-1}*Ky - I;
-    //       I - Kx*E^{-1}*Kx , -Ky*E^{-1}*Kx ]
-    // Q = [ -Kx*Ky , E - Ky^2;
-    //       Kx^2 - E, Kx*Ky ]
+    // P and Q are 2×2 block matrices with diagonal Kx, Ky:
+    //   P = [  Kx·E⁻¹·Ky,   Ky·E⁻¹·Ky − I;
+    //          I − Kx·E⁻¹·Kx,  −Ky·E⁻¹·Kx  ]
+    //   Q = [  −Kx·Ky,   E − Ky²;
+    //          Kx² − E,   Kx·Ky  ]
     DeviceVector KxKxDiag;
     DeviceVector KyKyDiag;
     DeviceVector KxKyDiag;

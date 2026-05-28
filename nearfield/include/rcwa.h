@@ -111,6 +111,13 @@ class RCWA
                                const VMatrix& V,
                                SMatrix* S,
                                cudaStream_t stream = nullptr) const;
+    Status ComputeSMatrixFREE(const Complex* P,
+                               const Complex* Q,
+                               int64_t n,
+                               Real k0d,
+                               const VMatrix& V,
+                               SMatrix* S,
+                               cudaStream_t stream = nullptr) const;
     Status RepeatCurrentStackSMatrix(int repeats);
 
     int64_t order_N() const { return order_N_; }
