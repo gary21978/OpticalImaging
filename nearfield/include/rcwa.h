@@ -118,6 +118,8 @@ class RCWA
     cudaStream_t stream() const { return stream_; }
     void SetExpmMethod(char method) { expm_method_ = method; }
     char expm_method() const { return expm_method_; }
+    void SetHighOrder(bool high) { high_order_ = high; }
+    bool high_order() const { return high_order_; }
 
   private:
     Status BuildKxKy(Real inc_ang, Real azi_ang, Real eps_ref);
@@ -163,6 +165,8 @@ class RCWA
     int64_t order_N_ = 0;
     bool kvectors_ready_ = false;
     char expm_method_ = 'G';
+    int order_method_ = 18;
+    bool high_order_ = true;
     cudaStream_t stream_ = nullptr;
 
     Complex* kx_diag_ = nullptr;

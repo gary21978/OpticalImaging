@@ -1135,6 +1135,11 @@ Status RCWA::ComputeTFromPQOrder18(const Complex* P,
     A6_11.Reset();
     A6_22.Reset();
 
+    // I2, A_12, A_21 no longer needed after B coefficients are built
+    I2.Reset();
+    A_12.Reset();
+    A_21.Reset();
+
     DeviceMatrix A9_11;
     CHECK(A9_11.Allocate(n, n));
     CHECK(MatMul(ops, B_11[0].get(), B_11[4].get(), A9_11.get(), n));
@@ -1166,6 +1171,13 @@ Status RCWA::ComputeTFromPQOrder18(const Complex* P,
     CHECK(MatMul(ops, B_22[0].get(), B_22[4].get(), scratch.get(), n));
     CHECK(AddInPlace(ops, A9_22.get(), scratch.get(), n));
     CHECK(AddInPlace(ops, A9_22.get(), B_22[3].get(), n));
+
+    // Free B[0], B[3], B[4] — no longer needed after A9 blocks are built
+    for (int i : {0, 3, 4})
+    {
+        B_11[i].Reset(); B_12[i].Reset();
+        B_21[i].Reset(); B_22[i].Reset();
+    }
 
     DeviceMatrix temp1;
     DeviceMatrix temp2;
@@ -1230,6 +1242,15 @@ Status RCWA::ComputeTFromPQOrder18(const Complex* P,
         CHECK(AddMatrix(ops, B_22[1].get(), temp2.get(), T_22.get(), n));
         CHECK(AddInPlace(ops, T_22.get(), temp3.get(), n));
     }
+
+    // Free B[1], B[2], A9 blocks, and temp matrices — none are used in squaring
+    for (int i : {1, 2})
+    {
+        B_11[i].Reset(); B_12[i].Reset();
+        B_21[i].Reset(); B_22[i].Reset();
+    }
+    A9_11.Reset(); A9_12.Reset(); A9_21.Reset(); A9_22.Reset();
+    temp1.Reset(); temp2.Reset(); temp3.Reset();
 
     DeviceMatrix tmp11;
     DeviceMatrix tmp12;
@@ -1695,6 +1716,11 @@ Status RCWA::ComputeTFromPQOrder12(const Complex* P,
     A3_12.Reset();
     A3_21.Reset();
 
+    // I2, A_12, A_21 no longer needed after B coefficients are built
+    I2.Reset();
+    A_12.Reset();
+    A_21.Reset();
+
     DeviceMatrix A6_11;
     CHECK(A6_11.Allocate(n, n));
     CHECK(MatMul(ops, B_11[3].get(), B_11[3].get(), A6_11.get(), n));
@@ -1726,6 +1752,13 @@ Status RCWA::ComputeTFromPQOrder12(const Complex* P,
     CHECK(MatMul(ops, B_22[3].get(), B_22[3].get(), scratch.get(), n));
     CHECK(AddInPlace(ops, A6_22.get(), scratch.get(), n));
     CHECK(AddInPlace(ops, A6_22.get(), B_22[2].get(), n));
+
+    // Free B[2], B[3] — no longer needed after A6 blocks are built
+    for (int i : {2, 3})
+    {
+        B_11[i].Reset(); B_12[i].Reset();
+        B_21[i].Reset(); B_22[i].Reset();
+    }
 
     DeviceMatrix temp1;
     DeviceMatrix temp2;
@@ -1790,6 +1823,15 @@ Status RCWA::ComputeTFromPQOrder12(const Complex* P,
         CHECK(AddMatrix(ops, B_22[0].get(), temp2.get(), T_22.get(), n));
         CHECK(AddInPlace(ops, T_22.get(), temp3.get(), n));
     }
+
+    // Free B[0], B[1], A6 blocks, and temp matrices — none are used in squaring
+    for (int i : {0, 1})
+    {
+        B_11[i].Reset(); B_12[i].Reset();
+        B_21[i].Reset(); B_22[i].Reset();
+    }
+    A6_11.Reset(); A6_12.Reset(); A6_21.Reset(); A6_22.Reset();
+    temp1.Reset(); temp2.Reset(); temp3.Reset();
 
     DeviceMatrix tmp11;
     DeviceMatrix tmp12;
@@ -2080,7 +2122,14 @@ Status RCWA::ComputeSMatrixSQRT(const Complex* P,
     CHECK(Cos.Allocate(n, n));
     DeviceMatrix Sin;
     CHECK(Sin.Allocate(n, n));
-    CHECK(ComputeCosSinFromThetaOrder18(Theta.get(), n, Cos.get(), Sin.get(), use_stream));
+    if (high_order_)
+    {
+        CHECK(ComputeCosSinFromThetaOrder18(Theta.get(), n, Cos.get(), Sin.get(), use_stream));
+    }
+    else
+    {
+        CHECK(ComputeCosSinFromThetaOrder12(Theta.get(), n, Cos.get(), Sin.get(), use_stream));
+    }
     Theta.Reset();
 
     // ── 7. K = V0 · Q · G_inv ──────────────────────────────────────────
@@ -2268,7 +2317,14 @@ Status RCWA::AddLayer(Real thickness, const Complex* eps_conv)
     else
     {
         TMatrix T{};
-        CHECK(ComputeTFromPQOrder18(P.get(), Q.get(), n2, k0d, &T, stream_));
+        if (high_order_)
+        {
+            CHECK(ComputeTFromPQOrder18(P.get(), Q.get(), n2, k0d, &T, stream_));
+        }
+        else
+        {
+            CHECK(ComputeTFromPQOrder12(P.get(), Q.get(), n2, k0d, &T, stream_));
+        }
         CHECK(ComputeSFromT(T, V0_, n2, &S, stream_));
 
         SAFEFREE(T.T_11);
