@@ -1390,22 +1390,19 @@ Status RCWA::ComputeCosSinFromThetaOrder12(const Complex* Theta,
     CHECK(AddInPlace(ops, S.get(), TB2, n));                    // S += TA·A⁽⁶⁾₂
 
     // ── Phase 4: repeated squaring (m rounds of double-angle) ───────────
-    DeviceMatrix tmpC, tmpS;
+    const Complex two = make_complex(2.0, 0.0);
     for (int i = 0; i < m; ++i)
     {
-        CHECK(tmpC.Allocate(n, n));
-        CHECK(MatMul(ops, C.get(), C.get(), tmpC.get(), n));    //  C²
-        CHECK(MatMul(ops, S.get(), S.get(), scratch.get(), n)); //  S²
-        CHECK(ScaleMatrix(scratch.get(), scratch.get(), n, neg_one, use_stream));
-        CHECK(AddInPlace(ops, tmpC.get(), scratch.get(), n));     //  tmpC = C² − S²
+        // S_new = 2·S·C  (compute first to avoid overwriting C)
+        CHECK(MatMul(ops, S.get(), C.get(), scratch.get(), n));
+        CHECK(ScaleInPlace(scratch.get(), n, two, use_stream));
+        S.Swap(scratch);   // S ← S_new, scratch ← old S
 
-        CHECK(tmpS.Allocate(n, n));
-        CHECK(MatMul(ops, C.get(), S.get(), tmpS.get(), n));    //  C·S
-        const Complex two = make_complex(2.0, 0.0);
-        CHECK(ScaleInPlace(tmpS.get(), n, two, use_stream));      //  tmpS = 2·C·S
-
-        C.Swap(tmpC);
-        S.Swap(tmpS);
+        // C_new = 2·C² − I  (using C² − S² = 2C² − I)
+        CHECK(MatMul(ops, C.get(), C.get(), scratch.get(), n));
+        CHECK(ScaleInPlace(scratch.get(), n, two, use_stream));
+        CHECK(AddDiagonalConstantInPlace(scratch.get(), n, neg_one, use_stream));
+        C.Swap(scratch);   // C ← C_new, scratch ← old C
     }
 
     const size_t bytes = static_cast<size_t>(n) * static_cast<size_t>(n) * sizeof(Complex);
@@ -1542,22 +1539,19 @@ Status RCWA::ComputeCosSinFromThetaOrder18(const Complex* Theta,
     CHECK(AddInPlace(ops, S.get(), TB2, n));                    // S += TA·A⁽⁹⁾₂
 
     // ── Phase 4: repeated squaring (m rounds of double-angle) ───────────
-    DeviceMatrix tmpC, tmpS;
+    const Complex two = make_complex(2.0, 0.0);
     for (int i = 0; i < m; ++i)
     {
-        CHECK(tmpC.Allocate(n, n));
-        CHECK(MatMul(ops, C.get(), C.get(), tmpC.get(), n));    //  C²
-        CHECK(MatMul(ops, S.get(), S.get(), scratch.get(), n)); //  S²
-        CHECK(ScaleMatrix(scratch.get(), scratch.get(), n, neg_one, use_stream));
-        CHECK(AddInPlace(ops, tmpC.get(), scratch.get(), n));     //  tmpC = C² − S²
+        // S_new = 2·S·C  (compute first to avoid overwriting C)
+        CHECK(MatMul(ops, S.get(), C.get(), scratch.get(), n));
+        CHECK(ScaleInPlace(scratch.get(), n, two, use_stream));
+        S.Swap(scratch);   // S ← S_new, scratch ← old S
 
-        CHECK(tmpS.Allocate(n, n));
-        CHECK(MatMul(ops, C.get(), S.get(), tmpS.get(), n));    //  C·S
-        const Complex two = make_complex(2.0, 0.0);
-        CHECK(ScaleInPlace(tmpS.get(), n, two, use_stream));      //  tmpS = 2·C·S
-
-        C.Swap(tmpC);
-        S.Swap(tmpS);
+        // C_new = 2·C² − I  (using C² − S² = 2C² − I)
+        CHECK(MatMul(ops, C.get(), C.get(), scratch.get(), n));
+        CHECK(ScaleInPlace(scratch.get(), n, two, use_stream));
+        CHECK(AddDiagonalConstantInPlace(scratch.get(), n, neg_one, use_stream));
+        C.Swap(scratch);   // C ← C_new, scratch ← old C
     }
 
     const size_t bytes = static_cast<size_t>(n) * static_cast<size_t>(n) * sizeof(Complex);
