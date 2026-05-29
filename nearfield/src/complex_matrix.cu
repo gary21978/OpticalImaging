@@ -70,10 +70,13 @@ __global__ void TransposeKernel(const Complex* src, Complex* dst, int64_t n)
 {
     int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     int64_t total = n * n;
-    if (idx >= total) { return; }
+    if (idx >= total)
+    {
+        return;
+    }
     int64_t row = idx % n;
     int64_t col = idx / n;
-    dst[idx] = src[row * n + col];  // dst[col*n+row] = src[row*n+col] = src(col,row) = srcᵀ(row,col)
+    dst[idx] = src[row * n + col]; // dst[col*n+row] = src[row*n+col] = src(col,row) = srcᵀ(row,col)
 }
 
 __global__ void IdentityKernel(Complex* A, int64_t n)
@@ -224,6 +227,15 @@ __global__ void CopyDiagonalBlockKernel(const Complex* diag,
     }
 }
 
+__global__ void ScaleAddInPlaceKernel(Complex* A, const Complex* B, int64_t count, Complex alpha)
+{
+    int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (idx < count)
+    {
+        A[idx] = ComplexAdd(A[idx], ComplexMul(B[idx], alpha));
+    }
+}
+
 __global__ void ElementwiseMulKernel(const Complex* a, const Complex* b, Complex* out, int64_t n)
 {
     int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -268,13 +280,14 @@ __global__ void ColumnSumKernel(const Complex* A, int64_t n, Real* col_sums)
     }
 }
 
-__global__ void ColumnSumWithDiagOffsetKernel(const Complex* A,
-                                                int64_t n,
-                                                Complex diag_offset,
-                                                Real* col_sums)
+__global__ void
+ColumnSumWithDiagOffsetKernel(const Complex* A, int64_t n, Complex diag_offset, Real* col_sums)
 {
     const int64_t col = static_cast<int64_t>(blockIdx.x);
-    if (col >= n) { return; }
+    if (col >= n)
+    {
+        return;
+    }
 
     Real sum = 0.0;
     for (int64_t row = threadIdx.x; row < n; row += blockDim.x)
@@ -293,11 +306,17 @@ __global__ void ColumnSumWithDiagOffsetKernel(const Complex* A,
 
     for (int stride = blockDim.x / 2; stride > 0; stride >>= 1)
     {
-        if (threadIdx.x < stride) { shared[threadIdx.x] += shared[threadIdx.x + stride]; }
+        if (threadIdx.x < stride)
+        {
+            shared[threadIdx.x] += shared[threadIdx.x + stride];
+        }
         __syncthreads();
     }
 
-    if (threadIdx.x == 0) { col_sums[col] = shared[0]; }
+    if (threadIdx.x == 0)
+    {
+        col_sums[col] = shared[0];
+    }
 }
 
 __global__ void MaxReduceKernel(const Real* input, int64_t n, Real* output)
@@ -702,7 +721,6 @@ Status ComplexMatrixOps::Solve(const Complex* A,
         return Status::kCusolverError;
     }
 
-
     cleanup();
     return Status::kSuccess;
 }
@@ -867,10 +885,24 @@ Status ScaleInPlace(Complex* A, int64_t n, Complex scalar, cudaStream_t stream)
     return ScaleMatrix(A, A, n, scalar, stream);
 }
 
-Status
-TransposeMatrix(const Complex* src, Complex* dst, int64_t n, cudaStream_t stream)
+Status ScaleAddInPlace(Complex* A, const Complex* B, int64_t n, Complex alpha, cudaStream_t stream)
 {
-    if (!src || !dst || n <= 0) { return Status::kInvalidValue; }
+    if (!A || !B || n <= 0)
+    {
+        return Status::kInvalidValue;
+    }
+    int64_t count = n * n;
+    int blocks = static_cast<int>((count + CUDA_THREADS - 1) / CUDA_THREADS);
+    ScaleAddInPlaceKernel<<<blocks, CUDA_THREADS, 0, stream>>>(A, B, count, alpha);
+    return StatusFromCuda(cudaGetLastError());
+}
+
+Status TransposeMatrix(const Complex* src, Complex* dst, int64_t n, cudaStream_t stream)
+{
+    if (!src || !dst || n <= 0)
+    {
+        return Status::kInvalidValue;
+    }
     int64_t total = n * n;
     int blocks = static_cast<int>((total + CUDA_THREADS - 1) / CUDA_THREADS);
     TransposeKernel<<<blocks, CUDA_THREADS, 0, stream>>>(src, dst, n);
@@ -988,21 +1020,26 @@ Status ComputeMatrixNorm1(const Complex* A, int64_t n, double* out_norm, cudaStr
     }
 
     Real host_value = 0.0;
-    CHECK(StatusFromCuda(
-        cudaMemcpy(&host_value, input, sizeof(Real), cudaMemcpyDeviceToHost)));
+    CHECK(StatusFromCuda(cudaMemcpy(&host_value, input, sizeof(Real), cudaMemcpyDeviceToHost)));
 
     *out_norm = static_cast<double>(host_value);
     return Status::kSuccess;
 }
 
 Status ComputeMatrixNorm1WithDiagOffset(const Complex* A,
-                                         int64_t n,
-                                         Complex diag_offset,
-                                         double* out_norm,
-                                         cudaStream_t stream)
+                                        int64_t n,
+                                        Complex diag_offset,
+                                        double* out_norm,
+                                        cudaStream_t stream)
 {
-    if (!A || !out_norm || n <= 0) { return Status::kInvalidValue; }
-    if (n > std::numeric_limits<int>::max()) { return Status::kInvalidValue; }
+    if (!A || !out_norm || n <= 0)
+    {
+        return Status::kInvalidValue;
+    }
+    if (n > std::numeric_limits<int>::max())
+    {
+        return Status::kInvalidValue;
+    }
 
     const size_t count = static_cast<size_t>(n);
     const int block = kReduceBlockSize;
@@ -1034,8 +1071,7 @@ Status ComputeMatrixNorm1WithDiagOffset(const Complex* A,
     }
 
     Real host_value = 0.0;
-    CHECK(StatusFromCuda(
-        cudaMemcpy(&host_value, input, sizeof(Real), cudaMemcpyDeviceToHost)));
+    CHECK(StatusFromCuda(cudaMemcpy(&host_value, input, sizeof(Real), cudaMemcpyDeviceToHost)));
     *out_norm = static_cast<double>(host_value);
     return Status::kSuccess;
 }

@@ -93,8 +93,7 @@ Status MultiplyDiagonalVectors(const Complex* a,
 Status
 ScaleMatrix(const Complex* A, Complex* C, int64_t n, Complex scalar, cudaStream_t stream = nullptr);
 Status ScaleInPlace(Complex* A, int64_t n, Complex scalar, cudaStream_t stream = nullptr);
-Status
-TransposeMatrix(const Complex* src, Complex* dst, int64_t n, cudaStream_t stream = nullptr);
+Status TransposeMatrix(const Complex* src, Complex* dst, int64_t n, cudaStream_t stream = nullptr);
 Status CopyMatrix(const Complex* src, Complex* dst, int64_t n, cudaStream_t stream = nullptr);
 Status CopyBlock(const Complex* src,
                  int64_t n,
@@ -122,11 +121,17 @@ Status CopyBlockNegated(const Complex* src,
                         int64_t col_offset,
                         cudaStream_t stream = nullptr);
 
+Status ScaleAddInPlace(Complex* A,
+                       const Complex* B,
+                       int64_t n,
+                       Complex alpha,
+                       cudaStream_t stream = nullptr);
+
 Status
 ComputeMatrixNorm1(const Complex* A, int64_t n, double* out_norm, cudaStream_t stream = nullptr);
 
 Status ComputeMatrixNorm1WithDiagOffset(const Complex* A,
-                                         int64_t n,
-                                         Complex diag_offset,
-                                         double* out_norm,
-                                         cudaStream_t stream = nullptr);
+                                        int64_t n,
+                                        Complex diag_offset,
+                                        double* out_norm,
+                                        cudaStream_t stream = nullptr);
