@@ -99,11 +99,13 @@ class RCWA
                                           Complex* Cos,
                                           Complex* Sin,
                                           cudaStream_t stream = nullptr) const;
-    Status ComputeSFromT(const TMatrix& T,
-                         const VMatrix& V,
-                         int64_t n,
-                         SMatrix* S,
-                         cudaStream_t stream = nullptr) const;
+    Status ComputeSMatrixGEMM(const Complex* P,
+                               const Complex* Q,
+                               int64_t n,
+                               Real k0d,
+                               const VMatrix& V,
+                               SMatrix* S,
+                               cudaStream_t stream = nullptr) const;
     Status ComputeSMatrixSQRT(const Complex* P,
                                const Complex* Q,
                                int64_t n,

@@ -79,39 +79,37 @@ static constexpr double kExpConstantOrder12[4][4] = {
 //   ComputeCosSincFromPQOrder12   |   13   | Phase 3: A⁶ + B + B̄ + tmp
 //   MatrixSqrt                    |   10   | Iteration: X,X²,X³,P,Q,F,…
 //
-//   End-to-end paths (stacked intermediates):
-//   GEMM (G) = ComputeTFromPQ + ComputeSFromT       → same as above
-//   SQRT (S) = MatrixSqrt + CosSinFromTheta + K/E/F → ~16
-//   FREE (F) = ComputeCosSincFromPQ + E/F            → same as above
+//   End-to-end paths:
+//   GEMM (G) = ComputeTFromPQ + T→S + EFToSMatrix       → peak in ComputeTFromPQ (24/30)
+//   SQRT (S) = MatrixSqrt + CosSin + K,E,F + EFToSMatrix → peak in CosSinFromTheta (14/16)
+//   FREE (F) = CosSincFromPQ + E,F + EFToSMatrix        → peak in ComputeCosSincFromPQ (13/15)
 //
 // ── Peak memory table (double precision, GB) ─────────────────────────────────
 //
 //  N_peak → |  24    30   |  14    16   |  13    15   |
 //   order   |  G12   G18  |  S12   S18  |  F12   F18  |
 //   ────────┼─────────────┼─────────────┼─────────────┤
-//      6    |  0.0   0.1  |  0.0   0.0  |  0.0   0.0  |
-//      8    |  0.1   0.1  |  0.1   0.1  |  0.1   0.1  |
 //     10    |  0.3   0.3  |  0.2   0.2  |  0.2   0.2  |
-//     12    |  0.6   0.7  |  0.3   0.4  |  0.3   0.3  |
-//     14    |  1.0   1.3  |  0.6   0.7  |  0.5   0.6  |
-//     16    |  1.7   2.1  |  1.0   1.1  |  0.9   1.1  |
-//     18    |  2.7   3.4  |  1.6   1.8  |  1.5   1.7  |
+//     15    |  1.3   1.7  |  0.8   0.9  |  0.7   0.8  |
 //     20    |  4.0   5.1  |  2.4   2.7  |  2.2   2.5  |
-//     22    |  5.9   7.3  |  3.4   3.9  |  3.2   3.7  |
-//     24    |  8.2  10.3  |  4.8   5.5  |  4.5   5.1  |
-//     26    | 11.3  14.1  |  6.6   7.5  |  6.1   7.1  |
-//     28    | 15.1  18.9  |  8.8  10.1  |  8.2   9.4  |
-//     30    | 19.8  24.7  | 11.5  13.2  | 10.7  12.4  |
+//     25    |  9.7  12.1  |  5.6   6.5  |  5.2   6.0  |
+//     30    | 19.8  24.8  | 11.6  13.2  | 10.7  12.4  |
+//     35    | 36.4  45.4  | 21.2  24.2  | 19.7  22.7  |
+//     40    | 61.6  77.0  | 35.9  41.1  | 33.4  38.5  |
+//     45    | 98.1 122.6  | 57.2  65.4  | 53.1  61.3  |
+//     50    |148.9 186.1  | 86.8  99.2  | 80.6  93.0  |
+//     55    |217.2 271.5  |126.7 144.8  |117.6 135.7  |
+//     60    |306.6 383.3  |178.9 204.4  |166.1 191.7  |
 //
 // ── Maximum feasible order per GPU (double precision) ────────────────────────
 //
-//   GPU (VRAM)       |  G12 |  G18 | S12/S18 | F12/F18
-//   ─────────────────┼──────┼──────┼─────────┼─────────
-//   RTX 5060L   (8)  |  22  |  20  |   28    |   28
-//   RTX 4090D  (24)  |  28  |  25  |   36    |   38
-//   H100       (80)  |  38  |  35  |   52    |   54
+//   GPU (VRAM)       |  G12 |  G18 |  S12 |  S18 |  F12 |  F18
+//   ─────────────────┼──────┼──────┼──────┼──────┼──────┼──────
+//   RTX 5060L   (8)  |  23  |  22  |  27  |  26  |  27  |  26
+//   RTX 4090D  (24)  |  31  |  29  |  36  |  34  |  36  |  35
+//   H100       (80)  |  42  |  40  |  48  |  47  |  49  |  48
 //
-//  For single precision: halve all MB/GB values → roughly +6 orders.
+//  For single precision: halve all GB values → roughly +6 orders.
 //
 // ── Estimation rules ────────────────────────────────────────────────────────
 //
@@ -2326,14 +2324,79 @@ Status RCWA::ComputeTFromPQOrder12(const Complex* P,
     return Status::kSuccess;
 }
 
-Status RCWA::ComputeSFromT(const TMatrix& T,
-                           const VMatrix& V,
+// ─────────────────────────────────────────────────────────────────────────────
+// Common tail: given E, F ∈ ℂⁿˣⁿ, compute the four S-matrix blocks.
+//
+//   T₂₂ = (E + F)/2,  T₂₁ = (E − F)/2
+//   S₁₁ = T₂₂⁻¹,  S₁₂ = −S₁₁·T₂₁,  S₂₁ = S₁₂,  S₂₂ = S₁₁
+// ─────────────────────────────────────────────────────────────────────────────
+static Status EFToSMatrix(const Complex* E,
+                           const Complex* F,
                            int64_t n,
                            SMatrix* S,
-                           cudaStream_t stream) const
+                           ComplexMatrixOps& ops,
+                           cudaStream_t stream)
 {
-    if (!S || !T.T_11 || !T.T_12 || !T.T_21 || !T.T_22 || !V.V_11 || !V.V_12 || !V.V_21 ||
-        !V.V_22 || n <= 0 || (n % 2) != 0)
+    const Complex half = make_complex(0.5, 0.0);
+    const Complex neg_one = make_complex(-1.0, 0.0);
+
+    DeviceMatrix T22;
+    CHECK(T22.Allocate(n, n));
+    CHECK(AddMatrix(ops, E, F, T22.get(), n));
+    CHECK(ScaleInPlace(T22.get(), n, half, stream));
+
+    DeviceMatrix T21;
+    CHECK(T21.Allocate(n, n));
+    CHECK(SubMatrix(ops, E, F, T21.get(), n));
+    CHECK(ScaleInPlace(T21.get(), n, half, stream));
+
+    DeviceMatrix S11;
+    {
+        DeviceMatrix I_rhs;
+        CHECK(I_rhs.Allocate(n, n));
+        CHECK(MakeIdentity(I_rhs.get(), n, stream));
+        CHECK(S11.Allocate(n, n));
+        CHECK(ops.Solve(T22.get(), I_rhs.get(), S11.get(), n));
+    }
+
+    DeviceMatrix S12;
+    CHECK(S12.Allocate(n, n));
+    CHECK(MatMul(ops, S11.get(), T21.get(), S12.get(), n));
+    CHECK(ScaleInPlace(S12.get(), n, neg_one, stream));
+
+    DeviceMatrix S21;
+    CHECK(S21.Allocate(n, n));
+    CHECK(CopyMatrix(S12.get(), S21.get(), n, stream));
+
+    DeviceMatrix S22;
+    CHECK(S22.Allocate(n, n));
+    CHECK(CopyMatrix(S11.get(), S22.get(), n, stream));
+
+    S->S_11 = S11.Release();
+    S->S_12 = S12.Release();
+    S->S_21 = S21.Release();
+    S->S_22 = S22.Release();
+    return Status::kSuccess;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Compute S-matrix via the GEMM path.
+//
+//   1. Compute T = exp(A·k₀d) via Taylor expansion (Order 12 or 18)
+//   2. Convert T → S via the V₀ matrix
+//
+// Memory peak is higher than SQRT and FREE because ComputeTFromPQ operates
+// on 2n × 2n block matrices internally.
+// ─────────────────────────────────────────────────────────────────────────────
+Status RCWA::ComputeSMatrixGEMM(const Complex* P,
+                                 const Complex* Q,
+                                 int64_t n,
+                                 Real k0d,
+                                 const VMatrix& V,
+                                 SMatrix* S,
+                                 cudaStream_t stream) const
+{
+    if (!P || !Q || !S || !V.V_11 || !V.V_12 || !V.V_21 || !V.V_22 || n <= 0 || (n % 2) != 0)
     {
         return Status::kInvalidValue;
     }
@@ -2345,69 +2408,52 @@ Status RCWA::ComputeSFromT(const TMatrix& T,
     S->S_21 = nullptr;
     S->S_22 = nullptr;
 
+    // ── 1. Compute T from P, Q ───────────────────────────────────────────
+    TMatrix T{};
+    if (high_order_)
+    {
+        CHECK(ComputeTFromPQOrder18(P, Q, n, k0d, &T, use_stream));
+    }
+    else
+    {
+        CHECK(ComputeTFromPQOrder12(P, Q, n, k0d, &T, use_stream));
+    }
+
+    // ── 2. T → S conversion ──────────────────────────────────────────────
+    //   E = T₁₁ + i·V₀·T₂₁
+    //   F = (i·T₁₂ − V₀·T₂₂)·V₀
     ComplexMatrixOps ops(use_stream);
     CHECK(ops.SetStream(use_stream));
 
-    // T → S conversion (2n₂ × 2n₂ block T matrix to n₂ × n₂ S blocks):
-    //   A = T₁₁ + i·V₀·T₂₁
-    //   B = (i·T₁₂ − V₀·T₂₂)·V₀
-    //   C = (A + B)/2,   D = (A − B)/2
-    //   S₁₁ = C⁻¹,   S₁₂ = −S₁₁·D,   S₂₁ = S₁₂,   S₂₂ = S₁₁
     const Complex imag = make_complex(0.0, 1.0);
-    const Complex half = make_complex(0.5, 0.0);
-    const Complex neg_one = make_complex(-1.0, 0.0);
 
     DeviceMatrix tmp_left;
-    DeviceMatrix tmp_right;
-    DeviceMatrix A;
-    DeviceMatrix D;
+    DeviceMatrix E;
+    DeviceMatrix F;
 
     CHECK(ApplyV0Left(V, T.T_21, n, &tmp_left, use_stream));
+    SAFEFREE(T.T_21);
     CHECK(ScaleInPlace(tmp_left.get(), n, imag, use_stream));
 
-    CHECK(A.Allocate(n, n));
-    CHECK(CopyMatrix(T.T_11, A.get(), n, use_stream));
-    CHECK(AddInPlace(ops, A.get(), tmp_left.get(), n));
+    CHECK(E.Allocate(n, n));
+    CHECK(CopyMatrix(T.T_11, E.get(), n, use_stream));
+    SAFEFREE(T.T_11);
+    CHECK(AddInPlace(ops, E.get(), tmp_left.get(), n));
 
     CHECK(ApplyV0Left(V, T.T_22, n, &tmp_left, use_stream));
+    SAFEFREE(T.T_22);
 
-    CHECK(tmp_right.Allocate(n, n));
-    CHECK(CopyMatrix(T.T_12, tmp_right.get(), n, use_stream));
-    CHECK(ScaleInPlace(tmp_right.get(), n, imag, use_stream));
-    CHECK(SubInPlace(ops, tmp_right.get(), tmp_left.get(), n));
+    CHECK(F.Allocate(n, n));
+    CHECK(CopyMatrix(T.T_12, F.get(), n, use_stream));
+    SAFEFREE(T.T_12);
+    CHECK(ScaleInPlace(F.get(), n, imag, use_stream));
+    CHECK(SubInPlace(ops, F.get(), tmp_left.get(), n));
+    tmp_left.Reset();
 
-    CHECK(ApplyV0Right(V, tmp_right.get(), n, &tmp_right, use_stream));
+    CHECK(ApplyV0Right(V, F.get(), n, &F, use_stream));
 
-    CHECK(D.Allocate(n, n));
-    CHECK(SubMatrix(ops, A.get(), tmp_right.get(), D.get(), n));
-    CHECK(ScaleInPlace(D.get(), n, half, use_stream));
+    CHECK(EFToSMatrix(E.get(), F.get(), n, S, ops, use_stream));
 
-    CHECK(AddInPlace(ops, A.get(), tmp_right.get(), n));
-    CHECK(ScaleInPlace(A.get(), n, half, use_stream));
-
-    CHECK(tmp_right.Allocate(n, n));
-    CHECK(MakeIdentity(tmp_right.get(), n, use_stream));
-
-    DeviceMatrix S11;
-    CHECK(S11.Allocate(n, n));
-    CHECK(ops.Solve(A.get(), tmp_right.get(), S11.get(), n));
-
-    CHECK(tmp_right.Allocate(n, n));
-    CHECK(MatMul(ops, S11.get(), D.get(), tmp_right.get(), n));
-    CHECK(ScaleInPlace(tmp_right.get(), n, neg_one, use_stream));
-
-    DeviceMatrix S21;
-    CHECK(S21.Allocate(n, n));
-    CHECK(CopyMatrix(tmp_right.get(), S21.get(), n, use_stream));
-
-    DeviceMatrix S22;
-    CHECK(S22.Allocate(n, n));
-    CHECK(CopyMatrix(S11.get(), S22.get(), n, use_stream));
-
-    S->S_11 = S11.Release();
-    S->S_12 = tmp_right.Release();
-    S->S_21 = S21.Release();
-    S->S_22 = S22.Release();
     return Status::kSuccess;
 }
 
@@ -2530,10 +2576,10 @@ static Status MatrixSqrt(const Complex* A,
 //   5.  K = V₀·Q·G⁻¹
 //   6.  E = Cos + i·K·Sin
 //   7.  F = (i·Sin + K·Cos)·K⁻¹
-//   8.  S-blocks from E and F  (same conversion as GEMM path)
+//   8.  S-blocks from E, F  via EFToSMatrix
 //
-// The matrix exponential still uses block-structured exponentiation, but the
-// block size is n₂×n₂ instead of 2n₂×2n₂, halving the matrix dimension.
+// Uses n × n matrices throughout — half the dimension of the GEMM path's
+// internal 2n × 2n block T-matrix.
 // ─────────────────────────────────────────────────────────────────────────────
 Status RCWA::ComputeSMatrixSQRT(const Complex* P,
                                 const Complex* Q,
@@ -2559,8 +2605,6 @@ Status RCWA::ComputeSMatrixSQRT(const Complex* P,
     CHECK(ops.SetStream(use_stream));
 
     const Complex imag = make_complex(0.0, 1.0);
-    const Complex half = make_complex(0.5, 0.0);
-    const Complex neg_one = make_complex(-1.0, 0.0);
 
     // ── 1. PQ = P * Q ──────────────────────────────────────────────────
     DeviceMatrix PQ;
@@ -2606,7 +2650,7 @@ Status RCWA::ComputeSMatrixSQRT(const Complex* P,
     Q_Ginv.Reset();
     G_inv.Reset();
 
-    // ── 6. E = Cos + i·K·Sin ────────────────────────────────────────── ──────────────────────────────────────────
+    // ── 6. E = Cos + i·K·Sin ──────────────────────────────────────────
     DeviceMatrix E;
     CHECK(E.Allocate(n, n));
     CHECK(CopyMatrix(Cos.get(), E.get(), n, use_stream));
@@ -2648,39 +2692,8 @@ Status RCWA::ComputeSMatrixSQRT(const Complex* P,
     CHECK(TransposeMatrix(F_trans.get(), F.get(), n, use_stream));
     RHS.Reset();
 
-    // ── 8. S-blocks: same conversion as GEMM path ─────────────────────
-    // T₂₂ = (E + F)/2,  T₂₁ = (E − F)/2
-    // S₁₁ = T₂₂⁻¹,  S₁₂ = −S₁₁·T₂₁
-    DeviceMatrix T22, T21;
-    CHECK(T22.Allocate(n, n));
-    CHECK(AddMatrix(ops, E.get(), F.get(), T22.get(), n));
-    CHECK(ScaleInPlace(T22.get(), n, half, use_stream));
-    CHECK(T21.Allocate(n, n));
-    CHECK(SubMatrix(ops, E.get(), F.get(), T21.get(), n));
-    CHECK(ScaleInPlace(T21.get(), n, half, use_stream));
-
-    DeviceMatrix S11, S12;
-    {
-        DeviceMatrix I_rhs;
-        CHECK(I_rhs.Allocate(n, n));
-        CHECK(MakeIdentity(I_rhs.get(), n, use_stream));
-        CHECK(S11.Allocate(n, n));
-        CHECK(ops.Solve(T22.get(), I_rhs.get(), S11.get(), n));
-    }
-    CHECK(S12.Allocate(n, n));
-    CHECK(MatMul(ops, S11.get(), T21.get(), S12.get(), n));
-    CHECK(ScaleInPlace(S12.get(), n, neg_one, use_stream));
-
-    DeviceMatrix S21, S22;
-    CHECK(S21.Allocate(n, n));
-    CHECK(S22.Allocate(n, n));
-    CHECK(CopyMatrix(S12.get(), S21.get(), n, use_stream));
-    CHECK(CopyMatrix(S11.get(), S22.get(), n, use_stream));
-
-    S->S_11 = S11.Release();
-    S->S_12 = S12.Release();
-    S->S_21 = S21.Release();
-    S->S_22 = S22.Release();
+    // ── 8. S-blocks from E, F ──────────────────────────────────────────
+    CHECK(EFToSMatrix(E.get(), F.get(), n, S, ops, use_stream));
     return Status::kSuccess;
 }
 
@@ -2696,7 +2709,7 @@ Status RCWA::ComputeSMatrixSQRT(const Complex* P,
 //   2.  V₀Q = V₀·Q
 //   3.  E   = Cos + i·k₀d·V₀Q·Sinc
 //   4.  F   = −(i·k₀d·Sinc·P + V₀Q·Cos·Q⁻¹)·V₀
-//   5.  S-blocks from E and F  (same conversion as SQRT path)
+//   5.  S-blocks from E, F  via EFToSMatrix
 // ─────────────────────────────────────────────────────────────────────────────
 Status RCWA::ComputeSMatrixFREE(const Complex* P,
                                 const Complex* Q,
@@ -2723,8 +2736,6 @@ Status RCWA::ComputeSMatrixFREE(const Complex* P,
 
     const Complex imag = make_complex(0.0, 1.0);
     const Complex k0d_imag = make_complex(0.0, static_cast<Real>(k0d));
-    const Complex neg_k0d_imag = make_complex(0.0, static_cast<Real>(-k0d));
-    const Complex half = make_complex(0.5, 0.0);
     const Complex neg_one = make_complex(-1.0, 0.0);
 
     // ── 1. Cos, Sinc = cos(Θ), Θ⁻¹·sin(Θ)  (no sqrt) ───────────────────
@@ -2763,6 +2774,7 @@ Status RCWA::ComputeSMatrixFREE(const Complex* P,
     CHECK(part1.Allocate(n, n));
     CHECK(MatMul(ops, Sinc.get(), P, part1.get(), n));
     CHECK(ScaleInPlace(part1.get(), n, k0d_imag, use_stream));
+    Sinc.Reset();
 
     //  4b. CosQ = Cos·Q⁻¹  (solve Q^T·X = Cos^T, then transpose)
     DeviceMatrix CosQ;
@@ -2771,6 +2783,7 @@ Status RCWA::ComputeSMatrixFREE(const Complex* P,
         DeviceMatrix CosT;
         CHECK(CosT.Allocate(n, n));
         CHECK(TransposeMatrix(Cos.get(), CosT.get(), n, use_stream));
+        Cos.Reset();
 
         DeviceMatrix X;
         CHECK(X.Allocate(n, n));
@@ -2783,6 +2796,7 @@ Status RCWA::ComputeSMatrixFREE(const Complex* P,
     CHECK(V0Q_CosQ.Allocate(n, n));
     CHECK(MatMul(ops, V0Q.get(), CosQ.get(), V0Q_CosQ.get(), n));
     CosQ.Reset();
+    V0Q.Reset();
 
     //  4d. F_pre = part1 + V0Q_CosQ
     DeviceMatrix F_pre;
@@ -2798,43 +2812,8 @@ Status RCWA::ComputeSMatrixFREE(const Complex* P,
     F_pre.Reset();
     CHECK(ScaleInPlace(F.get(), n, neg_one, use_stream));
 
-    Sinc.Reset();
-    Cos.Reset();
-    V0Q.Reset();
-
-    // ── 5. S-blocks: same conversion as SQRT path ───────────────────────
-    // T₂₂ = (E + F)/2,  T₂₁ = (E − F)/2
-    // S₁₁ = T₂₂⁻¹,  S₁₂ = −S₁₁·T₂₁
-    DeviceMatrix T22, T21;
-    CHECK(T22.Allocate(n, n));
-    CHECK(AddMatrix(ops, E.get(), F.get(), T22.get(), n));
-    CHECK(ScaleInPlace(T22.get(), n, half, use_stream));
-    CHECK(T21.Allocate(n, n));
-    CHECK(SubMatrix(ops, E.get(), F.get(), T21.get(), n));
-    CHECK(ScaleInPlace(T21.get(), n, half, use_stream));
-
-    DeviceMatrix S11, S12;
-    {
-        DeviceMatrix I_rhs;
-        CHECK(I_rhs.Allocate(n, n));
-        CHECK(MakeIdentity(I_rhs.get(), n, use_stream));
-        CHECK(S11.Allocate(n, n));
-        CHECK(ops.Solve(T22.get(), I_rhs.get(), S11.get(), n));
-    }
-    CHECK(S12.Allocate(n, n));
-    CHECK(MatMul(ops, S11.get(), T21.get(), S12.get(), n));
-    CHECK(ScaleInPlace(S12.get(), n, neg_one, use_stream));
-
-    DeviceMatrix S21, S22;
-    CHECK(S21.Allocate(n, n));
-    CHECK(S22.Allocate(n, n));
-    CHECK(CopyMatrix(S12.get(), S21.get(), n, use_stream));
-    CHECK(CopyMatrix(S11.get(), S22.get(), n, use_stream));
-
-    S->S_11 = S11.Release();
-    S->S_12 = S12.Release();
-    S->S_21 = S21.Release();
-    S->S_22 = S22.Release();
+    // ── 5. S-blocks from E, F ──────────────────────────────────────────
+    CHECK(EFToSMatrix(E.get(), F.get(), n, S, ops, use_stream));
     return Status::kSuccess;
 }
 
@@ -2939,21 +2918,7 @@ Status RCWA::AddLayer(Real thickness, const Complex* eps_conv)
     }
     else
     {
-        TMatrix T{};
-        if (high_order_)
-        {
-            CHECK(ComputeTFromPQOrder18(P.get(), Q.get(), n2, k0d, &T, stream_));
-        }
-        else
-        {
-            CHECK(ComputeTFromPQOrder12(P.get(), Q.get(), n2, k0d, &T, stream_));
-        }
-        CHECK(ComputeSFromT(T, V0_, n2, &S, stream_));
-
-        SAFEFREE(T.T_11);
-        SAFEFREE(T.T_12);
-        SAFEFREE(T.T_21);
-        SAFEFREE(T.T_22);
+        CHECK(ComputeSMatrixGEMM(P.get(), Q.get(), n2, k0d, V0_, &S, stream_));
     }
 
     if (n_repeated > 0)

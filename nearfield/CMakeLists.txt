@@ -20,12 +20,6 @@ add_library(complex_ops STATIC ${CPP_SRC_FILES} ${CUDA_SRC_FILES})
 target_include_directories(complex_ops PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(complex_ops PUBLIC CUDA::cublas CUDA::cusolver CUDA::cufft)
 
-add_executable(T_matrix_test ${CMAKE_CURRENT_SOURCE_DIR}/examples/T_matrix_test.cu)
-target_link_libraries(T_matrix_test PRIVATE complex_ops)
-
-add_executable(S_matrix_test ${CMAKE_CURRENT_SOURCE_DIR}/examples/S_matrix_test.cu)
-target_link_libraries(S_matrix_test PRIVATE complex_ops)
-
 add_executable(homogeneous_test ${CMAKE_CURRENT_SOURCE_DIR}/examples/homogeneous_test.cu)
 target_link_libraries(homogeneous_test PRIVATE complex_ops)
 
@@ -42,8 +36,6 @@ else()
 endif()
 
 target_compile_definitions(complex_ops PUBLIC ${PRECISION_DEF})
-target_compile_definitions(T_matrix_test PRIVATE ${PRECISION_DEF})
-target_compile_definitions(S_matrix_test PRIVATE ${PRECISION_DEF})
 target_compile_definitions(homogeneous_test PRIVATE ${PRECISION_DEF})
 target_compile_definitions(pipeline_test PRIVATE ${PRECISION_DEF})
 target_compile_definitions(method_compare_full PRIVATE ${PRECISION_DEF})
