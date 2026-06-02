@@ -2953,7 +2953,8 @@ Status RCWA::MaterialConv(const Complex* material,
     {
         return Status::kInvalidValue;
     }
-    if (nx <= 2 * static_cast<int64_t>(order_x_) || ny <= 2 * static_cast<int64_t>(order_y_))
+    if (nx < 4 * static_cast<int64_t>(order_x_) + 1 ||
+        ny < 4 * static_cast<int64_t>(order_y_) + 1)
     {
         return Status::kInvalidValue;
     }
