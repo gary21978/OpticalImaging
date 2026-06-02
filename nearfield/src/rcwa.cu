@@ -2953,6 +2953,10 @@ Status RCWA::MaterialConv(const Complex* material,
     {
         return Status::kInvalidValue;
     }
+    if (nx <= 2 * static_cast<int64_t>(order_x_) || ny <= 2 * static_cast<int64_t>(order_y_))
+    {
+        return Status::kInvalidValue;
+    }
 
     cudaStream_t use_stream = stream ? stream : stream_;
     *eps_conv = nullptr;
