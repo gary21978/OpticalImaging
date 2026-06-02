@@ -99,6 +99,13 @@ __host__ __device__ inline Complex operator*(Complex a, Complex b) { return Comp
 
 __host__ __device__ inline Complex operator/(Complex a, Complex b) { return ComplexDiv(a, b); }
 
+__host__ __device__ inline double ComplexAbsSquaredDouble(Complex z)
+{
+    const double real = static_cast<double>(ComplexReal(z));
+    const double imag = static_cast<double>(ComplexImag(z));
+    return real * real + imag * imag;
+}
+
 // branchless implementation of complex square root
 
 __host__ __device__ inline Complex ComplexSqrt(Complex z)

@@ -573,6 +573,59 @@ __global__ void FieldXYKernel(const Complex* kx,
     out_ez[col * x_count + row] = sum_ez;
 }
 
+__global__ void EnergyBalanceKernel(const Complex* kx,
+                                    const Complex* ky,
+                                    const Complex* S11,
+                                    const Complex* S21,
+                                    Complex eps_in,
+                                    Complex eps_out,
+                                    int64_t n,
+                                    int64_t n2,
+                                    int64_t source_order,
+                                    int64_t source_col,
+                                    Real* accum)
+{
+    const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (idx >= n)
+    {
+        return;
+    }
+
+    const Complex kx_src = kx[source_order];
+    const Complex ky_src = ky[source_order];
+    const Complex src_ks = ComplexAdd(ComplexMul(kx_src, kx_src), ComplexMul(ky_src, ky_src));
+    const Complex kz_src = ComplexSqrt(ComplexSub(eps_in, src_ks));
+    const double kz_inc = static_cast<double>(ComplexReal(kz_src));
+    if (kz_inc <= 0.0)
+    {
+        return;
+    }
+
+    const Complex kx_i = kx[idx];
+    const Complex ky_i = ky[idx];
+    const Complex ks = ComplexAdd(ComplexMul(kx_i, kx_i), ComplexMul(ky_i, ky_i));
+
+    const Complex kz_in = ComplexSqrt(ComplexSub(eps_in, ks));
+    const double wt_in = static_cast<double>(ComplexReal(ComplexDiv(kz_in, eps_in)));
+    if (wt_in > 0.0)
+    {
+        const Complex re = S11[source_col * n2 + idx];
+        const Complex rm = S11[source_col * n2 + idx + n];
+        const double r2 = ComplexAbsSquaredDouble(re) + ComplexAbsSquaredDouble(rm);
+        atomicAdd(accum, static_cast<Real>((wt_in / kz_inc) * r2));
+    }
+
+    const Complex kz_out = ComplexSqrt(ComplexSub(eps_out, ks));
+    const double wt_out = static_cast<double>(ComplexReal(ComplexDiv(kz_out, eps_out)));
+    if (wt_out > 0.0)
+    {
+        const Complex te = S21[source_col * n2 + idx];
+        const Complex tm = S21[source_col * n2 + idx + n];
+        const double t2 = ComplexAbsSquaredDouble(te) + ComplexAbsSquaredDouble(tm);
+        atomicAdd(accum + 1, static_cast<Real>((wt_out / kz_inc) * t2));
+    }
+}
+
 __global__ void BuildConvMatrixKernel(const Complex* fft,
                                       int64_t nx,
                                       int64_t ny,
@@ -3367,6 +3420,52 @@ Status RCWA::FieldXY(const Real* x_axis,
     *Ex = ExMat.Release();
     *Ey = EyMat.Release();
     *Ez = EzMat.Release();
+    return Status::kSuccess;
+}
+
+Status RCWA::EnergyBalance(double* R,
+                           double* T,
+                           double* A,
+                           cudaStream_t stream) const
+{
+    if (!R || !T || !A || !kx_diag_ || !ky_diag_ || !HasSMatrix(global_smatrix_))
+    {
+        return Status::kInvalidValue;
+    }
+
+    cudaStream_t use_stream = stream ? stream : stream_;
+    const int64_t n = order_N_;
+    const int64_t n2 = 2 * n;
+    const int64_t oy_len = static_cast<int64_t>(2 * order_y_ + 1);
+    const int64_t source_order = static_cast<int64_t>(order_x_) * oy_len + order_y_;
+    const int64_t source_col = source_order + n;
+
+    DeviceRealBuffer accum;
+    CHECK(accum.Allocate(2));
+    CHECK(StatusFromCuda(cudaMemsetAsync(accum.get(), 0, 2 * sizeof(Real), use_stream)));
+
+    const int blocks = static_cast<int>((n + CUDA_THREADS - 1) / CUDA_THREADS);
+    EnergyBalanceKernel<<<blocks, CUDA_THREADS, 0, use_stream>>>(kx_diag_,
+                                                                 ky_diag_,
+                                                                 global_smatrix_.S_11,
+                                                                 global_smatrix_.S_21,
+                                                                 eps_in_,
+                                                                 eps_out_,
+                                                                 n,
+                                                                 n2,
+                                                                 source_order,
+                                                                 source_col,
+                                                                 accum.get());
+    CHECK(StatusFromCuda(cudaGetLastError()));
+
+    Real host_accum[2] = {0.0, 0.0};
+    CHECK(StatusFromCuda(cudaMemcpyAsync(
+        host_accum, accum.get(), sizeof(host_accum), cudaMemcpyDeviceToHost, use_stream)));
+    CHECK(StatusFromCuda(cudaStreamSynchronize(use_stream)));
+
+    *R = static_cast<double>(host_accum[0]);
+    *T = static_cast<double>(host_accum[1]);
+    *A = std::max(0.0, 1.0 - *R - *T);
     return Status::kSuccess;
 }
 

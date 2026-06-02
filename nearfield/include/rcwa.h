@@ -75,6 +75,10 @@ class RCWA
                    Complex** Ey,
                    Complex** Ez,
                    cudaStream_t stream = nullptr) const;
+    Status EnergyBalance(double* R,
+                         double* T,
+                         double* A,
+                         cudaStream_t stream = nullptr) const;
     void FreeDeviceTensor(Complex* ptr) const;
 
     Status ComputeTFromPQOrder18(const Complex* P,
