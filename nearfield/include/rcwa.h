@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 #include "common_utils.h"
 
@@ -127,12 +128,23 @@ class RCWA
     Status RepeatCurrentStackSMatrix(int repeats);
 
     int64_t order_N() const { return order_N_; }
+    int order_x() const { return order_x_; }
+    int order_y() const { return order_y_; }
+    Real omega() const { return omega_; }
     const SMatrix& global_smatrix() const { return global_smatrix_; }
     cudaStream_t stream() const { return stream_; }
+    bool angle_layer_is_input() const { return angle_layer_input_; }
+    bool source_is_forward() const { return source_forward_; }
+    Complex eps_in() const { return eps_in_; }
+    Complex eps_out() const { return eps_out_; }
     void SetExpmMethod(char method) { expm_method_ = method; }
     char expm_method() const { return expm_method_; }
     void SetHighOrder(bool high) { high_order_ = high; }
     bool high_order() const { return high_order_; }
+    Status GetKxKyKz(std::vector<Real>* kx,
+                     std::vector<Real>* ky,
+                     std::vector<Real>* kz,
+                     cudaStream_t stream = nullptr) const;
 
   private:
     Status BuildKxKy(Real inc_ang, Real azi_ang, Real eps_ref);

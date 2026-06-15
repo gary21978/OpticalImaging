@@ -3423,6 +3423,50 @@ Status RCWA::FieldXY(const Real* x_axis,
     return Status::kSuccess;
 }
 
+Status RCWA::GetKxKyKz(std::vector<Real>* kx,
+                       std::vector<Real>* ky,
+                       std::vector<Real>* kz,
+                       cudaStream_t stream) const
+{
+    if (!kx || !ky || !kz || !kx_diag_ || !ky_diag_)
+    {
+        return Status::kInvalidValue;
+    }
+
+    cudaStream_t use_stream = stream ? stream : stream_;
+    const int64_t n = order_N_;
+    std::vector<Complex> kx_complex(static_cast<size_t>(n));
+    std::vector<Complex> ky_complex(static_cast<size_t>(n));
+    kx->assign(static_cast<size_t>(n), 0.0);
+    ky->assign(static_cast<size_t>(n), 0.0);
+    kz->assign(static_cast<size_t>(n), 0.0);
+
+    CHECK(StatusFromCuda(cudaMemcpyAsync(kx_complex.data(),
+                                         kx_diag_,
+                                         static_cast<size_t>(n) * sizeof(Complex),
+                                         cudaMemcpyDeviceToHost,
+                                         use_stream)));
+    CHECK(StatusFromCuda(cudaMemcpyAsync(ky_complex.data(),
+                                         ky_diag_,
+                                         static_cast<size_t>(n) * sizeof(Complex),
+                                         cudaMemcpyDeviceToHost,
+                                         use_stream)));
+    CHECK(StatusFromCuda(cudaStreamSynchronize(use_stream)));
+
+    const Complex eps = angle_layer_input_ ? eps_in_ : eps_out_;
+    const Real eps_real = ComplexReal(eps);
+    for (int64_t i = 0; i < n; ++i)
+    {
+        const Real kxv = ComplexReal(kx_complex[static_cast<size_t>(i)]);
+        const Real kyv = ComplexReal(ky_complex[static_cast<size_t>(i)]);
+        (*kx)[static_cast<size_t>(i)] = kxv;
+        (*ky)[static_cast<size_t>(i)] = kyv;
+        const Real kz_sq = std::max(static_cast<Real>(0.0), eps_real - kxv * kxv - kyv * kyv);
+        (*kz)[static_cast<size_t>(i)] = std::sqrt(static_cast<double>(kz_sq));
+    }
+    return Status::kSuccess;
+}
+
 Status RCWA::EnergyBalance(double* R,
                            double* T,
                            double* A,
