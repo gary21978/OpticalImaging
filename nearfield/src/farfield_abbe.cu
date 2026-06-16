@@ -411,10 +411,12 @@ __global__ void BuildSpectrumTileKernel(const Complex* S_port,
                                   ComplexAdd(ComplexMul(g01[i], ex), ComplexMul(g11[i], ey)));
 
     // Embed the small RCWA spectrum window into the larger FFT grid with wrapped indexing.
-    const int row = i / src_w;
-    const int col = i % src_w;
-    const int dst_row = (row - src_h / 2 + dst_h) % dst_h;
-    const int dst_col = (col - src_w / 2 + dst_w) % dst_w;
+    // RCWA orders are flattened with x as the outer index and y as the inner index.
+    // Map them back to the FFT grid consistently: y selects rows, x selects columns.
+    const int order_x_idx = i / src_w;
+    const int order_y_idx = i % src_w;
+    const int dst_row = (order_y_idx - src_w / 2 + dst_h) % dst_h;
+    const int dst_col = (order_x_idx - src_h / 2 + dst_w) % dst_w;
     const int64_t dst_index = LinearIndex(dst_col, dst_row, dst_w);
     const int64_t image_count = static_cast<int64_t>(dst_h) * dst_w;
     const int64_t batch_x = 2LL * k_local;
