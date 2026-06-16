@@ -196,6 +196,25 @@ bool ApertureValid(AbbeApertureShape shape,
     }
 }
 
+Real SourceSupportArea(const AbbeSourceConfig& source)
+{
+    const Real radial_area = std::max(static_cast<Real>(0.0), source.sigma_out * source.sigma_out -
+                                                                   source.sigma_in * source.sigma_in);
+    switch (source.shape)
+    {
+    case AbbeApertureShape::kAnnular:
+        return static_cast<Real>(kPi) * radial_area;
+    case AbbeApertureShape::kDipoleCirc:
+        return radial_area * source.open_angle;
+    case AbbeApertureShape::kQuasar:
+        return static_cast<Real>(2.0) * radial_area * source.open_angle;
+    case AbbeApertureShape::kRect:
+        return static_cast<Real>(4.0) * source.rect_x * source.rect_y;
+    default:
+        return static_cast<Real>(0.0);
+    }
+}
+
 void BuildPolarizationVector(const AbbeSourceConfig& source, Complex out[2])
 {
     switch (source.polarization_mode)
@@ -881,8 +900,8 @@ Status CalculateAbbeImageFromRCWA(const RCWA& rcwa,
     const int image_blocks = static_cast<int>((image_count + CUDA_THREADS - 1) / CUDA_THREADS);
     // cuFFT inverse is unnormalized, so no extra Nx*Ny scale is needed here.
     const Real ifft_scale = static_cast<Real>(1.0);
-    const Real normalization = source.sigma_out * source.sigma_out /
-                               static_cast<Real>(rcwa_data.source_indices.size());
+    const Real source_area = SourceSupportArea(source);
+    const Real normalization = source_area / static_cast<Real>(rcwa_data.source_indices.size());
 
     for (int64_t zi = 0; zi < object_plane_count; ++zi)
     {
