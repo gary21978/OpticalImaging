@@ -421,7 +421,7 @@ int main(int argc, char** argv)
     AbbeImager imager(source, projector, numerics);
     const auto abbe_start = Clock::now();
     Require(imager.ComputeFromRCWA(
-                rcwa, xs.data(), config.image_w, ys.data(), config.image_h, config.period_x, config.period_y),
+                rcwa, xs.data(), config.image_w, ys.data(), config.image_h),
             "ComputeFromRCWA");
     Require(StatusFromCudaLocal(cudaDeviceSynchronize()), "ComputeFromRCWASync");
     const auto abbe_end = Clock::now();

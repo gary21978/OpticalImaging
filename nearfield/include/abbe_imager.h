@@ -10,7 +10,6 @@ class AbbeImager
 {
   public:
     AbbeImager() = default;
-    ~AbbeImager() { ClearKernelCache(); }
 
     AbbeImager(AbbeSourceConfig source,
                AbbeProjectorConfig projector = {},
@@ -33,49 +32,13 @@ class AbbeImager
     AbbeImageResult& image() { return image_; }
     const AbbeImageResult& image() const { return image_; }
 
-    AbbeKernelCache& kernel_cache() { return kernel_cache_; }
-    const AbbeKernelCache& kernel_cache() const { return kernel_cache_; }
-
-    bool HasKernelCache() const { return kernel_cache_.valid; }
-
     void ClearImage() { image_ = AbbeImageResult{}; }
-    void ClearKernelCache()
-    {
-        ReleaseAbbeKernelCache(&kernel_cache_);
-        kernel_cache_.Clear();
-    }
-
-    Status ComputeFromFields(const Complex* ex_field,
-                             const Complex* ey_field,
-                             const Complex* ez_field,
-                             int64_t width,
-                             int64_t height,
-                             Real period_x,
-                             Real period_y,
-                             cudaStream_t stream = nullptr)
-    {
-        return CalculateAbbeImageFromFields(ex_field,
-                                            ey_field,
-                                            ez_field,
-                                            width,
-                                            height,
-                                            period_x,
-                                            period_y,
-                                            source_,
-                                            projector_,
-                                            numerics_,
-                                            &image_,
-                                            &kernel_cache_,
-                                            stream);
-    }
 
     Status ComputeFromRCWA(const RCWA& rcwa,
                            const Real* x_axis,
                            int64_t x_count,
                            const Real* y_axis,
                            int64_t y_count,
-                           Real period_x,
-                           Real period_y,
                            cudaStream_t stream = nullptr)
     {
         return CalculateAbbeImageFromRCWA(rcwa,
@@ -83,13 +46,10 @@ class AbbeImager
                                           x_count,
                                           y_axis,
                                           y_count,
-                                          period_x,
-                                          period_y,
                                           source_,
                                           projector_,
                                           numerics_,
                                           &image_,
-                                          &kernel_cache_,
                                           stream);
     }
 
@@ -111,5 +71,4 @@ class AbbeImager
     AbbeProjectorConfig projector_{};
     AbbeNumericsConfig numerics_{};
     AbbeImageResult image_{};
-    AbbeKernelCache kernel_cache_{};
 };

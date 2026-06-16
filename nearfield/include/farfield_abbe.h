@@ -55,15 +55,8 @@ struct AbbeProjectorConfig
     std::vector<Real> aberration_zernike = std::vector<Real>(37, 0.0);
 };
 
-enum class AbbeImagingMode
-{
-    kScalar = 0,
-    kVector = 1,
-};
-
 struct AbbeNumericsConfig
 {
-    AbbeImagingMode imaging_mode = AbbeImagingMode::kVector;
     std::vector<Real> object_z_positions{0.0};
 };
 
@@ -78,99 +71,13 @@ struct AbbeImageResult
     std::vector<Real> image_y;
 };
 
-struct AbbeKernelCache
-{
-    bool valid = false;
-
-    void Clear() { valid = false; }
-};
-
-void ReleaseAbbeKernelCache(AbbeKernelCache* kernel_cache);
-
-// Compatibility entrypoint. The RCWA-aligned implementation is centered on
-// `CalculateAbbeImageFromRCWA`; this overload only performs direct field
-// intensity evaluation and currently supports a single object plane and
-// single focus slice.
-Status CalculateAbbeImageFromFields(const Complex* ex_field,
-                                    const Complex* ey_field,
-                                    const Complex* ez_field,
-                                    int64_t width,
-                                    int64_t height,
-                                    Real period_x,
-                                    Real period_y,
-                                    const AbbeSourceConfig& source,
-                                    const AbbeProjectorConfig& projector,
-                                    const AbbeNumericsConfig& numerics,
-                                    AbbeImageResult* result,
-                                    AbbeKernelCache* kernel_cache,
-                                    cudaStream_t stream = nullptr);
-
-inline Status CalculateAbbeImageFromFields(const Complex* ex_field,
-                                           const Complex* ey_field,
-                                           const Complex* ez_field,
-                                           int64_t width,
-                                           int64_t height,
-                                           Real period_x,
-                                           Real period_y,
-                                           const AbbeSourceConfig& source,
-                                           const AbbeProjectorConfig& projector,
-                                           const AbbeNumericsConfig& numerics,
-                                           AbbeImageResult* result,
-                                           cudaStream_t stream = nullptr)
-{
-    return CalculateAbbeImageFromFields(ex_field,
-                                        ey_field,
-                                        ez_field,
-                                        width,
-                                        height,
-                                        period_x,
-                                        period_y,
-                                        source,
-                                        projector,
-                                        numerics,
-                                        result,
-                                        nullptr,
-                                        stream);
-}
-
 Status CalculateAbbeImageFromRCWA(const RCWA& rcwa,
                                   const Real* x_axis,
                                   int64_t x_count,
                                   const Real* y_axis,
                                   int64_t y_count,
-                                  Real period_x,
-                                  Real period_y,
                                   const AbbeSourceConfig& source,
                                   const AbbeProjectorConfig& projector,
                                   const AbbeNumericsConfig& numerics,
                                   AbbeImageResult* result,
-                                  AbbeKernelCache* kernel_cache,
                                   cudaStream_t stream = nullptr);
-
-inline Status CalculateAbbeImageFromRCWA(const RCWA& rcwa,
-                                         const Real* x_axis,
-                                         int64_t x_count,
-                                         const Real* y_axis,
-                                         int64_t y_count,
-                                         Real period_x,
-                                         Real period_y,
-                                         const AbbeSourceConfig& source,
-                                         const AbbeProjectorConfig& projector,
-                                         const AbbeNumericsConfig& numerics,
-                                         AbbeImageResult* result,
-                                         cudaStream_t stream = nullptr)
-{
-    return CalculateAbbeImageFromRCWA(rcwa,
-                                      x_axis,
-                                      x_count,
-                                      y_axis,
-                                      y_count,
-                                      period_x,
-                                      period_y,
-                                      source,
-                                      projector,
-                                      numerics,
-                                      result,
-                                      nullptr,
-                                      stream);
-}

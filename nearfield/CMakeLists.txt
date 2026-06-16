@@ -23,9 +23,6 @@ target_link_libraries(complex_ops PUBLIC CUDA::cublas CUDA::cusolver CUDA::cufft
 add_executable(homogeneous_test ${CMAKE_CURRENT_SOURCE_DIR}/examples/homogeneous_test.cu)
 target_link_libraries(homogeneous_test PRIVATE complex_ops)
 
-add_executable(pipeline_test ${CMAKE_CURRENT_SOURCE_DIR}/examples/pipeline_test.cu)
-target_link_libraries(pipeline_test PRIVATE complex_ops)
-
 add_executable(method_compare_full ${CMAKE_CURRENT_SOURCE_DIR}/examples/method_compare_full.cu)
 target_link_libraries(method_compare_full PRIVATE complex_ops)
 
@@ -40,7 +37,6 @@ endif()
 
 target_compile_definitions(complex_ops PUBLIC ${PRECISION_DEF})
 target_compile_definitions(homogeneous_test PRIVATE ${PRECISION_DEF})
-target_compile_definitions(pipeline_test PRIVATE ${PRECISION_DEF})
 target_compile_definitions(method_compare_full PRIVATE ${PRECISION_DEF})
 target_compile_definitions(farfield_abbe_render PRIVATE ${PRECISION_DEF})
 

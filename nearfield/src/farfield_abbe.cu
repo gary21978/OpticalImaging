@@ -679,44 +679,7 @@ Status BuildFocusTransfers(const std::vector<Real>& kx,
     return Status::kSuccess;
 }
 
-Status CopyFieldIntensityToResult(const Complex* ex_field,
-                                  const Complex* ey_field,
-                                  const Complex* ez_field,
-                                  int64_t count,
-                                  std::vector<Real>* intensity,
-                                  cudaStream_t stream)
-{
-    std::vector<Complex> host_ex(static_cast<size_t>(count));
-    std::vector<Complex> host_ey(static_cast<size_t>(count));
-    std::vector<Complex> host_ez(static_cast<size_t>(count));
-    CHECK(StatusFromCudaLocal(cudaMemcpyAsync(
-        host_ex.data(), ex_field, static_cast<size_t>(count) * sizeof(Complex), cudaMemcpyDeviceToHost, stream)));
-    CHECK(StatusFromCudaLocal(cudaMemcpyAsync(
-        host_ey.data(), ey_field, static_cast<size_t>(count) * sizeof(Complex), cudaMemcpyDeviceToHost, stream)));
-    CHECK(StatusFromCudaLocal(cudaMemcpyAsync(
-        host_ez.data(), ez_field, static_cast<size_t>(count) * sizeof(Complex), cudaMemcpyDeviceToHost, stream)));
-    CHECK(StatusFromCudaLocal(cudaStreamSynchronize(stream)));
-
-    intensity->assign(static_cast<size_t>(count), 0.0);
-    for (int64_t i = 0; i < count; ++i)
-    {
-        (*intensity)[static_cast<size_t>(i)] =
-            static_cast<Real>(ComplexAbsSquaredDouble(host_ex[static_cast<size_t>(i)]) +
-                              ComplexAbsSquaredDouble(host_ey[static_cast<size_t>(i)]) +
-                              ComplexAbsSquaredDouble(host_ez[static_cast<size_t>(i)]));
-    }
-    return Status::kSuccess;
-}
-
 } // namespace
-
-void ReleaseAbbeKernelCache(AbbeKernelCache* kernel_cache)
-{
-    if (kernel_cache)
-    {
-        kernel_cache->Clear();
-    }
-}
 
 __global__ void AccumulateTileIntensityKernel(const Complex* batch_field,
                                               Real* intensity,
@@ -740,55 +703,15 @@ __global__ void AccumulateTileIntensityKernel(const Complex* batch_field,
     intensity[idx] = sum;
 }
 
-Status CalculateAbbeImageFromFields(const Complex* ex_field,
-                                    const Complex* ey_field,
-                                    const Complex* ez_field,
-                                    int64_t width,
-                                    int64_t height,
-                                    Real /*period_x*/,
-                                    Real /*period_y*/,
-                                    const AbbeSourceConfig& /*source*/,
-                                    const AbbeProjectorConfig& projector,
-                                    const AbbeNumericsConfig& numerics,
-                                    AbbeImageResult* result,
-                                    AbbeKernelCache* kernel_cache,
-                                    cudaStream_t stream)
-{
-    if (!ex_field || !ey_field || !ez_field || !result || width <= 0 || height <= 0)
-    {
-        return Status::kInvalidValue;
-    }
-
-    // This compatibility path is intentionally minimal: it only reports direct field intensity.
-    const int64_t count = width * height;
-    CHECK(InitializeImageResult(width, height, nullptr, nullptr, projector, numerics, result));
-    if (result->object_plane_count != 1 || result->focus_count != 1)
-    {
-        return Status::kInvalidValue;
-    }
-
-    const cudaStream_t use_stream = stream ? stream : nullptr;
-    CHECK(CopyFieldIntensityToResult(ex_field, ey_field, ez_field, count, &result->intensity, use_stream));
-
-    if (kernel_cache)
-    {
-        kernel_cache->valid = false;
-    }
-    return Status::kSuccess;
-}
-
 Status CalculateAbbeImageFromRCWA(const RCWA& rcwa,
                                   const Real* x_axis,
                                   int64_t x_count,
                                   const Real* y_axis,
                                   int64_t y_count,
-                                  Real /*period_x*/,
-                                  Real /*period_y*/,
                                   const AbbeSourceConfig& source,
                                   const AbbeProjectorConfig& projector,
                                   const AbbeNumericsConfig& numerics,
                                   AbbeImageResult* result,
-                                  AbbeKernelCache* kernel_cache,
                                   cudaStream_t stream)
 {
     /*
@@ -1006,9 +929,5 @@ Status CalculateAbbeImageFromRCWA(const RCWA& rcwa,
     }
 
     CHECK(StatusFromCufftLocal(cufftDestroy(plan)));
-    if (kernel_cache)
-    {
-        kernel_cache->valid = false;
-    }
     return Status::kSuccess;
 }
