@@ -1,71 +1,196 @@
-# Parameters
+# OpticalImaging
 
-## Numerics
+This repository currently contains a CUDA/C++ near-field electromagnetic solver based on RCWA and one far-field imaging path based on the Abbe method.
 
-**ImageCalculationMode** (str) 'vector', 'scalar'
+## Current Scope
 
-**ImageCalculationMethod** (str) 'abbe', 'hopkins'
+The project is split into:
 
-**Hopkins_SettingType** (str) 'order' 'Threshold'
+- `include/common_utils.h`
+  Common numeric types, CUDA helpers, status handling, complex helpers, and utility macros.
+- `include/rcwa.h`
+  Public interface for the RCWA solver.
+- `src/rcwa.cu`
+  RCWA implementation, including layer assembly, global S-matrix solve, field extraction, and energy balance.
+- `include/farfield_abbe.h`
+  Public Abbe imaging API.
+- `include/abbe_imager.h`
+  Thin C++ wrapper around the Abbe API.
+- `src/farfield_abbe.cu`
+  RCWA-driven Abbe imaging implementation.
+- `src/complex_matrix.cu`
+  Complex matrix operations used by the solver.
+- `examples/`
+  Small executables for rendering, consistency checks, and method benchmarking.
 
-**Hopkins_Order** (int) Truncation order of SOCS method
+## Implemented Features
 
-**Hopkins_Threshold** (float) Between 0 and 1, default 0.95
+### RCWA solver
 
-## Projection
+`RCWA` in `nearfield/include/rcwa.h` supports:
 
-**Aberration_Zernike** (Tensor) Coefficients of Zernike polynomials
+- input and output media definition
+- homogeneous and patterned layers
+- incident-angle setup
+- plane-wave source injection
+- global S-matrix solution
+- near-field sampling on an `x/y` grid
+- energy balance calculation
+- repeated-stack acceleration through `RepeatCurrentStackSMatrix`
 
-**Magnification** (float) Magnification factor
+The RCWA class also exposes multiple matrix-exponential / S-matrix computation paths:
 
-**NA** (float) Numerical aperture of object
+- `G` path
+- `S` path
+- `F` path
+- regular and higher-order variants
 
-**IndexImage** (float) Refractive index of image
+These are mainly exercised by the benchmark-style example programs.
 
-**FocusRange** (Tensor) Focus range
+### Abbe imaging
 
-## Scatter
+The only active imaging path is Abbe imaging.
 
-**Period_X** (float) X-period in nanometers
+Public entry points:
 
-**Period_Y** (float) Y-period in nanometers
+- `CalculateAbbeImageFromRCWA(...)`
+- `AbbeImager::ComputeFromRCWA(...)`
 
-## Source
+Supported Abbe configuration areas:
 
-**Wavelength** (float) Wavelength in nanometers
+- source aperture shape:
+  `kAnnular`, `kDipoleCirc`, `kQuasar`, `kRect`
+- source polarization mode:
+  `kJonesVector`, `kX`, `kY`, `kLine`, `kCircular`, `kAngleDegrees`
+- projector focus sweep:
+  `AbbeProjectorConfig::focus_range`
+- object-plane sweep:
+  `AbbeNumericsConfig::object_z_positions`
+- projector aberration coefficients:
+  `AbbeProjectorConfig::aberration_zernike`
 
-**PntNum** (int) Discretized number
+Output format:
 
-**Shape** (str) 'annular', 'multipole', 'dipolecirc', 'quadrupole', 'pixel', 'quasar'
+- `AbbeImageResult::intensity` stores `[z][focus][y][x]`
+- `image_x` and `image_y` store the sampled image coordinates
 
-**Irradiance** (float)
+## Build
 
-**PolarizationType** 'x_pol', 'y_pol', 'c_pol', 'd_pol', 'r_pol', 't_pol', 'line_pol', 'custom'
+Build system:
 
-**PolarizationParameters.CoherencyMatrix** (tensor) 2-by-2 Hermitian matrix
+- CMake 3.19+
+- CUDA toolkit
+- C++17
 
-**SigmaIn** (float) for all shapes except multipole and pixel
+Configured in `nearfield/CMakeLists.txt`:
 
-**SigmaOut** (float) for all shapes except multipole and pixel
+- `USE_DOUBLE_PRECISION` defaults to `ON`
+- CUDA architecture is currently hardcoded to `89`
+- optimization flags are enabled for both host and device code
 
-**SigmaCenter** (float) for multipole shape
+Build commands:
 
-**SigmaRadius** (float) for multipole shape
+```bash
+cmake -S nearfield -B nearfield/build
+cmake --build nearfield/build -j
+```
 
-**OpenAngle** (float) for quasar and dipolecirc shapes
+## Built Targets
 
-**RotateAngle** (float) for dipolecirc and multipole shapes
+The current CMake file builds these executables:
 
-**PoleNumber** (int) for multipole shape
+- `homogeneous_test`
+- `method_compare_full`
+- `farfield_abbe_render`
 
-**Source_Mask** (tensor)
+### `farfield_abbe_render`
 
-**PSFEnable** (bool) source blur
+Location:
 
-**PSFSigma** (float) source blur sigma
+- `nearfield/examples/farfield_abbe_render.cu`
 
-**SPointX** (tensor) for pixel shape
+Purpose:
 
-**SPointY** (tensor) for pixel shape
+- builds a small multilayer RCWA scene
+- computes an Abbe far-field image from RCWA output
+- computes a near-field image on the same sampling grid
+- writes PNG outputs to an output directory
 
-**SPointValue** (tensor) for pixel shape
+Default output files:
+
+- `nearfield/output/mask.png`
+- `nearfield/output/nearfield.png`
+- `nearfield/output/farfield.png`
+
+Run:
+
+```bash
+./nearfield/build/farfield_abbe_render
+```
+
+Optional output directory:
+
+```bash
+./nearfield/build/farfield_abbe_render my_output_dir
+```
+
+### `homogeneous_test`
+
+Location:
+
+- `nearfield/examples/homogeneous_test.cu`
+
+Purpose:
+
+- checks consistency between `AddLayer(...)` and `AddLayerHomogeneous(...)`
+- checks explicit free-space input/output layer behavior
+- checks repeated homogeneous stack behavior
+
+Run:
+
+```bash
+./nearfield/build/homogeneous_test
+```
+
+### `method_compare_full`
+
+Location:
+
+- `nearfield/examples/method_compare_full.cu`
+
+Purpose:
+
+- benchmarks RCWA internal computation modes
+- compares runtime and relative S-matrix differences across:
+  `G12`, `G18`, `S12`, `S18`, `F12`, `F18`
+
+This executable is a solver-method benchmark. It is not an imaging-method comparison anymore.
+
+Run:
+
+```bash
+./nearfield/build/method_compare_full
+```
+
+## Data Layout Notes
+
+Some arrays use solver-oriented layouts rather than image-oriented layouts.
+
+- geometry masks in the examples are often filled as `[x][y]`
+- Abbe output images are stored logically as `[z][focus][y][x]`
+- several example helpers convert between solver storage order and raster image order before writing PNGs
+
+When adding new post-processing code, check the existing indexing conventions before assuming row-major image layout.
+
+## Minimal Usage Sketch
+
+Typical flow for RCWA + Abbe imaging:
+
+1. Construct `RCWA(freq, order_x, order_y, Lx, Ly)`.
+2. Add input/output media and layers.
+3. Call `SetIncidentAngles(...)`.
+4. Call `SolveGlobalSMatrix()`.
+5. Prepare image sampling axes.
+6. Fill `AbbeSourceConfig`, `AbbeProjectorConfig`, and `AbbeNumericsConfig`.
+7. Call `AbbeImager::ComputeFromRCWA(...)`.
+8. Read `AbbeImageResult::intensity`.
