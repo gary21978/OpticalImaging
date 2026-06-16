@@ -261,11 +261,11 @@ void BuildPolarizationVector(const AbbeSourceConfig& source, Complex out[2])
 
 void InjectionMatrix(Real kx, Real ky, Real kz, Complex mat[4])
 {
-    const Real denom = std::abs(1.0 + kz) > 1e-12 ? (1.0 + kz) : 1e-12;
+    const Real denom = 1.0 + kz;
     const Real scale = kz > 1e-12 ? std::sqrt(1.0 / kz) : 0.0;
     mat[0] = make_complex(scale * (1.0 - kx * kx / denom), 0.0);
     mat[1] = make_complex(scale * (-kx * ky / denom), 0.0);
-    mat[2] = make_complex(scale * (-kx * ky / denom), 0.0);
+    mat[2] = mat[1];
     mat[3] = make_complex(scale * (1.0 - ky * ky / denom), 0.0);
 }
 
@@ -358,10 +358,12 @@ std::vector<Complex> BuildProjectorTransfer(const std::vector<Real>& kx,
             continue;
         }
         const Real rho2 = kx[i] * kx[i] + ky[i] * ky[i];
-        const Real rho = std::sqrt(std::max(rho2, static_cast<Real>(0.0)));
+        const Real rho = std::sqrt(rho2);
         const Real theta = std::atan2(ky[i], kx[i]);
-        const Real obliquity = std::pow(std::max(1.0 - rho2, static_cast<Real>(1e-6)), -0.25);
-        const Real focus_base = std::sqrt(std::max(1.0 - rho2, static_cast<Real>(1e-6)));
+        const Real pupil_term =
+            std::max(static_cast<Real>(1.0) - rho2, static_cast<Real>(1e-6));
+        const Real focus_base = std::sqrt(pupil_term);
+        const Real obliquity = static_cast<Real>(1.0) / std::sqrt(focus_base);
         const Real rho_norm =
             projector.sigma_out > 1e-12 ? rho / projector.sigma_out : static_cast<Real>(0.0);
         const Real aberration = CalculateAberrationFast(projector, rho_norm, theta);
