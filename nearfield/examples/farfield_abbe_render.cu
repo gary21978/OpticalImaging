@@ -25,6 +25,22 @@ struct DeviceBuffer
     }
 };
 
+struct DefaultRenderConfig
+{
+    Real period_x = 3000.0;
+    Real period_y = 1500.0;
+    Real wavelength = 365.0;
+    int order_x = 12;
+    int order_y = 12;
+    Real sigma_out = 0.9;
+    Real sigma_in = 0.15;
+    int geom_x = 200;
+    int geom_y = 100;
+    int image_w = 257;
+    int image_h = 129;
+    const char* output_dir = "output";
+};
+
 Status StatusFromCudaLocal(cudaError_t status)
 {
     return status == cudaSuccess ? Status::kSuccess : Status::kCudaError;
@@ -228,6 +244,66 @@ bool WritePngGray(const std::string& path, const std::vector<Real>& image, int w
     return WritePng(path, pixels, width, height);
 }
 
+bool WriteMaskPngGray(const std::string& path, const std::vector<Real>& mask, int width, int height)
+{
+    if (static_cast<int>(mask.size()) != width * height)
+    {
+        return false;
+    }
+
+    std::vector<Real> raster(static_cast<size_t>(width) * height, 0.0);
+    for (int x = 0; x < width; ++x)
+    {
+        for (int y = 0; y < height; ++y)
+        {
+            const size_t src = static_cast<size_t>(x) * height + y;
+            const size_t dst = static_cast<size_t>(y) * width + x;
+            raster[dst] = mask[src] > 0.5 ? 1.0 : 0.0;
+        }
+    }
+    return WritePngGray(path, raster, width, height);
+}
+
+std::vector<Real> BuildAxis(int count, Real length)
+{
+    std::vector<Real> axis(static_cast<size_t>(count), 0.0);
+    const Real step = length / static_cast<Real>(count);
+    for (int i = 0; i < count; ++i)
+    {
+        axis[static_cast<size_t>(i)] = step * static_cast<Real>(i + 0.5);
+    }
+    return axis;
+}
+
+std::vector<Real> ComputeIntensityImage(const Complex* ex,
+                                        const Complex* ey,
+                                        const Complex* ez,
+                                        int width,
+                                        int height)
+{
+    const size_t count = static_cast<size_t>(width) * height;
+    std::vector<Complex> host_ex(count);
+    std::vector<Complex> host_ey(count);
+    std::vector<Complex> host_ez(count);
+    std::vector<Real> intensity(count, 0.0);
+
+    cudaMemcpy(host_ex.data(), ex, count * sizeof(Complex), cudaMemcpyDeviceToHost);
+    cudaMemcpy(host_ey.data(), ey, count * sizeof(Complex), cudaMemcpyDeviceToHost);
+    cudaMemcpy(host_ez.data(), ez, count * sizeof(Complex), cudaMemcpyDeviceToHost);
+
+    auto norm2 = [](Complex v) {
+        const Real re = ComplexReal(v);
+        const Real im = ComplexImag(v);
+        return re * re + im * im;
+    };
+
+    for (size_t i = 0; i < count; ++i)
+    {
+        intensity[i] = norm2(host_ex[i]) + norm2(host_ey[i]) + norm2(host_ez[i]);
+    }
+    return intensity;
+}
+
 void LoadGeometry(std::vector<Real>& geom, int nx, int ny)
 {
     geom.assign(static_cast<size_t>(nx) * ny, 0.0);
@@ -261,19 +337,22 @@ void BuildEpsMap(const std::vector<Real>& geom, Complex n, std::vector<Complex>&
 
 } // namespace
 
-int main()
+int main(int argc, char** argv)
 {
     const auto pipeline_start = Clock::now();
+    DefaultRenderConfig config;
 
-    const Real period_x = 3000.0;
-    const Real period_y = 1500.0;
-    const Real wavelength = 365.0;
-    const Real freq = 1.0 / wavelength;
-    const int order_x = 12;
-    const int order_y = 12;
+    if (argc > 2)
+    {
+        std::cerr << "usage: " << argv[0] << " [output_dir]" << std::endl;
+        return EXIT_FAILURE;
+    }
+    const std::filesystem::path out_dir =
+        std::filesystem::current_path() / (argc == 2 ? argv[1] : config.output_dir);
+    const Real freq = 1.0 / config.wavelength;
 
     const auto rcwa_setup_start = Clock::now();
-    RCWA rcwa(freq, order_x, order_y, period_x, period_y);
+    RCWA rcwa(freq, config.order_x, config.order_y, config.period_x, config.period_y);
     Require(rcwa.AddInputLayer(1.0), "AddInputLayer");
     Require(rcwa.AddOutputLayer(
                 ComplexMul(make_complex(6.5271, 2.6672), make_complex(6.5271, 2.6672))),
@@ -282,13 +361,13 @@ int main()
     const auto rcwa_setup_end = Clock::now();
 
     const auto geometry_start = Clock::now();
-    const int geom_x = 200;
-    const int geom_y = 100;
     std::vector<Real> geometry;
-    LoadGeometry(geometry, geom_x, geom_y);
+    LoadGeometry(geometry, config.geom_x, config.geom_y);
 
     DeviceBuffer d_material;
-    cudaMalloc(reinterpret_cast<void**>(&d_material.ptr), static_cast<size_t>(geom_x) * geom_y * sizeof(Complex));
+    cudaMalloc(
+        reinterpret_cast<void**>(&d_material.ptr),
+        static_cast<size_t>(config.geom_x) * config.geom_y * sizeof(Complex));
 
     const Complex n_OX = make_complex(1.4745, 0.0);
     const Complex n_TIN = make_complex(2.0669, 1.0563);
@@ -304,7 +383,7 @@ int main()
                    eps_map.size() * sizeof(Complex),
                    cudaMemcpyHostToDevice);
         Complex* eps_conv = nullptr;
-        Require(rcwa.MaterialConv(d_material.ptr, geom_x, geom_y, &eps_conv), "MaterialConv");
+        Require(rcwa.MaterialConv(d_material.ptr, config.geom_x, config.geom_y, &eps_conv), "MaterialConv");
         Require(rcwa.AddLayer(thicknesses[i], eps_conv), "AddLayer");
         rcwa.FreeDeviceTensor(eps_conv);
     }
@@ -320,51 +399,65 @@ int main()
     const auto smatrix_end = Clock::now();
 
     const auto imaging_grid_start = Clock::now();
-    const int image_w = 257;
-    const int image_h = 129;
-    std::vector<Real> xs(static_cast<size_t>(image_w), 0.0);
-    std::vector<Real> ys(static_cast<size_t>(image_h), 0.0);
-    for (int i = 0; i < image_w; ++i)
-    {
-        xs[static_cast<size_t>(i)] = static_cast<Real>(i);
-    }
-    for (int i = 0; i < image_h; ++i)
-    {
-        ys[static_cast<size_t>(i)] = static_cast<Real>(i);
-    }
+    const std::vector<Real> xs = BuildAxis(config.image_w, config.period_x);
+    const std::vector<Real> ys = BuildAxis(config.image_h, config.period_y);
     const auto imaging_grid_end = Clock::now();
 
     AbbeSourceConfig source;
     source.shape = AbbeApertureShape::kAnnular;
-    source.sigma_out = 0.9;
-    source.sigma_in = 0.15;
+    source.sigma_out = config.sigma_out;
+    source.sigma_in = config.sigma_in;
     source.polarization_mode = AbbePolarizationMode::kX;
 
     AbbeProjectorConfig projector;
-    projector.wavelength = wavelength;
+    projector.wavelength = config.wavelength;
     projector.shape = AbbeApertureShape::kAnnular;
-    projector.sigma_out = 0.9;
-    projector.sigma_in = 0.15;
+    projector.sigma_out = config.sigma_out;
+    projector.sigma_in = config.sigma_in;
     projector.focus_range = {0.0};
 
     AbbeNumericsConfig numerics;
     numerics.object_z_positions = {0.0};
-
     AbbeImager imager(source, projector, numerics);
     const auto abbe_start = Clock::now();
-    Require(imager.ComputeFromRCWA(rcwa, xs.data(), image_w, ys.data(), image_h, period_x, period_y),
+    Require(imager.ComputeFromRCWA(
+                rcwa, xs.data(), config.image_w, ys.data(), config.image_h, config.period_x, config.period_y),
             "ComputeFromRCWA");
     Require(StatusFromCudaLocal(cudaDeviceSynchronize()), "ComputeFromRCWASync");
     const auto abbe_end = Clock::now();
 
+    const auto nearfield_start = Clock::now();
+    Require(rcwa.SourcePlanewave(1.0, 0.0, "forward"), "SourcePlanewave");
+    Complex* ex = nullptr;
+    Complex* ey = nullptr;
+    Complex* ez = nullptr;
+    Require(rcwa.FieldXY(xs.data(), config.image_w, ys.data(), config.image_h, &ex, &ey, &ez), "FieldXY");
+    Require(StatusFromCudaLocal(cudaDeviceSynchronize()), "FieldXYSync");
+    const std::vector<Real> nearfield_intensity = ComputeIntensityImage(ex, ey, ez, config.image_w, config.image_h);
+    rcwa.FreeDeviceTensor(ex);
+    rcwa.FreeDeviceTensor(ey);
+    rcwa.FreeDeviceTensor(ez);
+    const auto nearfield_end = Clock::now();
+
     const auto output_start = Clock::now();
     const std::vector<Real> intensity = imager.GetFocusSlice(0);
-    const std::filesystem::path out_dir = std::filesystem::current_path() / "output";
     std::filesystem::create_directories(out_dir);
-    const std::filesystem::path out_png = out_dir / "farfield_abbe_intensity.png";
-    if (!WritePngGray(out_png.string(), intensity, image_w, image_h))
+    const std::filesystem::path mask_png = out_dir / "mask.png";
+    const std::filesystem::path near_png = out_dir / "nearfield.png";
+    const std::filesystem::path far_png = out_dir / "farfield.png";
+    if (!WriteMaskPngGray(mask_png.string(), geometry, config.geom_x, config.geom_y))
     {
-        std::cerr << "failed to write " << out_png << std::endl;
+        std::cerr << "failed to write " << mask_png << std::endl;
+        return EXIT_FAILURE;
+    }
+    if (!WritePngGray(near_png.string(), nearfield_intensity, config.image_w, config.image_h))
+    {
+        std::cerr << "failed to write " << near_png << std::endl;
+        return EXIT_FAILURE;
+    }
+    if (!WritePngGray(far_png.string(), intensity, config.image_w, config.image_h))
+    {
+        std::cerr << "failed to write " << far_png << std::endl;
         return EXIT_FAILURE;
     }
     const auto output_end = Clock::now();
@@ -374,18 +467,25 @@ int main()
     const double smatrix_ms = ElapsedMs(smatrix_start, smatrix_end);
     const double imaging_grid_ms = ElapsedMs(imaging_grid_start, imaging_grid_end);
     const double abbe_ms = ElapsedMs(abbe_start, abbe_end);
+    const double nearfield_ms = ElapsedMs(nearfield_start, nearfield_end);
     const double output_ms = ElapsedMs(output_start, output_end);
     const double elapsed_ms = ElapsedMs(pipeline_start, output_end);
 
-    std::cout << "Saved far-field intensity image to: " << out_png << "\n";
-    std::cout << "Image size: " << image_w << "x" << image_h << "\n";
-    std::cout << "RCWA orders: (" << order_x << ", " << order_y << ")\n";
+    std::cout << "Saved mask to: " << mask_png << "\n";
+    std::cout << "Saved near-field intensity to: " << near_png << "\n";
+    std::cout << "Saved far-field intensity to: " << far_png << "\n";
+    std::cout << "Image size: " << config.image_w << "x" << config.image_h << "\n";
+    std::cout << "Period: (" << config.period_x << ", " << config.period_y << ") nm\n";
+    std::cout << "Wavelength: " << config.wavelength << " nm\n";
+    std::cout << "RCWA orders: (" << config.order_x << ", " << config.order_y << ")\n";
+    std::cout << "Source/projector sigma: outer=" << config.sigma_out << ", inner=" << config.sigma_in << "\n";
     std::cout << "Timing (ms):\n";
     std::cout << "  RCWA setup: " << rcwa_setup_ms << "\n";
     std::cout << "  Geometry/material/layer build: " << geometry_ms << "\n";
     std::cout << "  SolveGlobalSMatrix: " << smatrix_ms << "\n";
     std::cout << "  Image grid setup: " << imaging_grid_ms << "\n";
     std::cout << "  Abbe imaging: " << abbe_ms << "\n";
+    std::cout << "  Near-field solve: " << nearfield_ms << "\n";
     std::cout << "  PNG write: " << output_ms << "\n";
     std::cout << "  Total pipeline: " << elapsed_ms << "\n";
 

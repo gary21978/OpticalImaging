@@ -1,3 +1,28 @@
+/*
+Source sampling is performed on the discrete RCWA k-space lattice rather than by
+continuous integration over the source pupil. For normal incidence, the lattice
+spacing is
+
+    Delta kx = wavelength / Lx
+    Delta ky = wavelength / Ly
+
+For an annular source with outer radius sigma_out to fit inside the finite RCWA
+order window without truncation, a sufficient condition is
+
+    order_x >= sigma_out * Lx / wavelength
+    order_y >= sigma_out * Ly / wavelength
+
+When the source is not truncated and the k-space lattice is sufficiently fine,
+the retained source-sample count can be estimated from source area divided by
+cell area:
+
+    N_sample ~= A_source / (Delta kx * Delta ky)
+             ~= A_source * Lx * Ly / wavelength^2
+
+For an annular source,
+
+    A_source = pi * (sigma_out^2 - sigma_in^2)
+*/
 #include "farfield_abbe.h"
 
 #include <algorithm>
