@@ -153,14 +153,13 @@ bool ApertureValid(AbbeApertureShape shape,
                    Real ky)
 {
     const Real r2 = kx * kx + ky * ky;
-    const Real r = std::sqrt(std::max(r2, static_cast<Real>(0.0)));
     switch (shape)
     {
     case AbbeApertureShape::kAnnular:
         return r2 <= sigma_out * sigma_out && r2 >= sigma_in * sigma_in;
     case AbbeApertureShape::kDipoleCirc:
     {
-        if (r > sigma_out || r < sigma_in)
+        if (r2 > sigma_out * sigma_out || r2 < sigma_in * sigma_in)
         {
             return false;
         }
@@ -170,7 +169,7 @@ bool ApertureValid(AbbeApertureShape shape,
     }
     case AbbeApertureShape::kQuasar:
     {
-        if (r > sigma_out || r < sigma_in)
+        if (r2 > sigma_out * sigma_out || r2 < sigma_in * sigma_in)
         {
             return false;
         }
@@ -259,14 +258,13 @@ void BuildPolarizationVector(const AbbeSourceConfig& source, Complex out[2])
     }
 }
 
-void InjectionMatrix(Real kx, Real ky, Real kz, Complex mat[4])
+void InjectionMatrix(Real kx, Real ky, Real kz, Complex mat[3])
 {
     const Real denom = 1.0 + kz;
-    const Real scale = kz > 1e-12 ? std::sqrt(1.0 / kz) : 0.0;
+    const Real scale = std::sqrt(1.0 / kz);
     mat[0] = make_complex(scale * (1.0 - kx * kx / denom), 0.0);
     mat[1] = make_complex(scale * (-kx * ky / denom), 0.0);
-    mat[2] = mat[1];
-    mat[3] = make_complex(scale * (1.0 - ky * ky / denom), 0.0);
+    mat[2] = make_complex(scale * (1.0 - ky * ky / denom), 0.0);
 }
 
 Real ZernikeAt(const std::vector<Real>& c, size_t idx) { return idx < c.size() ? c[idx] : 0.0; }
@@ -608,15 +606,15 @@ Status BuildRcwaFarfieldData(const RCWA& rcwa,
         }
 
         data->source_indices.push_back(static_cast<int>(idx));
-        Complex inject_mat[4];
+        Complex inject_mat[3];
         InjectionMatrix(data->kx[static_cast<size_t>(idx)],
                         data->ky[static_cast<size_t>(idx)],
                         data->kz[static_cast<size_t>(idx)],
                         inject_mat);
         data->source_ux.push_back(ComplexAdd(ComplexMul(inject_mat[0], pol_in[0]),
                                              ComplexMul(inject_mat[1], pol_in[1])));
-        data->source_uy.push_back(ComplexAdd(ComplexMul(inject_mat[2], pol_in[0]),
-                                             ComplexMul(inject_mat[3], pol_in[1])));
+        data->source_uy.push_back(ComplexAdd(ComplexMul(inject_mat[1], pol_in[0]),
+                                             ComplexMul(inject_mat[2], pol_in[1])));
     }
     if (data->source_indices.empty())
     {
@@ -630,6 +628,7 @@ Status BuildRcwaFarfieldData(const RCWA& rcwa,
 
     // Precompute the per-order projector operator G_i and the z-propagation kz sign convention.
     const Complex eps_ref = rcwa.angle_layer_is_input() ? rcwa.eps_in() : rcwa.eps_out();
+    const Real one = static_cast<Real>(1.0);
     for (int64_t i = 0; i < order_count; ++i)
     {
         const Complex kx_c = make_complex(data->kx[static_cast<size_t>(i)], 0.0);
@@ -640,7 +639,7 @@ Status BuildRcwaFarfieldData(const RCWA& rcwa,
 
         const Real rho2 = data->kx[static_cast<size_t>(i)] * data->kx[static_cast<size_t>(i)] +
                           data->ky[static_cast<size_t>(i)] * data->ky[static_cast<size_t>(i)];
-        if (rho2 >= static_cast<Real>(1.0))
+        if (rho2 >= one)
         {
             data->g00[static_cast<size_t>(i)] = make_complex(1.0, 0.0);
             data->g01[static_cast<size_t>(i)] = make_complex(0.0, 0.0);
@@ -648,17 +647,13 @@ Status BuildRcwaFarfieldData(const RCWA& rcwa,
             continue;
         }
 
-        const Real h = std::sqrt(std::max(static_cast<Real>(0.0), static_cast<Real>(1.0) - rho2));
-        const Real coeff = h > static_cast<Real>(1e-12)
-                               ? static_cast<Real>(1.0) / (h * (static_cast<Real>(1.0) + h))
-                               : static_cast<Real>(0.0);
+        const Real h = std::sqrt(one - rho2);
+        const Real coeff = one / (h * (one + h));
         const Real kxv = data->kx[static_cast<size_t>(i)];
         const Real kyv = data->ky[static_cast<size_t>(i)];
-        data->g00[static_cast<size_t>(i)] =
-            make_complex(static_cast<Real>(1.0) + coeff * kxv * kxv, 0.0);
+        data->g00[static_cast<size_t>(i)] = make_complex(one + coeff * kxv * kxv, 0.0);
         data->g01[static_cast<size_t>(i)] = make_complex(coeff * kxv * kyv, 0.0);
-        data->g11[static_cast<size_t>(i)] =
-            make_complex(static_cast<Real>(1.0) + coeff * kyv * kyv, 0.0);
+        data->g11[static_cast<size_t>(i)] = make_complex(one + coeff * kyv * kyv, 0.0);
     }
 
     return Status::kSuccess;
@@ -811,12 +806,11 @@ Status CalculateAbbeImageFromRCWA(const RCWA& rcwa,
         std::max<int64_t>(1, std::min<int64_t>(source_tile, static_cast<int64_t>(rcwa_data.source_indices.size())));
     const int batch_count_max = static_cast<int>(2 * source_tile);
     CHECK(batch_padded.Allocate(static_cast<size_t>(image_count * batch_count_max)));
-#if USE_DOUBLE_PRECISION
     int n_fft[2] = {static_cast<int>(y_count), static_cast<int>(x_count)};
+#if USE_DOUBLE_PRECISION
     CHECK(StatusFromCufftLocal(
         cufftPlanMany(&plan, 2, n_fft, nullptr, 1, static_cast<int>(image_count), nullptr, 1, static_cast<int>(image_count), CUFFT_Z2Z, batch_count_max)));
 #else
-    int n_fft[2] = {static_cast<int>(y_count), static_cast<int>(x_count)};
     CHECK(StatusFromCufftLocal(
         cufftPlanMany(&plan, 2, n_fft, nullptr, 1, static_cast<int>(image_count), nullptr, 1, static_cast<int>(image_count), CUFFT_C2C, batch_count_max)));
 #endif
