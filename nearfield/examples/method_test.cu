@@ -183,11 +183,7 @@ RunResult RunPipeline(Real freq,
 const char* ConfigLabel(char expm, int order)
 {
     if (expm == 'G' && order == 12) return "G12";
-    if (expm == 'G' && order == 18) return "G18";
-    if (expm == 'S' && order == 12) return "S12";
-    if (expm == 'S' && order == 18) return "S18";
     if (expm == 'F' && order == 12) return "F12";
-    if (expm == 'F' && order == 18) return "F18";
     return "???";
 }
 } // namespace
@@ -222,17 +218,17 @@ int main()
     const Real thicknesses[] = {100.0, 21.0, 100.0};
     constexpr int num_layers = 3;
 
-    // ── 4 configurations ─────────────────────────────────────────────────
+    // ── 2 configurations ─────────────────────────────────────────────────
     struct Config {
         char expm;
         int order;
     };
     const Config configs[] = {
-        {'G', 12}, {'G', 18}, {'S', 12}, {'S', 18}, {'F', 12}, {'F', 18}
+        {'G', 12}, {'F', 12}
     };
     constexpr int num_configs = sizeof(configs) / sizeof(configs[0]);
 
-    const int test_orders[] = {8, 12, 16};
+    const int test_orders[] = {8, 12};
     constexpr int num_orders = sizeof(test_orders) / sizeof(test_orders[0]);
 
     RunResult results[num_configs][num_orders];
@@ -263,14 +259,9 @@ int main()
               << std::setw(10) << "n2"
               << std::setw(10) << "mem(MB)"
               << std::setw(14) << "t_G12(ms)"
-              << std::setw(14) << "t_G18(ms)"
-              << std::setw(14) << "t_S12(ms)"
-              << std::setw(14) << "t_S18(ms)"
               << std::setw(14) << "t_F12(ms)"
-              << std::setw(14) << "t_F18(ms)"
-              << std::setw(12) << "G12/F12"
-              << std::setw(12) << "G18/F18" << "\n";
-    std::cout << std::string(135, '-') << "\n";
+              << std::setw(12) << "G12/F12" << "\n";
+    std::cout << std::string(67, '-') << "\n";
 
     for (int oi = 0; oi < num_orders; ++oi)
     {
@@ -281,38 +272,24 @@ int main()
                               * sizeof(Complex) / (1024.0 * 1024.0);
 
         const double tG12 = results[0][oi].t_addlayer;
-        const double tG18 = results[1][oi].t_addlayer;
-        const double tS12 = results[2][oi].t_addlayer;
-        const double tS18 = results[3][oi].t_addlayer;
-        const double tF12 = results[4][oi].t_addlayer;
-        const double tF18 = results[5][oi].t_addlayer;
+        const double tF12 = results[1][oi].t_addlayer;
 
-        const double r_G12F12 = tG12 / std::max(tF12, 1e-9);
-        const double r_G18F18 = tG18 / std::max(tF18, 1e-9);
+        const double ratio = tG12 / std::max(tF12, 1e-9);
 
         std::cout << std::setw(7) << order
                   << std::setw(10) << n2
                   << std::setw(9) << std::fixed << std::setprecision(1) << mem_mb
                   << std::setw(14) << std::fixed << std::setprecision(0) << tG12
-                  << std::setw(14) << std::fixed << std::setprecision(0) << tG18
-                  << std::setw(14) << std::fixed << std::setprecision(0) << tS12
-                  << std::setw(14) << std::fixed << std::setprecision(0) << tS18
                   << std::setw(14) << std::fixed << std::setprecision(0) << tF12
-                  << std::setw(14) << std::fixed << std::setprecision(0) << tF18
-                  << std::setw(11) << std::fixed << std::setprecision(2) << r_G12F12 << "x"
-                  << std::setw(11) << std::fixed << std::setprecision(2) << r_G18F18 << "x"
+                  << std::setw(11) << std::fixed << std::setprecision(2) << ratio << "x"
                   << "\n";
     }
 
-    // ── Report: accuracy comparison (vs G18 as reference) ────────────────
-    std::cout << "\nAccuracy (rel_diff vs G18):\n"
+    // ── Report: accuracy comparison (vs G12 as reference) ────────────────
+    std::cout << "\nAccuracy (rel_diff vs G12):\n"
               << std::setw(7) << "order"
-              << std::setw(14) << "G12"
-              << std::setw(14) << "S12"
-              << std::setw(14) << "S18"
-              << std::setw(14) << "F12"
-              << std::setw(14) << "F18" << "\n";
-    std::cout << std::string(77, '-') << "\n";
+              << std::setw(14) << "F12" << "\n";
+    std::cout << std::string(21, '-') << "\n";
 
     for (int oi = 0; oi < num_orders; ++oi)
     {
@@ -321,19 +298,15 @@ int main()
         const int64_t n2 = 2 * rcwa_n;
 
         auto rel_all = [&](const RunResult& r) {
-            const double r11 = RelativeDiff(results[1][oi].S11, r.S11, n2);
-            const double r12 = RelativeDiff(results[1][oi].S12, r.S12, n2);
-            const double r21 = RelativeDiff(results[1][oi].S21, r.S21, n2);
-            const double r22 = RelativeDiff(results[1][oi].S22, r.S22, n2);
+            const double r11 = RelativeDiff(results[0][oi].S11, r.S11, n2);
+            const double r12 = RelativeDiff(results[0][oi].S12, r.S12, n2);
+            const double r21 = RelativeDiff(results[0][oi].S21, r.S21, n2);
+            const double r22 = RelativeDiff(results[0][oi].S22, r.S22, n2);
             return std::max({r11, r12, r21, r22});
         };
 
         std::cout << std::setw(7) << order
-                  << std::setw(14) << std::scientific << std::setprecision(2) << rel_all(results[0][oi])
-                  << std::setw(14) << std::scientific << std::setprecision(2) << rel_all(results[2][oi])
-                  << std::setw(14) << std::scientific << std::setprecision(2) << rel_all(results[3][oi])
-                  << std::setw(14) << std::scientific << std::setprecision(2) << rel_all(results[4][oi])
-                  << std::setw(14) << std::scientific << std::setprecision(2) << rel_all(results[5][oi])
+                  << std::setw(14) << std::scientific << std::setprecision(2) << rel_all(results[1][oi])
                   << "\n";
     }
 
