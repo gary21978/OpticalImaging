@@ -1751,7 +1751,7 @@ Status RCWA::ComputeCosSinFromThetaOrder18(const Complex* Theta,
 // ever forming the matrix square root √(P·Q).
 //
 // Phases (i = 0..3):
-//   1.  A² = 2⁻²ᵐ·(k₀d)²·(P·Q),   m = ⌈½ log₂ max(‖P·Q‖₁, 1)⌉
+//   1.  A² = 2⁻²ᵐ·(k₀d)²·(P·Q),   m = ⌈½ log₂ max((k₀d)²‖P·Q‖₁, 1)⌉
 //   2.  B⁽ⁱ⁾  = a₀ᵢ·I − a₂ᵢ·A²,   B̄⁽ⁱ⁾ = a₁ᵢ·I − a₃ᵢ·A²
 //   3.  A⁽⁶⁾  = (B⁽³⁾)² − A²·(B̄⁽³⁾)² + B⁽²⁾,
 //       Ā⁽⁶⁾  = B̄⁽³⁾·B⁽³⁾ + B⁽³⁾·B̄⁽³⁾ + B̄⁽²⁾
@@ -1781,7 +1781,8 @@ static Status ComputeCosSincFromPQOrder12(const Complex* P,
 
     double PQnorm = 0.0;
     CHECK(ComputeMatrixNorm1(PQ.get(), n, &PQnorm, use_stream));
-    int m = static_cast<int>(std::ceil(0.5 * std::log2(std::max(PQnorm, 1.0))));
+    int m = static_cast<int>(std::ceil(0.5 * std::log2(std::max(
+        static_cast<double>(k0d_sq) * PQnorm, 1.0))));
     if (m < 0)
     {
         m = 0;
@@ -1929,7 +1930,7 @@ static Status ComputeCosSincFromPQOrder12(const Complex* P,
 // 18th-order optimized Taylor expansion (Bader, Blanes & Casas, 2019).
 //
 // Phases (i = 0..4):
-//   1.  A² = 2⁻²ᵐ·(k₀d)²·(P·Q),   m = ⌈½ log₂ max(‖P·Q‖₁, 1)⌉
+//   1.  A² = 2⁻²ᵐ·(k₀d)²·(P·Q),   m = ⌈½ log₂ max((k₀d)²‖P·Q‖₁, 1)⌉
 //   2.  A⁶ = (A²)³
 //   3.  B⁽ⁱ⁾  = a₀ᵢ·I − a₂ᵢ·A² − a₄ᵢ·A⁶,   B̄⁽ⁱ⁾ = a₁ᵢ·I − a₃ᵢ·A²
 //   4.  A⁽⁹⁾  = B⁽⁰⁾·B⁽⁴⁾ − A²·(B̄⁽⁰⁾·B̄⁽⁴⁾) + B⁽³⁾
@@ -1960,7 +1961,8 @@ static Status ComputeCosSincFromPQOrder18(const Complex* P,
 
     double PQnorm = 0.0;
     CHECK(ComputeMatrixNorm1(PQ.get(), n, &PQnorm, use_stream));
-    int m = static_cast<int>(std::ceil(0.5 * std::log2(std::max(PQnorm, 1.0))));
+    int m = static_cast<int>(std::ceil(0.5 * std::log2(std::max(
+        static_cast<double>(k0d_sq) * PQnorm, 1.0))));
     if (m < 0)
     {
         m = 0;
