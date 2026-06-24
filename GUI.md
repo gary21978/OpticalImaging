@@ -1,4 +1,4 @@
-# Simulok GPU Optical Workbench
+# GPU Optical Workbench
 
 The desktop workbench is a native C++/OpenGL frontend around the existing CUDA
 RCWA and Abbe imaging pipeline.
@@ -16,13 +16,13 @@ cmake --build build -j
 Run from the repository root so the default JSON path resolves:
 
 ```bash
-./build/simulok_gui
+./build/simulator
 ```
 
 An alternate JSON file can be passed on the command line:
 
 ```bash
-./build/simulok_gui path/to/config.json
+./build/simulator path/to/config.json
 ```
 
 ## Controls

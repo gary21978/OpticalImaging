@@ -53,9 +53,6 @@ struct SimulationConfig
     std::vector<double> focus_nm{0.0};
     double incident_theta_deg = 0.0;
     double incident_phi_deg = 0.0;
-    std::string geometry = "cross";
-    double feature_x = 0.50;
-    double feature_y = 0.50;
     double input_n_real = 1.0;
     double input_n_imag = 0.0;
     double substrate_n_real = 6.5271;

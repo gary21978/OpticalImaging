@@ -93,7 +93,7 @@ std::string NearfieldCacheKey(const SimulationConfig& c)
     const std::string text = out.str();
     const size_t hash = std::hash<std::string>{}(text);
     std::ostringstream name;
-    name << "simulok_nearfield_" << std::hex << hash << ".bin";
+    name << "nearfield_" << std::hex << hash << ".bin";
     return (std::filesystem::temp_directory_path() / name.str()).string();
 }
 

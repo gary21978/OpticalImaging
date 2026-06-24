@@ -15,7 +15,6 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <filesystem>
 #include <iomanip>
 #include <memory>
@@ -453,6 +452,21 @@ std::string OpenPngDialog()
     while (!path.empty() && (path.back() == '\n' || path.back() == '\r'))
         path.pop_back();
     return path;
+}
+
+std::string QueryNvidiaGpuName()
+{
+    std::unique_ptr<FILE, decltype(&pclose)> pipe(
+        popen("nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null", "r"), pclose);
+    if (!pipe)
+        return {};
+    char buffer[256] = {};
+    if (!std::fgets(buffer, sizeof(buffer), pipe.get()))
+        return {};
+    std::string name(buffer);
+    while (!name.empty() && (name.back() == '\n' || name.back() == '\r'))
+        name.pop_back();
+    return name;
 }
 
 struct PreviewMask
@@ -1255,15 +1269,16 @@ void StartSimulation(App* app)
     app->config.incident_phi_deg = 0.0;
     UpdateNyquistGrid(&app->config);
     const std::filesystem::path temp_dir = std::filesystem::temp_directory_path();
-    app->worker_config_path = (temp_dir / ("simulok_worker_" + std::to_string(getpid()) + ".json")).string();
-    app->worker_result_path = (temp_dir / ("simulok_worker_" + std::to_string(getpid()) + ".bin")).string();
+    app->worker_config_path = (temp_dir / ("worker_" + std::to_string(getpid()) + ".json")).string();
+    app->worker_result_path = (temp_dir / ("worker_" + std::to_string(getpid()) + ".bin")).string();
     if (!SaveSimulationConfig(app->worker_config_path, app->config, &error))
     {
         app->status = error;
         return;
     }
     std::filesystem::remove(app->worker_result_path);
-    const std::string worker = app->executable_dir + "/simulok_worker_" + app->config.precision;
+    const std::string worker = app->executable_dir +
+        (app->config.precision == "double" ? "/worker_fp64" : "/worker_fp32");
     const pid_t pid = fork();
     if (pid == 0)
     {
@@ -1863,10 +1878,8 @@ int main(int argc, char** argv)
 
     const char* renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
     if (renderer)
-    {
         app.render_gpu = renderer;
-        app.compute_gpu = renderer;
-    }
+    app.compute_gpu = QueryNvidiaGpuName();
 
     const std::filesystem::path executable_dir(app.executable_dir);
     const std::filesystem::path font_candidates[] = {

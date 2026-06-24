@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.19)
 
-set(SIMULOK_CUDA_ARCHITECTURES "89" CACHE STRING "CUDA architectures")
-set(CMAKE_CUDA_ARCHITECTURES "${SIMULOK_CUDA_ARCHITECTURES}")
+set(SIMULATOR_CUDA_ARCHITECTURES "89" CACHE STRING "CUDA architectures")
+set(CMAKE_CUDA_ARCHITECTURES "${SIMULATOR_CUDA_ARCHITECTURES}")
 
-project(Simulok LANGUAGES CXX CUDA)
+project(Simulator LANGUAGES CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -19,14 +19,14 @@ find_package(OpenGL REQUIRED)
 find_package(PNG REQUIRED)
 find_package(glfw3 REQUIRED)
 
-set(SIMULOK_GUI_SOURCES
+set(SIMULATOR_GUI_SOURCES
     gui/main.cpp
     gui/material_database.cpp
     gui/png_mask.cpp
     gui/result_io.cpp
     gui/simulation_config.cpp)
 
-set(SIMULOK_WORKER_SOURCES
+set(SIMULATOR_WORKER_SOURCES
     gui/material_database.cpp
     gui/png_mask.cpp
     gui/result_io.cpp
@@ -37,40 +37,40 @@ set(SIMULOK_WORKER_SOURCES
     src/farfield_abbe.cu
     src/rcwa.cu)
 
-add_executable(simulok_gui ${SIMULOK_GUI_SOURCES})
-target_include_directories(simulok_gui PRIVATE gui)
-target_link_libraries(simulok_gui PRIVATE Freetype::Freetype OpenGL::GL glfw PNG::PNG)
-target_compile_options(simulok_gui PRIVATE
+add_executable(simulator ${SIMULATOR_GUI_SOURCES})
+target_include_directories(simulator PRIVATE gui)
+target_link_libraries(simulator PRIVATE Freetype::Freetype OpenGL::GL glfw PNG::PNG)
+target_compile_options(simulator PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:-O3 -march=native>)
-add_custom_command(TARGET simulok_gui POST_BUILD
+add_custom_command(TARGET simulator POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
-            $<TARGET_FILE_DIR:simulok_gui>/resources/fonts
+            $<TARGET_FILE_DIR:simulator>/resources/fonts
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_SOURCE_DIR}/resources/fonts/LiberationSans-Bold.ttf
-            $<TARGET_FILE_DIR:simulok_gui>/resources/fonts/LiberationSans-Bold.ttf
+            $<TARGET_FILE_DIR:simulator>/resources/fonts/LiberationSans-Bold.ttf
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_SOURCE_DIR}/resources/fonts/LiberationSans-Regular.ttf
-            $<TARGET_FILE_DIR:simulok_gui>/resources/fonts/LiberationSans-Regular.ttf
+            $<TARGET_FILE_DIR:simulator>/resources/fonts/LiberationSans-Regular.ttf
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_SOURCE_DIR}/resources/fonts/LICENSE-liberation.txt
-            $<TARGET_FILE_DIR:simulok_gui>/resources/fonts/LICENSE-liberation.txt
+            $<TARGET_FILE_DIR:simulator>/resources/fonts/LICENSE-liberation.txt
     COMMAND ${CMAKE_COMMAND} -E make_directory
-            $<TARGET_FILE_DIR:simulok_gui>/resources/config
+            $<TARGET_FILE_DIR:simulator>/resources/config
     COMMAND ${CMAKE_COMMAND} -E make_directory
-            $<TARGET_FILE_DIR:simulok_gui>/resources/geometry
+            $<TARGET_FILE_DIR:simulator>/resources/geometry
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_SOURCE_DIR}/config/default_simulation.json
-            $<TARGET_FILE_DIR:simulok_gui>/resources/config/default_simulation.json
+            $<TARGET_FILE_DIR:simulator>/resources/config/default_simulation.json
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_SOURCE_DIR}/resources/tztek_materials.csv
-            $<TARGET_FILE_DIR:simulok_gui>/resources/tztek_materials.csv
+            $<TARGET_FILE_DIR:simulator>/resources/tztek_materials.csv
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_SOURCE_DIR}/resources/geometry
-            $<TARGET_FILE_DIR:simulok_gui>/resources/geometry)
+            $<TARGET_FILE_DIR:simulator>/resources/geometry)
 
-function(add_simulok_worker precision use_double)
-    set(target simulok_worker_${precision})
-    add_executable(${target} ${SIMULOK_WORKER_SOURCES})
+function(add_worker precision use_double)
+    set(target worker_fp${precision})
+    add_executable(${target} ${SIMULATOR_WORKER_SOURCES})
     target_include_directories(${target} PRIVATE gui include)
     target_compile_definitions(${target} PRIVATE USE_DOUBLE_PRECISION=${use_double})
     target_compile_options(${target} PRIVATE
@@ -83,5 +83,5 @@ function(add_simulok_worker precision use_double)
         PNG::PNG)
 endfunction()
 
-add_simulok_worker(double 1)
-add_simulok_worker(single 0)
+add_worker(64 1)
+add_worker(32 0)

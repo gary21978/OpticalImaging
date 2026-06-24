@@ -5,7 +5,6 @@
 #include <cmath>
 #include <fstream>
 #include <iomanip>
-#include <sstream>
 
 namespace
 {
@@ -317,9 +316,6 @@ bool LoadSimulationConfig(const std::string& path, SimulationConfig* config, std
     ReadString(text, "precision", &parsed.precision);
     ReadNumber(text, "incident_theta_deg", &parsed.incident_theta_deg);
     ReadNumber(text, "incident_phi_deg", &parsed.incident_phi_deg);
-    ReadString(text, "geometry", &parsed.geometry);
-    ReadNumber(text, "feature_x", &parsed.feature_x);
-    ReadNumber(text, "feature_y", &parsed.feature_y);
     ReadNumber(text, "input_n_real", &parsed.input_n_real);
     ReadNumber(text, "input_n_imag", &parsed.input_n_imag);
     ReadNumber(text, "substrate_n_real", &parsed.substrate_n_real);
@@ -415,9 +411,6 @@ bool SaveSimulationConfig(const std::string& path, const SimulationConfig& c, st
         << "  \"precision\": \"" << c.precision << "\",\n"
         << "  \"incident_theta_deg\": " << c.incident_theta_deg << ",\n"
         << "  \"incident_phi_deg\": " << c.incident_phi_deg << ",\n"
-        << "  \"geometry\": \"" << c.geometry << "\",\n"
-        << "  \"feature_x\": " << c.feature_x << ",\n"
-        << "  \"feature_y\": " << c.feature_y << ",\n"
         << "  \"input_n_real\": " << c.input_n_real << ",\n"
         << "  \"input_n_imag\": " << c.input_n_imag << ",\n"
         << "  \"substrate_n_real\": " << c.substrate_n_real << ",\n"
