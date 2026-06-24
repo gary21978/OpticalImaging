@@ -1621,7 +1621,8 @@ void DrawUi(App* app, int width, int height)
 
     RoundRect({20,18,46,46},13,{0.30f,0.55f,0.88f,1});
     RoundOutline({20,18,46,46},13,{0.18f,0.37f,0.66f,1},1.5f);
-    Text(24,29,"Sm",2.1f,{0.99f,1,1,1});
+    const float s_scale = 4.0f;
+    Text(43.0f - TextWidth("S", s_scale) * 0.5f, 26.0f, "S", s_scale, {0.99f, 1, 1, 1});
     float title_scale = 3.0f;
     while (title_scale > 2.0f && 79.0f + TextWidth("SIMULATOR", title_scale) > 220.0f)
         title_scale -= 0.1f;
@@ -1878,7 +1879,14 @@ int main(int argc, char** argv)
 
     const char* renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
     if (renderer)
-        app.render_gpu = renderer;
+    {
+        std::string r(renderer);
+        if (auto pos = r.find('('); pos != std::string::npos)
+            r.resize(pos);
+        while (!r.empty() && r.back() == ' ')
+            r.pop_back();
+        app.render_gpu = r;
+    }
     app.compute_gpu = QueryNvidiaGpuName();
 
     const std::filesystem::path executable_dir(app.executable_dir);
