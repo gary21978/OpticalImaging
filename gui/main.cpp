@@ -191,6 +191,9 @@ struct App
     int material_menu_scroll = 0;
     std::string edit_buffer;
     bool replace_numeric_input = false;
+    int active_slider = -1;
+    bool realtime_pending = false;
+    std::chrono::steady_clock::time_point realtime_due = std::chrono::steady_clock::now();
     bool mouse_pressed = false;
     bool dragging_view = false;
     double mouse_x = 0.0;
@@ -525,8 +528,8 @@ int TopmostNonUniformLayer(const SimulationConfig& config)
     return -1;
 }
 
-Rect PeriodLinkRect() { return {158, 198, 14, 34}; }
-Rect OrderLinkRect() { return {158, 256, 14, 34}; }
+Rect PeriodLinkRect() { return {158, 212, 14, 34}; }
+Rect OrderLinkRect() { return {158, 270, 14, 34}; }
 
 const char* ZernikeDescription(int index)
 {
@@ -645,6 +648,66 @@ void DrawField(const NumericField& field, int index, const App& app)
     std::string value = index == app.active_field ? app.edit_buffer :
                         field.int_value ? std::to_string(*field.int_value) : Format(*field.real_value, 2);
     Text(field.rect.x + 10, field.rect.y + 7, value, 1.55f, field.enabled ? Color{0.14f,0.20f,0.28f,1} : Color{0.62f,0.66f,0.72f,1});
+}
+
+bool SliderRange(const NumericField& field, double* minimum, double* maximum)
+{
+    if (!field.real_value || !minimum || !maximum)
+        return false;
+    if (field.label == "FOCUS NM") { *minimum = -2000.0; *maximum = 2000.0; return true; }
+    if (field.label == "SIGMA OUT" || field.label == "SIGMA IN")
+    { *minimum = 0.0; *maximum = 1.0; return true; }
+    if (field.label == "OPEN ANGLE") { *minimum = 1.0; *maximum = 180.0; return true; }
+    if (field.label == "ROTATE ANGLE") { *minimum = -180.0; *maximum = 180.0; return true; }
+    if (field.label == "RECT X" || field.label == "RECT Y")
+    { *minimum = 0.01; *maximum = 1.0; return true; }
+    if (field.label == "POLARIZATION DEG") { *minimum = 0.0; *maximum = 180.0; return true; }
+    if (!field.label.empty() && field.label[0] == 'Z')
+    { *minimum = -1.0; *maximum = 1.0; return true; }
+    return false;
+}
+
+Rect FieldSliderRect(const NumericField& field)
+{
+    return {field.rect.x, field.rect.y + field.rect.h + 1.0f, field.rect.w, 4.0f};
+}
+
+void DrawFieldSlider(const NumericField& field)
+{
+    double minimum = 0.0, maximum = 0.0;
+    if (!field.enabled || !SliderRange(field, &minimum, &maximum))
+        return;
+    const Rect track = FieldSliderRect(field);
+    const double value = std::clamp(*field.real_value, minimum, maximum);
+    const float t = static_cast<float>((value - minimum) / (maximum - minimum));
+    Quad(track, {0.78f,0.84f,0.91f,1});
+    Quad({track.x,track.y,track.w*t,track.h},{0.28f,0.58f,0.90f,1});
+    Quad({track.x+track.w*t-3.0f,track.y-2.0f,6.0f,track.h+4.0f},{0.12f,0.38f,0.68f,1});
+}
+
+void ScheduleRealtimeUpdate(App* app)
+{
+    app->realtime_pending = true;
+    app->realtime_due = std::chrono::steady_clock::now() + std::chrono::milliseconds(160);
+    app->status = "FAR-FIELD UPDATE PENDING";
+}
+
+void UpdateSliderValue(App* app, int index)
+{
+    if (index < 0 || index >= static_cast<int>(app->fields.size()))
+        return;
+    NumericField& field = app->fields[static_cast<size_t>(index)];
+    double minimum = 0.0, maximum = 0.0;
+    if (!field.enabled || !SliderRange(field, &minimum, &maximum))
+        return;
+    const Rect track = FieldSliderRect(field);
+    const double t = std::clamp((app->mouse_x - track.x) / track.w, 0.0, 1.0);
+    *field.real_value = minimum + t * (maximum - minimum);
+    if (field.label == "SIGMA IN" && app->config.sigma_inner > app->config.sigma_outer)
+        app->config.sigma_inner = app->config.sigma_outer;
+    if (field.label == "SIGMA OUT" && app->config.sigma_outer < app->config.sigma_inner)
+        app->config.sigma_outer = app->config.sigma_inner;
+    ScheduleRealtimeUpdate(app);
 }
 
 void DrawTextField(const TextField& field, int index, const App& app)
@@ -994,7 +1057,7 @@ void DrawImagePanel(const App& app, Rect r, GLuint texture, const std::string& e
 
 Rect GeometryCanvasRect()
 {
-    return {22, 132, 286, 142};
+    return {22, 154, 286, 120};
 }
 
 void DrawGeometryCanvas(const App& app, Rect r)
@@ -1062,6 +1125,8 @@ void CommitEdit(App* app)
     if (app->active_field < 0 || app->active_field >= static_cast<int>(app->fields.size()))
         return;
     NumericField& field = app->fields[app->active_field];
+    double slider_minimum = 0.0, slider_maximum = 0.0;
+    const bool realtime_field = SliderRange(field, &slider_minimum, &slider_maximum);
     char* end = nullptr;
     const double value = std::strtod(app->edit_buffer.c_str(), &end);
     if (end != app->edit_buffer.c_str() && std::isfinite(value))
@@ -1077,6 +1142,8 @@ void CommitEdit(App* app)
     if (app->order_xy_linked)
         app->config.order_y = app->config.order_x;
     UpdateNyquistGrid(&app->config);
+    if (realtime_field)
+        ScheduleRealtimeUpdate(app);
 }
 
 void StartEdit(App* app, int index)
@@ -1212,7 +1279,7 @@ void BuildFields(App* app, float panel_x, float panel_y, float panel_w)
     }
     else if (app->active_tab == kSourceTab)
     {
-        const float source_y=292.0f;
+        const float source_y=300.0f;
         app->fields.push_back({"SIGMA OUT",&app->config.sigma_outer,nullptr,{panel_x,source_y,w,h}});
         app->fields.push_back({"SIGMA IN",&app->config.sigma_inner,nullptr,{panel_x+w+gap,source_y,w,h}});
         const bool dipole = app->config.source_shape == "dipole";
@@ -1254,10 +1321,14 @@ void StopSimulation(App* app)
     app->status = "SIMULATION FORCE STOPPED";
 }
 
-void StartSimulation(App* app)
+void StartSimulation(App* app, bool realtime = false)
 {
     if (app->running)
+    {
+        if (realtime)
+            app->realtime_pending = true;
         return;
+    }
     CommitEdit(app);
     std::string error;
     if (!ValidateSimulationConfig(app->config, &error))
@@ -1293,8 +1364,10 @@ void StartSimulation(App* app)
     }
     app->worker_pid = pid;
     app->running = true;
-    app->status = "CUDA " + app->config.precision + " / APPROXIMATION " +
-                  std::to_string(app->config.approximation_order) + " RUNNING";
+    app->realtime_pending = false;
+    app->status = realtime ? "UPDATING FAR-FIELD" :
+        "CUDA " + app->config.precision + " / APPROXIMATION " +
+        std::to_string(app->config.approximation_order) + " RUNNING";
 }
 
 void HandleClick(App* app, int width, int height)
@@ -1322,11 +1395,23 @@ void HandleClick(App* app, int width, int height)
         }
 
     for (int i = 0; i < static_cast<int>(app->fields.size()); ++i)
+    {
+        double slider_minimum = 0.0, slider_maximum = 0.0;
+        if (app->fields[i].enabled &&
+            SliderRange(app->fields[i], &slider_minimum, &slider_maximum) &&
+            FieldSliderRect(app->fields[i]).Contains(app->mouse_x, app->mouse_y))
+        {
+            CommitEdit(app);
+            app->active_slider = i;
+            UpdateSliderValue(app, i);
+            return;
+        }
         if (app->fields[i].enabled && app->fields[i].rect.Contains(app->mouse_x, app->mouse_y))
         {
             StartEdit(app, i);
             return;
         }
+    }
     for (int i = 0; i < static_cast<int>(app->text_fields.size()); ++i)
         if (app->text_fields[i].rect.Contains(app->mouse_x, app->mouse_y))
         {
@@ -1405,14 +1490,14 @@ void HandleClick(App* app, int width, int height)
             app->config.order_y = app->config.order_x;
         return;
     }
-    else if (app->active_tab == kBasicTab && Rect{170,314,62,34}.Contains(app->mouse_x, app->mouse_y))
+    else if (app->active_tab == kBasicTab && Rect{170,328,62,34}.Contains(app->mouse_x, app->mouse_y))
     {
         const double next_focus = app->config.focus_nm.empty() ? 0.0 : app->config.focus_nm.back() + 100.0;
         app->config.focus_nm.push_back(next_focus);
         app->selected_focus = static_cast<int>(app->config.focus_nm.size()) - 1;
         return;
     }
-    else if (app->active_tab == kBasicTab && Rect{240,314,62,34}.Contains(app->mouse_x, app->mouse_y))
+    else if (app->active_tab == kBasicTab && Rect{240,328,62,34}.Contains(app->mouse_x, app->mouse_y))
     {
         if (app->config.focus_nm.size() > 1)
         {
@@ -1427,10 +1512,11 @@ void HandleClick(App* app, int width, int height)
         static const char* shapes[]={"annular","dipole","quasar","rect"};
         for (int i=0;i<4;++i)
         {
-            const Rect card{28.0f+(i%2)*138.0f,142.0f+(i/2)*72.0f,128,62};
+            const Rect card{28.0f+(i%2)*138.0f,150.0f+(i/2)*70.0f,128,60};
             if (card.Contains(app->mouse_x,app->mouse_y))
             {
                 app->config.source_shape=shapes[i];
+                ScheduleRealtimeUpdate(app);
                 return;
             }
         }
@@ -1439,9 +1525,10 @@ void HandleClick(App* app, int width, int height)
     {
         static const char* polarizations[] = {"x","y","circular","angle"};
         for (int i = 0; i < 4; ++i)
-            if (Rect{28,146.0f + i * 42.0f,272,36}.Contains(app->mouse_x,app->mouse_y))
+            if (Rect{28,154.0f + i * 44.0f,272,38}.Contains(app->mouse_x,app->mouse_y))
             {
                 app->config.polarization = polarizations[i];
+                ScheduleRealtimeUpdate(app);
                 return;
             }
     }
@@ -1571,9 +1658,9 @@ void HandleClick(App* app, int width, int height)
             return;
         }
     }
-    else if (app->active_tab == kSolverTab && Rect{22,154,286,42}.Contains(app->mouse_x, app->mouse_y))
+    else if (app->active_tab == kSolverTab && Rect{22,178,286,42}.Contains(app->mouse_x, app->mouse_y))
         app->config.precision = app->config.precision == "double" ? "single" : "double";
-    else if (app->active_tab == kSolverTab && Rect{22,254,286,42}.Contains(app->mouse_x, app->mouse_y))
+    else if (app->active_tab == kSolverTab && Rect{22,278,286,42}.Contains(app->mouse_x, app->mouse_y))
         app->config.approximation_order = app->config.approximation_order == 12 ? 18 : 12;
 }
 
@@ -1640,7 +1727,7 @@ void DrawUi(App* app, int width, int height)
 
     static const char* tabs[] = {"LAYERS","MODEL","SOURCE","POLAR.","ABERR.","SOLVER"};
     const Color tab_panel{0.94f,0.97f,1.0f,0.98f};
-    const Rect control_panel{18,106,294,std::max(354.0f,height-264.0f)};
+    const Rect control_panel{18,112,294,std::max(348.0f,height-270.0f)};
     RoundRect(control_panel,12,tab_panel);
     RoundOutline(control_panel,12,{0.72f,0.80f,0.90f,0.9f});
     RoundRect({18,74,294,38},11,{0.87f,0.92f,0.98f,1});
@@ -1662,9 +1749,19 @@ void DrawUi(App* app, int width, int height)
              app->active_tab == i ? Color{0.16f,0.42f,0.72f,1} : Color{0.38f,0.50f,0.62f,1});
     }
 
-    BuildFields(app, 22, 140, 286);
+    static const char* section_titles[] = {
+        "LAYER DEFINITION", "MODEL PARAMETERS", "ILLUMINATION SOURCE",
+        "POLARIZATION", "WAVEFRONT ABERRATION", "SOLVER SETTINGS"
+    };
+    Text(24,122,section_titles[app->active_tab],1.08f,{0.24f,0.38f,0.54f,1});
+    Quad({22,143,286,1},{0.72f,0.80f,0.90f,1});
+
+    BuildFields(app, 22, 154, 286);
     for (int i = 0; i < static_cast<int>(app->fields.size()); ++i)
+    {
         DrawField(app->fields[i], i, *app);
+        DrawFieldSlider(app->fields[i]);
+    }
     for (int i = 0; i < static_cast<int>(app->text_fields.size()); ++i)
         DrawTextField(app->text_fields[i], i, *app);
 
@@ -1677,27 +1774,25 @@ void DrawUi(App* app, int width, int height)
             app->config.order_y = app->config.order_x;
         DrawButton(PeriodLinkRect(), "=", true);
         DrawButton(OrderLinkRect(), "=", true);
-        DrawButton({170,314,62,34},"+ FOCUS",false,false,0.95f);
-        DrawButton({240,314,62,34},"- FOCUS",false,app->config.focus_nm.size() <= 1,0.95f);
-        Text(170,356,"FOCUS "+std::to_string(app->selected_focus+1)+" / "+
+        DrawButton({170,328,62,34},"+ FOCUS",false,false,0.95f);
+        DrawButton({240,328,62,34},"- FOCUS",false,app->config.focus_nm.size() <= 1,0.95f);
+        Text(170,374,"FOCUS "+std::to_string(app->selected_focus+1)+" / "+
              std::to_string(app->config.focus_nm.size()),0.95f,{0.34f,0.50f,0.66f,1});
     }
     else if (app->active_tab == kSourceTab)
     {
-        Text(28,124,"ILLUMINATION APERTURE",1.08f,{0.38f,0.67f,0.76f,1});
         static const char* shapes[]={"annular","dipole","quasar","rect"};
         static const char* labels[]={"ANNULAR","DIPOLE","QUASAR","RECT"};
         for (int i=0;i<4;++i)
-            DrawSourceChoice({28.0f+(i%2)*138.0f,142.0f+(i/2)*72.0f,128,62},
+            DrawSourceChoice({28.0f+(i%2)*138.0f,150.0f+(i/2)*70.0f,128,60},
                              shapes[i],labels[i],app->config.source_shape==shapes[i]);
     }
     else if (app->active_tab == kPolarizationTab)
     {
-        Text(28,128,"POLARIZATION",1.15f,{0.38f,0.67f,0.76f,1});
         static const char* values[] = {"x","y","circular","angle"};
         static const char* labels[] = {"LINEAR X","LINEAR Y","CIRCULAR","CUSTOM ANGLE"};
         for (int i = 0; i < 4; ++i)
-            DrawRadio({28,146.0f+i*42.0f,272,36},labels[i],app->config.polarization == values[i]);
+            DrawRadio({28,154.0f+i*44.0f,272,38},labels[i],app->config.polarization == values[i]);
     }
     else if (app->active_tab == kZernikeTab)
     {
@@ -1713,7 +1808,6 @@ void DrawUi(App* app, int width, int height)
         if (preview_index >= 0)
         {
             const LayerConfig& preview_layer = app->config.layers[static_cast<size_t>(preview_index)];
-            Text(32,160,preview_layer.name,0.95f,{0.42f,0.54f,0.66f,1});
             Text(22,288,preview_layer.png_path.empty() ? "NO PNG SELECTED" :
                  std::filesystem::path(preview_layer.png_path).filename().string(),
                  0.90f,{0.34f,0.44f,0.58f,1});
@@ -1786,11 +1880,11 @@ void DrawUi(App* app, int width, int height)
     }
     else if (app->active_tab == kSolverTab)
     {
-        DrawToggle({22,130,286,66},"Numeric Precision","Single","Double",
+        DrawToggle({22,154,286,66},"Numeric Precision","Single","Double",
                    app->config.precision == "double");
-        DrawToggle({22,230,286,66},"Matrix Approximation","Order 12","Order 18",
+        DrawToggle({22,254,286,66},"Matrix Approximation","Order 12","Order 18",
                    app->config.approximation_order == 18);
-        Text(22,322,"SETTINGS APPLY TO THE NEXT RUN",1.0f,{0.27f,0.49f,0.58f,1});
+        Text(22,346,"SETTINGS APPLY TO THE NEXT RUN",1.0f,{0.27f,0.49f,0.58f,1});
     }
 
     DrawButton({22,height - 68.0f,286,44}, app->running ? "FORCE STOP SIMULATION" : "RUN SIMULATION", true, false);
@@ -1925,6 +2019,8 @@ int main(int argc, char** argv)
         glfwGetFramebufferSize(window, &width, &height);
         if (down && !app.mouse_pressed)
             HandleClick(&app, width, height);
+        if (down && app.active_slider >= 0)
+            UpdateSliderValue(&app, app.active_slider);
         if (down && app.dragging_view)
         {
             const Quat delta = TrackballDelta(app.structure_panel,
@@ -1940,7 +2036,10 @@ int main(int argc, char** argv)
             app.spin = SlerpIdentity(app.spin, std::exp(-4.2f * dt));
         }
         if (!down)
+        {
             app.dragging_view = false;
+            app.active_slider = -1;
+        }
         app.mouse_pressed = down;
         app.last_mouse_x = app.mouse_x;
         app.last_mouse_y = app.mouse_y;
@@ -1953,21 +2052,33 @@ int main(int argc, char** argv)
             {
                 app.worker_pid = -1;
                 app.running = false;
-                if (ReadSimulationResult(app.worker_result_path, &app.result))
+                SimulationResult next_result;
+                if (ReadSimulationResult(app.worker_result_path, &next_result))
                 {
-                    if (app.result.error.empty())
+                    if (next_result.error.empty())
                     {
-                        app.status = "SIMULATION COMPLETE";
-                        app.selected_focus = 0;
+                        const bool farfield_only = next_result.nearfield_rgba.empty();
+                        if (farfield_only && !app.result.nearfield_rgba.empty())
+                        {
+                            next_result.nearfield_rgba = app.result.nearfield_rgba;
+                            next_result.nearfield_peak_intensity = app.result.nearfield_peak_intensity;
+                        }
+                        app.result = std::move(next_result);
+                        app.status = farfield_only ? "FAR-FIELD UPDATED (S21 CACHE)" : "SIMULATION COMPLETE";
+                        app.selected_focus = std::clamp(app.selected_focus, 0,
+                            std::max(0, app.result.focus_count - 1));
                         UploadResultTexture(&app);
                     }
                     else
-                        app.status = app.result.error;
+                        app.status = next_result.error;
                 }
                 else
                     app.status = "CUDA WORKER EXITED WITHOUT A RESULT";
             }
         }
+        if (!app.running && app.realtime_pending &&
+            std::chrono::steady_clock::now() >= app.realtime_due)
+            StartSimulation(&app, true);
 
         DrawUi(&app, width, height);
         glfwSwapBuffers(window);

@@ -80,7 +80,11 @@ std::string NearfieldCacheKey(const SimulationConfig& c)
         << c.substrate_n_real << '|' << c.substrate_n_imag << '|'
         << c.substrate_material << '|'
         << c.precision << '|'
-        << c.approximation_order;
+        << c.approximation_order << '|'
+        << c.source_shape << '|' << c.sigma_outer << '|' << c.sigma_inner << '|'
+        << c.source_open_angle_deg << '|' << c.source_rotate_angle_deg << '|'
+        << c.source_rect_x << '|' << c.source_rect_y << '|'
+        << c.polarization << '|' << c.polarization_angle_deg;
     for (const LayerConfig& layer : c.layers)
     {
         out << '|' << layer.name << '|' << layer.material << '|' << layer.thickness_nm
@@ -94,6 +98,36 @@ std::string NearfieldCacheKey(const SimulationConfig& c)
     const size_t hash = std::hash<std::string>{}(text);
     std::ostringstream name;
     name << "nearfield_" << std::hex << hash << ".bin";
+    return (std::filesystem::temp_directory_path() / name.str()).string();
+}
+
+std::string SMatrixCachePath(const SimulationConfig& c)
+{
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(9)
+        << c.wavelength_nm << '|'
+        << c.period_x_nm << '|' << c.period_y_nm << '|'
+        << c.order_x << '|' << c.order_y << '|'
+        << c.geometry_x << '|' << c.geometry_y << '|'
+        << c.input_n_real << '|' << c.input_n_imag << '|'
+        << c.substrate_n_real << '|' << c.substrate_n_imag << '|'
+        << c.substrate_material << '|'
+        << c.precision << '|' << c.approximation_order << '|'
+        << c.incident_theta_deg << '|' << c.incident_phi_deg;
+    for (const LayerConfig& layer : c.layers)
+    {
+        out << '|' << layer.material << '|' << layer.thickness_nm
+            << '|' << layer.n_real << '|' << layer.n_imag
+            << '|' << layer.patterned << '|' << layer.geometry_mode << '|' << layer.png_path;
+        if (!layer.png_path.empty() && std::filesystem::exists(layer.png_path))
+        {
+            out << '|' << std::filesystem::file_size(layer.png_path)
+                << '|' << std::filesystem::last_write_time(layer.png_path).time_since_epoch().count();
+        }
+    }
+    const size_t hash = std::hash<std::string>{}(out.str());
+    std::ostringstream name;
+    name << "simulok_smatrix_" << std::hex << hash << ".bin";
     return (std::filesystem::temp_directory_path() / name.str()).string();
 }
 
@@ -190,62 +224,70 @@ SimulationResult RunSimulation(const SimulationConfig& c)
                &result))
         return result;
 
-    DeviceBuffer d_material;
-    if (!CheckCuda(cudaMalloc(reinterpret_cast<void**>(&d_material.ptr),
-                              static_cast<size_t>(c.geometry_x) * c.geometry_y * sizeof(Complex)),
-                   "cudaMalloc(material)",
-                   &result))
-        return result;
-
-    std::vector<Complex> eps_map;
-    for (const LayerConfig& layer : c.layers)
+    const std::string smatrix_cache_path = SMatrixCachePath(c);
+    const bool smatrix_cached =
+        std::filesystem::exists(smatrix_cache_path) &&
+        rcwa.LoadGlobalSMatrix(smatrix_cache_path) == Status::kSuccess;
+    if (!smatrix_cached)
     {
-        double layer_real = layer.n_real;
-        double layer_imag = layer.n_imag;
-        if (layer.material != "custom" &&
-            !SharedMaterialDatabase().Lookup(layer.material, c.wavelength_nm, &layer_real, &layer_imag))
-        {
-            result.error = "Material " + layer.material + " has no data at " +
-                           std::to_string(c.wavelength_nm) + " nm.";
+        DeviceBuffer d_material;
+        if (!CheckCuda(cudaMalloc(reinterpret_cast<void**>(&d_material.ptr),
+                                  static_cast<size_t>(c.geometry_x) * c.geometry_y * sizeof(Complex)),
+                       "cudaMalloc(material)",
+                       &result))
             return result;
-        }
-        const Complex n = make_complex(layer_real, layer_imag);
-        const bool homogeneous = layer.geometry_mode == "uniform" || !layer.patterned;
-        if (layer.geometry_mode == "png" && !std::filesystem::exists(layer.png_path))
+
+        std::vector<Complex> eps_map;
+        for (const LayerConfig& layer : c.layers)
         {
-            result.error = "PNG mask not found: " + layer.png_path;
-            return result;
-        }
-        if (homogeneous)
-        {
-            if (!Check(rcwa.AddLayerHomogeneous(layer.thickness_nm, ComplexMul(n, n)),
-                       "AddLayerHomogeneous",
+            double layer_real = layer.n_real;
+            double layer_imag = layer.n_imag;
+            if (layer.material != "custom" &&
+                !SharedMaterialDatabase().Lookup(layer.material, c.wavelength_nm, &layer_real, &layer_imag))
+            {
+                result.error = "Material " + layer.material + " has no data at " +
+                               std::to_string(c.wavelength_nm) + " nm.";
+                return result;
+            }
+            const Complex n = make_complex(layer_real, layer_imag);
+            const bool homogeneous = layer.geometry_mode == "uniform" || !layer.patterned;
+            if (layer.geometry_mode == "png" && !std::filesystem::exists(layer.png_path))
+            {
+                result.error = "PNG mask not found: " + layer.png_path;
+                return result;
+            }
+            if (homogeneous)
+            {
+                if (!Check(rcwa.AddLayerHomogeneous(layer.thickness_nm, ComplexMul(n, n)),
+                           "AddLayerHomogeneous",
+                           &result))
+                    return result;
+                continue;
+            }
+            const std::vector<Real> geometry = BuildLayerGeometry(c, layer);
+            BuildEpsMap(geometry, n, &eps_map);
+            if (!CheckCuda(cudaMemcpy(d_material.ptr,
+                                      eps_map.data(),
+                                      eps_map.size() * sizeof(Complex),
+                                      cudaMemcpyHostToDevice),
+                           "cudaMemcpy(material)",
+                           &result))
+                return result;
+            Complex* eps_conv = nullptr;
+            if (!Check(rcwa.MaterialConv(d_material.ptr, c.geometry_x, c.geometry_y, &eps_conv),
+                       "MaterialConv",
                        &result))
                 return result;
-            continue;
+            const Status add_status = rcwa.AddLayer(layer.thickness_nm, eps_conv);
+            rcwa.FreeDeviceTensor(eps_conv);
+            if (!Check(add_status, "AddLayer", &result))
+                return result;
         }
-        const std::vector<Real> geometry = BuildLayerGeometry(c, layer);
-        BuildEpsMap(geometry, n, &eps_map);
-        if (!CheckCuda(cudaMemcpy(d_material.ptr,
-                                  eps_map.data(),
-                                  eps_map.size() * sizeof(Complex),
-                                  cudaMemcpyHostToDevice),
-                       "cudaMemcpy(material)",
-                       &result))
-            return result;
-        Complex* eps_conv = nullptr;
-        if (!Check(rcwa.MaterialConv(d_material.ptr, c.geometry_x, c.geometry_y, &eps_conv),
-                   "MaterialConv",
-                   &result))
-            return result;
-        const Status add_status = rcwa.AddLayer(layer.thickness_nm, eps_conv);
-        rcwa.FreeDeviceTensor(eps_conv);
-        if (!Check(add_status, "AddLayer", &result))
-            return result;
-    }
 
-    if (!Check(rcwa.SolveGlobalSMatrix(), "SolveGlobalSMatrix", &result))
-        return result;
+        if (!Check(rcwa.SolveGlobalSMatrix(), "SolveGlobalSMatrix", &result))
+            return result;
+        rcwa.SaveGlobalSMatrix(smatrix_cache_path);
+    }
 
     Complex source_ex = make_complex(1.0, 0.0);
     Complex source_ey = make_complex(0.0, 0.0);
@@ -265,7 +307,8 @@ SimulationResult RunSimulation(const SimulationConfig& c)
         source_ex = make_complex(std::cos(a), 0.0);
         source_ey = make_complex(std::sin(a), 0.0);
     }
-    if (!Check(rcwa.SourcePlanewave(source_ex, source_ey), "SourcePlanewave", &result))
+    if (!smatrix_cached &&
+        !Check(rcwa.SourcePlanewave(source_ex, source_ey), "SourcePlanewave", &result))
         return result;
 
     const std::vector<Real> xs = BuildAxis(c.image_width, c.period_x_nm);
@@ -337,7 +380,8 @@ SimulationResult RunSimulation(const SimulationConfig& c)
     }
 
     const std::string nearfield_cache_path = NearfieldCacheKey(c);
-    if (!LoadNearfieldCache(nearfield_cache_path, result.width, result.height, &result))
+    if (!smatrix_cached &&
+        !LoadNearfieldCache(nearfield_cache_path, result.width, result.height, &result))
     {
         Complex* ex = nullptr;
         Complex* ey = nullptr;

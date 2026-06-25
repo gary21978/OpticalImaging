@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "common_utils.h"
@@ -145,6 +146,8 @@ class RCWA
                      std::vector<Real>* ky,
                      std::vector<Real>* kz,
                      cudaStream_t stream = nullptr) const;
+    Status SaveGlobalSMatrix(const std::string& path) const;
+    Status LoadGlobalSMatrix(const std::string& path);
 
   private:
     Status BuildKxKy(Real inc_ang, Real azi_ang, Real eps_ref);

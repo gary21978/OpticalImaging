@@ -1,4 +1,5 @@
 #include <cstring>
+#include <fstream>
 #include <cufft.h>
 #include <limits>
 #include "complex_matrix.h"
@@ -3304,6 +3305,84 @@ Status RCWA::SolveGlobalSMatrix()
         FreeGlobalSMatrix();
     }
     return status;
+}
+
+Status RCWA::SaveGlobalSMatrix(const std::string& path) const
+{
+    if (!HasSMatrix(global_smatrix_))
+        return Status::kInvalidValue;
+    const int64_t n = 2 * order_N_;
+    const size_t count = static_cast<size_t>(n) * n;
+    std::vector<Complex> host(count * 4);
+    const Complex* blocks[] = {
+        global_smatrix_.S_11, global_smatrix_.S_12,
+        global_smatrix_.S_21, global_smatrix_.S_22
+    };
+    for (int i = 0; i < 4; ++i)
+        CHECK(StatusFromCuda(cudaMemcpyAsync(host.data() + static_cast<size_t>(i) * count,
+                                             blocks[i], count * sizeof(Complex),
+                                             cudaMemcpyDeviceToHost, stream_)));
+    CHECK(StatusFromCuda(cudaStreamSynchronize(stream_)));
+    std::ofstream out(path, std::ios::binary);
+    if (!out)
+        return Status::kInvalidValue;
+    const uint32_t magic = 0x534D4154u;
+    const uint32_t scalar_bytes = sizeof(Real);
+    out.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
+    out.write(reinterpret_cast<const char*>(&scalar_bytes), sizeof(scalar_bytes));
+    out.write(reinterpret_cast<const char*>(&n), sizeof(n));
+    out.write(reinterpret_cast<const char*>(host.data()),
+              static_cast<std::streamsize>(host.size() * sizeof(Complex)));
+    return out ? Status::kSuccess : Status::kInvalidValue;
+}
+
+Status RCWA::LoadGlobalSMatrix(const std::string& path)
+{
+    std::ifstream in(path, std::ios::binary);
+    uint32_t magic = 0;
+    uint32_t scalar_bytes = 0;
+    int64_t n = 0;
+    in.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+    in.read(reinterpret_cast<char*>(&scalar_bytes), sizeof(scalar_bytes));
+    in.read(reinterpret_cast<char*>(&n), sizeof(n));
+    if (!in || magic != 0x534D4154u || scalar_bytes != sizeof(Real) || n != 2 * order_N_)
+        return Status::kInvalidValue;
+    const size_t count = static_cast<size_t>(n) * n;
+    std::vector<Complex> host(count * 4);
+    in.read(reinterpret_cast<char*>(host.data()),
+            static_cast<std::streamsize>(host.size() * sizeof(Complex)));
+    if (!in)
+        return Status::kInvalidValue;
+    FreeGlobalSMatrix();
+    Complex** blocks[] = {
+        &global_smatrix_.S_11, &global_smatrix_.S_12,
+        &global_smatrix_.S_21, &global_smatrix_.S_22
+    };
+    for (int i = 0; i < 4; ++i)
+    {
+        const cudaError_t allocate_status =
+            cudaMalloc(reinterpret_cast<void**>(blocks[i]), count * sizeof(Complex));
+        if (allocate_status != cudaSuccess)
+        {
+            FreeGlobalSMatrix();
+            return StatusFromCuda(allocate_status);
+        }
+        const cudaError_t copy_status =
+            cudaMemcpyAsync(*blocks[i], host.data() + static_cast<size_t>(i) * count,
+                            count * sizeof(Complex), cudaMemcpyHostToDevice, stream_);
+        if (copy_status != cudaSuccess)
+        {
+            FreeGlobalSMatrix();
+            return StatusFromCuda(copy_status);
+        }
+    }
+    const cudaError_t sync_status = cudaStreamSynchronize(stream_);
+    if (sync_status != cudaSuccess)
+    {
+        FreeGlobalSMatrix();
+        return StatusFromCuda(sync_status);
+    }
+    return Status::kSuccess;
 }
 
 Status RCWA::RepeatCurrentStackSMatrix(int repeats)
