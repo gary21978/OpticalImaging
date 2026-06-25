@@ -256,8 +256,6 @@ bool ValidateSimulationConfig(const SimulationConfig& c, std::string* error)
         return fail("At least one layer is required.");
     if (c.approximation_order != 12 && c.approximation_order != 18)
         return fail("Matrix approximation order must be 12 or 18.");
-    if (c.focus_nm.empty())
-        return fail("At least one focus value is required.");
     if ((c.source_shape == "dipole" || c.source_shape == "quasar") &&
         c.source_open_angle_deg <= 0.0)
         return fail("Dipole and quasar sources require an open angle greater than 0 degrees.");
@@ -321,7 +319,12 @@ bool LoadSimulationConfig(const std::string& path, SimulationConfig* config, std
     ReadNumber(text, "substrate_n_real", &parsed.substrate_n_real);
     ReadNumber(text, "substrate_n_imag", &parsed.substrate_n_imag);
     ReadString(text, "substrate_material", &parsed.substrate_material);
-    ReadNumberArray(text, "focus_nm", &parsed.focus_nm);
+    if (!ReadNumber(text, "focus_nm", &parsed.focus_nm))
+    {
+        std::vector<double> legacy_focus;
+        if (ReadNumberArray(text, "focus_nm", &legacy_focus) && !legacy_focus.empty())
+            parsed.focus_nm = legacy_focus.front();
+    }
     size_t zpos = 0;
     if (FindValue(text, "zernike", &zpos) && zpos < text.size() && text[zpos] == '[')
     {
@@ -416,10 +419,7 @@ bool SaveSimulationConfig(const std::string& path, const SimulationConfig& c, st
         << "  \"substrate_n_real\": " << c.substrate_n_real << ",\n"
         << "  \"substrate_n_imag\": " << c.substrate_n_imag << ",\n"
         << "  \"substrate_material\": \"" << c.substrate_material << "\",\n"
-        << "  \"focus_nm\": [";
-    for (size_t i = 0; i < c.focus_nm.size(); ++i)
-        out << (i ? ", " : "") << c.focus_nm[i];
-    out << "],\n"
+        << "  \"focus_nm\": " << c.focus_nm << ",\n"
         << "  \"zernike\": [";
     for (size_t i = 0; i < c.zernike.size(); ++i)
         out << (i ? ", " : "") << c.zernike[i];

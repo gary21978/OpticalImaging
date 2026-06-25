@@ -9,8 +9,6 @@ struct SimulationResult
 {
     int width = 0;
     int height = 0;
-    int focus_count = 0;
-    std::vector<double> focus_nm;
     std::vector<float> farfield_rgba;
     std::vector<float> nearfield_rgba;
     double elapsed_ms = 0.0;

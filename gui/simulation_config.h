@@ -50,7 +50,7 @@ struct SimulationConfig
     int approximation_order = 12;
     std::string precision = "double";
     std::vector<double> zernike = std::vector<double>(37, 0.0);
-    std::vector<double> focus_nm{0.0};
+    double focus_nm = 0.0;
     double incident_theta_deg = 0.0;
     double incident_phi_deg = 0.0;
     double input_n_real = 1.0;

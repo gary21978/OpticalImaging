@@ -12,6 +12,7 @@
 #include <algorithm>
 
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -207,7 +208,6 @@ struct App
     std::chrono::steady_clock::time_point last_frame = std::chrono::steady_clock::now();
     int active_tab = 0;
     int zernike_page = 0;
-    int selected_focus = 0;
     int selected_layer = 0;
     pid_t worker_pid = -1;
     std::string executable_dir;
@@ -572,12 +572,28 @@ void DrawButton(const Rect& r, const std::string& label, bool primary = false,
     RoundOutline(r, radius,
                  primary ? Color{0.20f,0.42f,0.76f,0.95f} : Color{0.72f,0.78f,0.88f,1},
                  hover ? 1.5f : 1.0f);
+    auto title_case = [](std::string text) {
+        bool new_word = true;
+        for (char& c : text)
+        {
+            if (std::isalpha(static_cast<unsigned char>(c)))
+            {
+                c = new_word ? static_cast<char>(std::toupper(static_cast<unsigned char>(c)))
+                             : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                new_word = false;
+            }
+            else
+                new_word = c != '/' && c != '-';
+        }
+        return text;
+    };
+    const std::string display_label = title_case(label);
     float size = max_text_scale;
-    while (size > 1.0f && TextWidth(label, size) > r.w - 10.0f)
+    while (size > 1.0f && TextWidth(display_label, size) > r.w - 10.0f)
         size -= 0.1f;
-    const float text_w = TextWidth(label, size);
+    const float text_w = TextWidth(display_label, size);
     Text(r.x + (r.w - text_w) * 0.5f, r.y + (r.h - 8.0f * size) * 0.5f,
-         label, size, disabled ? Color{0.36f,0.42f,0.47f,1} :
+         display_label, size, disabled ? Color{0.36f,0.42f,0.47f,1} :
          primary ? Color{1.0f,1.0f,1.0f,1} : Color{0.18f,0.24f,0.32f,1});
 }
 
@@ -592,6 +608,8 @@ void Circle(float cx, float cy, float radius, Color color, bool filled = true)
     }
     glEnd();
 }
+
+std::string TitleCase(std::string text);
 
 void DrawSourceIcon(const Rect& r, const std::string& shape, bool selected)
 {
@@ -631,14 +649,107 @@ void DrawSourceChoice(const Rect& r, const std::string& shape, const std::string
     RoundOutline(r,10,selected ? Color{0.22f,0.58f,0.92f,1} : Color{0.72f,0.80f,0.90f,1},
                  selected ? 1.6f : 1.0f);
     DrawSourceIcon(r,shape,selected);
-    Text(r.x+62,r.y+21,label,1.18f,selected ? Color{0.12f,0.34f,0.58f,1} : Color{0.36f,0.50f,0.64f,1});
+    Text(r.x+62,r.y+21,TitleCase(label),1.18f,selected ? Color{0.12f,0.34f,0.58f,1} : Color{0.36f,0.50f,0.64f,1});
+}
+
+std::string TitleCase(std::string text)
+{
+    bool new_word = true;
+    for (char& c : text)
+    {
+        if (std::isalpha(static_cast<unsigned char>(c)))
+        {
+            c = new_word ? static_cast<char>(std::toupper(static_cast<unsigned char>(c)))
+                         : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            new_word = false;
+        }
+        else
+            new_word = c != '/' && c != '-';
+    }
+    return text;
+}
+
+bool SourceContains(const SimulationConfig& config, double x, double y)
+{
+    const double radius_squared = x * x + y * y;
+    const double outer_squared = config.sigma_outer * config.sigma_outer;
+    const double inner_squared = config.sigma_inner * config.sigma_inner;
+    const double rotation = config.source_rotate_angle_deg * kPi / 180.0;
+    if (config.source_shape == "rect")
+    {
+        const double c = std::cos(-rotation);
+        const double s = std::sin(-rotation);
+        const double rotated_x = x * c - y * s;
+        const double rotated_y = x * s + y * c;
+        return std::abs(rotated_x) <= config.source_rect_x &&
+               std::abs(rotated_y) <= config.source_rect_y;
+    }
+    if (radius_squared > outer_squared || radius_squared < inner_squared)
+        return false;
+    if (config.source_shape == "annular")
+        return true;
+    const double theta = std::atan2(y, x);
+    const double half_open = config.source_open_angle_deg * kPi / 360.0;
+    auto in_sector = [&](double center) {
+        return std::abs(std::remainder(theta - center, 2.0 * kPi)) <= half_open;
+    };
+    if (config.source_shape == "dipole")
+        return in_sector(rotation) || in_sector(rotation + kPi);
+    return in_sector(rotation) || in_sector(rotation + 0.5 * kPi) ||
+           in_sector(rotation + kPi) || in_sector(rotation - 0.5 * kPi);
+}
+
+void DrawSourcePreview(const SimulationConfig& config, int window_height)
+{
+    const float available = std::max(120.0f, static_cast<float>(window_height) - 646.0f);
+    const float size = std::min(252.0f, available);
+    const Rect plot{165.0f - size * 0.5f, 480.0f, size, size};
+    Text(22, 458, "Source Preview", 1.08f, {0.24f,0.38f,0.54f,1});
+    Quad(plot, {0.975f,0.985f,1.0f,1});
+
+    constexpr int resolution = 96;
+    const float cell = plot.w / resolution;
+    const Color source_color{0.20f,0.62f,0.94f,0.92f};
+    glColor4f(source_color.r, source_color.g, source_color.b, source_color.a);
+    glBegin(GL_QUADS);
+    for (int iy = 0; iy < resolution; ++iy)
+    {
+        const double y = 1.0 - (iy + 0.5) * 2.0 / resolution;
+        for (int ix = 0; ix < resolution; ++ix)
+        {
+            const double x = -1.0 + (ix + 0.5) * 2.0 / resolution;
+            if (!SourceContains(config, x, y))
+                continue;
+            const float px = plot.x + ix * cell;
+            const float py = plot.y + iy * cell;
+            glVertex2f(px, py);
+            glVertex2f(px + cell + 0.2f, py);
+            glVertex2f(px + cell + 0.2f, py + cell + 0.2f);
+            glVertex2f(px, py + cell + 0.2f);
+        }
+    }
+    glEnd();
+
+    const float center_x = plot.x + plot.w * 0.5f;
+    const float center_y = plot.y + plot.h * 0.5f;
+    glColor4f(0.48f,0.58f,0.70f,0.55f);
+    glLineWidth(1.0f);
+    glBegin(GL_LINES);
+    glVertex2f(plot.x, center_y); glVertex2f(plot.x + plot.w, center_y);
+    glVertex2f(center_x, plot.y); glVertex2f(center_x, plot.y + plot.h);
+    glEnd();
+    Outline(plot, {0.48f,0.62f,0.78f,1}, 1.2f);
+    Text(plot.x - 2, plot.y + plot.h + 7, "-1", 0.82f, {0.40f,0.50f,0.62f,1});
+    Text(plot.x + plot.w - 10, plot.y + plot.h + 7, "1", 0.82f, {0.40f,0.50f,0.62f,1});
+    Text(plot.x - 14, plot.y - 2, "1", 0.82f, {0.40f,0.50f,0.62f,1});
+    Text(plot.x - 18, plot.y + plot.h - 5, "-1", 0.82f, {0.40f,0.50f,0.62f,1});
 }
 
 void DrawField(const NumericField& field, int index, const App& app)
 {
     const bool active = index == app.active_field;
     const bool hover = field.enabled && field.rect.Contains(app.mouse_x, app.mouse_y);
-    Text(field.rect.x + 2, field.rect.y - 16.0f, field.label, 1.15f, field.enabled ? Color{0.34f,0.44f,0.55f,1} : Color{0.60f,0.66f,0.74f,1});
+    Text(field.rect.x + 2, field.rect.y - 16.0f, TitleCase(field.label), 1.15f, field.enabled ? Color{0.34f,0.44f,0.55f,1} : Color{0.60f,0.66f,0.74f,1});
     Quad(field.rect, !field.enabled ? Color{0.94f,0.95f,0.97f,1} :
          active ? Color{0.95f,0.98f,1.0f,1} :
          hover ? Color{0.97f,0.99f,1.0f,1} : Color{0.985f,0.99f,1.0f,1});
@@ -714,7 +825,7 @@ void DrawTextField(const TextField& field, int index, const App& app)
 {
     const bool active = index == app.active_text_field;
     const bool hover = field.rect.Contains(app.mouse_x, app.mouse_y);
-    Text(field.rect.x + 2, field.rect.y - 16.0f, field.label, 1.15f, {0.34f,0.44f,0.55f,1});
+    Text(field.rect.x + 2, field.rect.y - 16.0f, TitleCase(field.label), 1.15f, {0.34f,0.44f,0.55f,1});
     Quad(field.rect, active ? Color{0.95f,0.98f,1.0f,1} :
          hover ? Color{0.97f,0.99f,1.0f,1} : Color{0.985f,0.99f,1.0f,1});
     Outline(field.rect, active ? Color{0.20f,0.52f,0.82f,1} :
@@ -928,17 +1039,8 @@ void UploadTexture(GLuint* texture, const std::vector<float>& rgba, int width, i
 
 void UploadResultTexture(App* app)
 {
-    const size_t slice_values = static_cast<size_t>(app->result.width) * app->result.height * 4;
-    std::vector<float> farfield_slice;
-    if (slice_values > 0 &&
-        app->result.farfield_rgba.size() >=
-            (static_cast<size_t>(app->selected_focus) + 1) * slice_values)
-    {
-        const auto begin = app->result.farfield_rgba.begin() +
-            static_cast<std::ptrdiff_t>(app->selected_focus * slice_values);
-        farfield_slice.assign(begin, begin + static_cast<std::ptrdiff_t>(slice_values));
-    }
-    UploadTexture(&app->farfield_texture, farfield_slice, app->result.width, app->result.height);
+    UploadTexture(&app->farfield_texture, app->result.farfield_rgba,
+                  app->result.width, app->result.height);
     UploadTexture(&app->nearfield_texture, app->result.nearfield_rgba, app->result.width, app->result.height);
     app->texture_width = app->result.width;
     app->texture_height = app->result.height;
@@ -1067,7 +1169,7 @@ void DrawGeometryCanvas(const App& app, Rect r)
     const int layer_index = TopmostNonUniformLayer(app.config);
     if (layer_index < 0)
     {
-        Text(r.x + 52, r.y + r.h * 0.5f - 5, "NO NON-UNIFORM LAYER", 1.15f,
+        Text(r.x + 52, r.y + r.h * 0.5f - 5, "No Non-Uniform Layer", 1.15f,
              {0.42f,0.54f,0.66f,1});
         return;
     }
@@ -1273,9 +1375,7 @@ void BuildFields(App* app, float panel_x, float panel_y, float panel_w)
         add_real("PERIOD Y NM", &app->config.period_y_nm, 1, 1, !app->period_xy_linked);
         add_int("RCWA ORDER X", &app->config.order_x, 0, 2);
         add_int("RCWA ORDER Y", &app->config.order_y, 1, 2, !app->order_xy_linked);
-        app->selected_focus = std::clamp(app->selected_focus, 0,
-            std::max(0, static_cast<int>(app->config.focus_nm.size()) - 1));
-        add_real("FOCUS NM", &app->config.focus_nm[static_cast<size_t>(app->selected_focus)], 0, 3);
+        add_real("FOCUS NM", &app->config.focus_nm, 0, 3);
     }
     else if (app->active_tab == kSourceTab)
     {
@@ -1303,8 +1403,9 @@ void BuildFields(App* app, float panel_x, float panel_y, float panel_w)
     }
     else if (app->active_tab == kZernikeTab)
     {
-        const int begin = app->zernike_page * 19;
-        for (int i = 0; i < 19 && begin + i < 37; ++i)
+        const int begin = app->zernike_page == 0 ? 0 : 20;
+        const int count = app->zernike_page == 0 ? 20 : 17;
+        for (int i = 0; i < count; ++i)
             add_real(("Z" + std::to_string(begin + i) + " " + ZernikeDescription(begin + i)).c_str(),
                      &app->config.zernike[begin + i], i % 2, i / 2);
     }
@@ -1419,30 +1520,13 @@ void HandleClick(App* app, int width, int height)
             return;
         }
     CommitEdit(app);
-    if (Rect{image_far.x + image_far.w - 172, image_far.y + 7, 24, 22}.Contains(app->mouse_x, app->mouse_y) &&
-        app->result.focus_count > 0)
-    {
-        app->selected_focus = (app->selected_focus + app->result.focus_count - 1) % app->result.focus_count;
-        UploadResultTexture(app);
-        return;
-    }
-    if (Rect{image_far.x + image_far.w - 76, image_far.y + 7, 24, 22}.Contains(app->mouse_x, app->mouse_y) &&
-        app->result.focus_count > 0)
-    {
-        app->selected_focus = (app->selected_focus + 1) % app->result.focus_count;
-        UploadResultTexture(app);
-        return;
-    }
     if (Rect{image_far.x + image_far.w - 48, image_far.y + 7, 42, 22}.Contains(app->mouse_x, app->mouse_y))
     {
-        const size_t slice_values = static_cast<size_t>(app->result.width) * app->result.height * 4;
-        if (slice_values && app->result.farfield_rgba.size() >=
-                (static_cast<size_t>(app->selected_focus) + 1) * slice_values)
+        if (!app->result.farfield_rgba.empty())
         {
             const std::string path = SavePngDialog("farfield.png");
-            const float* slice = app->result.farfield_rgba.data() +
-                static_cast<size_t>(app->selected_focus) * slice_values;
-            app->status = !path.empty() && SaveRgbaPng(path, slice, app->result.width, app->result.height)
+            app->status = !path.empty() && SaveRgbaPng(path, app->result.farfield_rgba.data(),
+                                                       app->result.width, app->result.height)
                 ? "FAR-FIELD IMAGE SAVED" : "FAR-FIELD SAVE CANCELLED";
         }
         return;
@@ -1488,23 +1572,6 @@ void HandleClick(App* app, int width, int height)
         app->order_xy_linked = !app->order_xy_linked;
         if (app->order_xy_linked)
             app->config.order_y = app->config.order_x;
-        return;
-    }
-    else if (app->active_tab == kBasicTab && Rect{170,328,62,34}.Contains(app->mouse_x, app->mouse_y))
-    {
-        const double next_focus = app->config.focus_nm.empty() ? 0.0 : app->config.focus_nm.back() + 100.0;
-        app->config.focus_nm.push_back(next_focus);
-        app->selected_focus = static_cast<int>(app->config.focus_nm.size()) - 1;
-        return;
-    }
-    else if (app->active_tab == kBasicTab && Rect{240,328,62,34}.Contains(app->mouse_x, app->mouse_y))
-    {
-        if (app->config.focus_nm.size() > 1)
-        {
-            app->config.focus_nm.erase(app->config.focus_nm.begin() + app->selected_focus);
-            app->selected_focus = std::clamp(app->selected_focus, 0,
-                static_cast<int>(app->config.focus_nm.size()) - 1);
-        }
         return;
     }
     else if (app->active_tab == kSourceTab)
@@ -1714,10 +1781,10 @@ void DrawUi(App* app, int width, int height)
     while (title_scale > 2.0f && 79.0f + TextWidth("SIMULATOR", title_scale) > 220.0f)
         title_scale -= 0.1f;
     Text(79, 18, "SIMULATOR", title_scale, {0.12f,0.18f,0.26f,1});
-    Text(80, 48, "GPU OPTICAL WORKBENCH", 1.15f, {0.38f,0.50f,0.62f,1});
+    Text(80, 48, "GPU Optical Workbench", 1.15f, {0.38f,0.50f,0.62f,1});
     RoundRect({230,24,78,25},12,{0.89f,0.94f,1.0f,1});
     RoundRect({239,33,7,7},4,app->running ? Color{1.0f,0.46f,0.20f,1} : Color{0.22f,0.95f,0.62f,1});
-    Text(252,30,app->running ? "BUSY" : "READY",1.05f,{0.28f,0.42f,0.58f,1});
+    Text(252,30,app->running ? "Busy" : "Ready",1.05f,{0.28f,0.42f,0.58f,1});
 
     Text(left + 22, 22, "Multilayer Structure", 1.85f, {0.18f,0.24f,0.32f,1});
     Text(image_far.x, 22, "Farfield / Nearfield", 1.85f, {0.18f,0.24f,0.32f,1});
@@ -1725,7 +1792,7 @@ void DrawUi(App* app, int width, int height)
     Text(image_far.x + image_far.w - 96,29,app->config.precision+" / F"+std::to_string(app->config.approximation_order),
          1.05f,{0.28f,0.45f,0.68f,1});
 
-    static const char* tabs[] = {"LAYERS","MODEL","SOURCE","POLAR.","ABERR.","SOLVER"};
+    static const char* tabs[] = {"Layers","Model","Source","Polar.","Aberr.","Solver"};
     const Color tab_panel{0.94f,0.97f,1.0f,0.98f};
     const Rect control_panel{18,112,294,std::max(348.0f,height-270.0f)};
     RoundRect(control_panel,12,tab_panel);
@@ -1750,8 +1817,8 @@ void DrawUi(App* app, int width, int height)
     }
 
     static const char* section_titles[] = {
-        "LAYER DEFINITION", "MODEL PARAMETERS", "ILLUMINATION SOURCE",
-        "POLARIZATION", "WAVEFRONT ABERRATION", "SOLVER SETTINGS"
+        "Layer Definition", "Model Parameters", "Illumination Source",
+        "Polarization", "Wavefront Aberration", "Solver Settings"
     };
     Text(24,122,section_titles[app->active_tab],1.08f,{0.24f,0.38f,0.54f,1});
     Quad({22,143,286,1},{0.72f,0.80f,0.90f,1});
@@ -1774,23 +1841,20 @@ void DrawUi(App* app, int width, int height)
             app->config.order_y = app->config.order_x;
         DrawButton(PeriodLinkRect(), "=", true);
         DrawButton(OrderLinkRect(), "=", true);
-        DrawButton({170,328,62,34},"+ FOCUS",false,false,0.95f);
-        DrawButton({240,328,62,34},"- FOCUS",false,app->config.focus_nm.size() <= 1,0.95f);
-        Text(170,374,"FOCUS "+std::to_string(app->selected_focus+1)+" / "+
-             std::to_string(app->config.focus_nm.size()),0.95f,{0.34f,0.50f,0.66f,1});
     }
     else if (app->active_tab == kSourceTab)
     {
         static const char* shapes[]={"annular","dipole","quasar","rect"};
-        static const char* labels[]={"ANNULAR","DIPOLE","QUASAR","RECT"};
+        static const char* labels[]={"Annular","Dipole","Quasar","Rect"};
         for (int i=0;i<4;++i)
             DrawSourceChoice({28.0f+(i%2)*138.0f,150.0f+(i/2)*70.0f,128,60},
                              shapes[i],labels[i],app->config.source_shape==shapes[i]);
+        DrawSourcePreview(app->config, height);
     }
     else if (app->active_tab == kPolarizationTab)
     {
         static const char* values[] = {"x","y","circular","angle"};
-        static const char* labels[] = {"LINEAR X","LINEAR Y","CIRCULAR","CUSTOM ANGLE"};
+        static const char* labels[] = {"Linear X","Linear Y","Circular","Custom Angle"};
         for (int i = 0; i < 4; ++i)
             DrawRadio({28,154.0f+i*44.0f,272,38},labels[i],app->config.polarization == values[i]);
     }
@@ -1798,7 +1862,7 @@ void DrawUi(App* app, int width, int height)
     {
         DrawButton({22,height-182.0f,138,32},"PREVIOUS");
         DrawButton({170,height-182.0f,138,32},"NEXT");
-        Text(22,height-144.0f,"PAGE "+std::to_string(app->zernike_page+1)+" / 2",
+        Text(22,height-144.0f,"Page "+std::to_string(app->zernike_page+1)+" / 2",
              1.2f,{0.38f,0.67f,0.76f,1});
     }
     else if (app->active_tab == kGeometryTab)
@@ -1808,16 +1872,16 @@ void DrawUi(App* app, int width, int height)
         if (preview_index >= 0)
         {
             const LayerConfig& preview_layer = app->config.layers[static_cast<size_t>(preview_index)];
-            Text(22,288,preview_layer.png_path.empty() ? "NO PNG SELECTED" :
+            Text(22,288,preview_layer.png_path.empty() ? "No PNG Selected" :
                  std::filesystem::path(preview_layer.png_path).filename().string(),
                  0.90f,{0.34f,0.44f,0.58f,1});
         }
         else
-            Text(22,288,"SET A LAYER TO NON-UNIFORM",0.90f,{0.34f,0.44f,0.58f,1});
+            Text(22,288,"Set A Layer To Non-Uniform",0.90f,{0.34f,0.44f,0.58f,1});
         DrawButton({216,282,92,30},"BROWSE",false,false,1.25f);
-        Text(24,310,"LAYER",0.90f,{0.34f,0.48f,0.62f,1});
-        Text(120,310,"THICK",0.90f,{0.34f,0.48f,0.62f,1});
-        Text(186,310,"GEOMETRY",0.90f,{0.34f,0.48f,0.62f,1});
+        Text(24,310,"Layer",0.90f,{0.34f,0.48f,0.62f,1});
+        Text(120,310,"Thick",0.90f,{0.34f,0.48f,0.62f,1});
+        Text(186,310,"Geometry",0.90f,{0.34f,0.48f,0.62f,1});
         const float row_y0 = 326.0f;
         const int visible_layers = std::max(
             1, std::min(static_cast<int>(app->config.layers.size()),
@@ -1831,7 +1895,7 @@ void DrawUi(App* app, int width, int height)
             RoundOutline({22, y, 286, 24},6, selected ? Color{0.36f,0.58f,0.88f,1} : Color{0.80f,0.85f,0.92f,1});
             const Color material_color = MaterialColor(layer.material, layer.color);
             RoundRect({25, y + 7, 10, 10}, 3, material_color);
-            const std::string material_label = layer.material == "custom" ? "CUSTOM N/K" : layer.material;
+            const std::string material_label = layer.material == "custom" ? "Custom N/K" : layer.material;
             Text(39, y + 5, material_label, 1.02f, {0.14f,0.20f,0.28f,1});
             RoundRect({120, y + 1, 62, 22},5, app->active_geom_thickness_row == i ? Color{0.95f,0.98f,1.0f,1} : Color{1.0f,1.0f,1.0f,0.60f});
             RoundOutline({120, y + 1, 62, 22},5, app->active_geom_thickness_row == i ? Color{0.20f,0.52f,0.82f,1} : Color{0.74f,0.80f,0.88f,1}, app->active_geom_thickness_row == i ? 1.8f : 1.0f);
@@ -1839,7 +1903,7 @@ void DrawUi(App* app, int width, int height)
             Text(124, y + 5, thick, 1.02f, {0.14f,0.20f,0.28f,1});
             RoundRect({186, y + 1, 88, 22},5,{1.0f,1.0f,1.0f,0.55f});
             RoundOutline({186, y + 1, 88, 22},5,{0.74f,0.80f,0.88f,1});
-            Text(190, y + 5, layer.geometry_mode == "uniform" ? "UNIFORM" : "NON-UNIFORM",
+            Text(190, y + 5, layer.geometry_mode == "uniform" ? "Uniform" : "Non-Uniform",
                  0.90f, {0.24f,0.38f,0.54f,1});
             DrawButton({280, y, 12, 11}, "+",false,false,1.0f);
             DrawButton({280, y + 13, 12, 11}, "-",false,false,1.0f);
@@ -1853,7 +1917,7 @@ void DrawUi(App* app, int width, int height)
             const float menu_y = 158.0f;
             RoundRect({22, 132, 286, 318}, 8, {0.98f,0.99f,1.0f,1});
             RoundOutline({22, 132, 286, 318}, 8, {0.56f,0.70f,0.88f,1});
-            Text(32, 140, "MATERIAL LIBRARY  /  SCROLL TO BROWSE", 0.92f,
+            Text(32, 140, "Material Library  /  Scroll To Browse", 0.92f,
                  {0.28f,0.42f,0.58f,1});
             for (int slot = 0; slot < visible_items; ++slot)
             {
@@ -1867,7 +1931,7 @@ void DrawUi(App* app, int width, int height)
                     Quad(item, {0.94f,0.97f,1.0f,0.72f});
                 RoundRect({28, item.y + 6, 10, 10}, 3, material_color);
                 const std::string display_name = names[static_cast<size_t>(index)] == "custom"
-                    ? "CUSTOM (MANUAL N/K FROM JSON)" : names[static_cast<size_t>(index)];
+                    ? "Custom (Manual N/K From JSON)" : names[static_cast<size_t>(index)];
                 Text(44, item.y + 5, display_name, 0.98f,
                      {0.16f,0.22f,0.30f,1});
             }
@@ -1884,24 +1948,16 @@ void DrawUi(App* app, int width, int height)
                    app->config.precision == "double");
         DrawToggle({22,254,286,66},"Matrix Approximation","Order 12","Order 18",
                    app->config.approximation_order == 18);
-        Text(22,346,"SETTINGS APPLY TO THE NEXT RUN",1.0f,{0.27f,0.49f,0.58f,1});
+        Text(22,346,"Settings Apply To The Next Run",1.0f,{0.27f,0.49f,0.58f,1});
     }
 
     DrawButton({22,height - 68.0f,286,44}, app->running ? "FORCE STOP SIMULATION" : "RUN SIMULATION", true, false);
     DrawButton({22,height - 122.0f,89,36}, "LOAD JSON");
     DrawButton({119,height - 122.0f,89,36}, "SAVE JSON");
-    Text(22,height - 144.0f, "DEFAULT_SIMULATION.JSON", 0.92f, {0.42f,0.54f,0.66f,1});
+    Text(22,height - 144.0f, "Default_Simulation.JSON", 0.92f, {0.42f,0.54f,0.66f,1});
 
     Text(image_far.x + 16, image_far.y + 12, "Far-field Image", 1.05f, {0.44f,0.74f,0.82f,1});
     Text(image_near.x + 16, image_near.y + 12, "Near-field Image", 1.05f, {0.44f,0.74f,0.82f,1});
-    if (app->result.focus_count > 0)
-    {
-        DrawButton({image_far.x+image_far.w-172,image_far.y+7,24,22},"<",false,false,1.15f);
-        const double focus = app->result.focus_nm[static_cast<size_t>(app->selected_focus)];
-        const std::string focus_text = Format(focus,2)+" NM";
-        Text(image_far.x+image_far.w-142,image_far.y+12,focus_text,0.90f,{0.26f,0.42f,0.60f,1});
-        DrawButton({image_far.x+image_far.w-76,image_far.y+7,24,22},">",false,false,1.15f);
-    }
     DrawButton({image_far.x+image_far.w-48,image_far.y+7,42,22},"SAVE",false,false,0.85f);
     DrawButton({image_near.x+image_near.w-48,image_near.y+7,42,22},"SAVE",false,false,0.85f);
     DrawImagePanel(*app, {image_far.x, image_far.y + 34, image_far.w, image_far.h - 40}, app->farfield_texture,
@@ -1920,11 +1976,11 @@ void DrawUi(App* app, int width, int height)
     RoundOutline(status_box, 10, {0.68f,0.78f,0.90f,1});
     RoundRect({status_box.x+10,status_box.y+10,8,8},4,
               app->running ? Color{1,0.50f,0.20f,1} : Color{0.22f,0.94f,0.62f,1});
-    Text(status_box.x+26,status_box.y+7,"STATUS",0.92f,{0.34f,0.50f,0.64f,1});
+    Text(status_box.x+26,status_box.y+7,"Status",0.92f,{0.34f,0.50f,0.64f,1});
     Text(status_box.x+82,status_box.y+6,app->status,1.05f,
          app->result.error.empty() ? Color{0.18f,0.38f,0.26f,1} : Color{0.80f,0.24f,0.18f,1});
-    const std::string render_info = "RENDER  " + app->render_gpu;
-    const std::string compute_info = "COMPUTE  " + (app->compute_gpu.empty() ? "N/A" : app->compute_gpu);
+    const std::string render_info = "Render  " + app->render_gpu;
+    const std::string compute_info = "Compute  " + (app->compute_gpu.empty() ? "N/A" : app->compute_gpu);
     Text(left + 22, height - 32, render_info, 0.95f, {0.38f,0.50f,0.62f,1});
     Text(left + 22, height - 16, compute_info, 0.95f, {0.46f,0.58f,0.70f,1});
 }
@@ -2065,8 +2121,6 @@ int main(int argc, char** argv)
                         }
                         app.result = std::move(next_result);
                         app.status = farfield_only ? "FAR-FIELD UPDATED (S21 CACHE)" : "SIMULATION COMPLETE";
-                        app.selected_focus = std::clamp(app.selected_focus, 0,
-                            std::max(0, app.result.focus_count - 1));
                         UploadResultTexture(&app);
                     }
                     else

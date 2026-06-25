@@ -339,7 +339,7 @@ SimulationResult RunSimulation(const SimulationConfig& c)
     projector.rect_x = source.rect_x;
     projector.rect_y = source.rect_y;
     projector.aberration_zernike.assign(c.zernike.begin(), c.zernike.end());
-    projector.focus_range.assign(c.focus_nm.begin(), c.focus_nm.end());
+    projector.focus_range = {static_cast<Real>(c.focus_nm)};
     AbbeImager imager(source, projector, {});
     if (!Check(imager.ComputeFromRCWA(rcwa,
                                       xs.data(),
@@ -353,31 +353,17 @@ SimulationResult RunSimulation(const SimulationConfig& c)
 
     result.width = c.image_width;
     result.height = c.image_height;
-    result.focus_count = static_cast<int>(c.focus_nm.size());
-    result.focus_nm = c.focus_nm;
     const size_t slice_pixels = static_cast<size_t>(result.width) * result.height;
-    result.farfield_rgba.resize(slice_pixels * 4 * result.focus_count);
+    result.farfield_rgba.resize(slice_pixels * 4);
+    const std::vector<Real> intensity = imager.GetFocusSlice(0);
     Real peak = 0.0;
-    for (int focus_index = 0; focus_index < result.focus_count; ++focus_index)
-    {
-        const std::vector<Real> intensity = imager.GetFocusSlice(focus_index);
-        for (Real value : intensity)
-            peak = std::max(peak, value);
-    }
+    for (Real value : intensity)
+        peak = std::max(peak, value);
     result.peak_intensity = peak;
-    for (int focus_index = 0; focus_index < result.focus_count; ++focus_index)
-    {
-        const std::vector<Real> intensity = imager.GetFocusSlice(focus_index);
-        Real focus_peak = 0.0;
-        for (Real value : intensity)
-            focus_peak = std::max(focus_peak, value);
-        const double scale = focus_peak > 0.0 ? 1.0 / focus_peak : 1.0;
-        float* destination = result.farfield_rgba.data() +
-            static_cast<size_t>(focus_index) * slice_pixels * 4;
-        for (size_t i = 0; i < intensity.size(); ++i)
-            GrayColor(std::sqrt(std::max(0.0, static_cast<double>(intensity[i]) * scale)),
-                      destination + i * 4);
-    }
+    const double scale = peak > 0.0 ? 1.0 / peak : 1.0;
+    for (size_t i = 0; i < intensity.size(); ++i)
+        GrayColor(std::sqrt(std::max(0.0, static_cast<double>(intensity[i]) * scale)),
+                  result.farfield_rgba.data() + i * 4);
 
     const std::string nearfield_cache_path = NearfieldCacheKey(c);
     if (!smatrix_cached &&
