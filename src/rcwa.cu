@@ -1789,7 +1789,8 @@ static Status ComputeCosSincFromPQOrder12(const Complex* P,
 
     double PQnorm = 0.0;
     CHECK(ComputeMatrixNorm1(PQ.get(), n, &PQnorm, use_stream));
-    int m = static_cast<int>(std::ceil(0.5 * std::log2(std::max(PQnorm, 1.0))));
+    int m = static_cast<int>(std::ceil(0.5 * std::log2(std::max(
+        static_cast<double>(k0d_sq) * PQnorm, 1.0))));
     if (m < 0)
     {
         m = 0;
@@ -1968,7 +1969,8 @@ static Status ComputeCosSincFromPQOrder18(const Complex* P,
 
     double PQnorm = 0.0;
     CHECK(ComputeMatrixNorm1(PQ.get(), n, &PQnorm, use_stream));
-    int m = static_cast<int>(std::ceil(0.5 * std::log2(std::max(PQnorm, 1.0))));
+    int m = static_cast<int>(std::ceil(0.5 * std::log2(std::max(
+        static_cast<double>(k0d_sq) * PQnorm, 1.0))));
     if (m < 0)
     {
         m = 0;
