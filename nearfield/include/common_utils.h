@@ -99,6 +99,11 @@ __host__ __device__ inline Complex operator*(Complex a, Complex b) { return Comp
 
 __host__ __device__ inline Complex operator/(Complex a, Complex b) { return ComplexDiv(a, b); }
 
+__host__ __device__ inline Complex ComplexInv(Complex z)
+{
+    return ComplexDiv(make_complex(1.0, 0.0), z);
+}
+
 __host__ __device__ inline double ComplexAbsSquaredDouble(Complex z)
 {
     const double real = static_cast<double>(ComplexReal(z));

@@ -121,11 +121,25 @@ Status CopyBlockNegated(const Complex* src,
                         int64_t col_offset,
                         cudaStream_t stream = nullptr);
 
+Status ScaleAddBlockInPlace(Complex* dst,
+                            int64_t dst_n,
+                            const Complex* src,
+                            int64_t n,
+                            int64_t row_offset,
+                            int64_t col_offset,
+                            Complex alpha,
+                            cudaStream_t stream = nullptr);
+
 Status ScaleAddInPlace(Complex* A,
                        const Complex* B,
                        int64_t n,
                        Complex alpha,
                        cudaStream_t stream = nullptr);
+
+Status ElementwiseInverse(const Complex* input,
+                          Complex* output,
+                          int64_t n,
+                          cudaStream_t stream = nullptr);
 
 Status
 ComputeMatrixNorm1(const Complex* A, int64_t n, double* out_norm, cudaStream_t stream = nullptr);

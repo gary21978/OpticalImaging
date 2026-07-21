@@ -236,12 +236,40 @@ __global__ void ScaleAddInPlaceKernel(Complex* A, const Complex* B, int64_t coun
     }
 }
 
+__global__ void ScaleAddBlockInPlaceKernel(Complex* dst,
+                                           int64_t dst_n,
+                                           const Complex* src,
+                                           int64_t n,
+                                           int64_t row_offset,
+                                           int64_t col_offset,
+                                           Complex alpha)
+{
+    int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const int64_t total = n * n;
+    if (idx < total)
+    {
+        const int64_t row = idx % n;
+        const int64_t col = idx / n;
+        Complex* value = dst + (col + col_offset) * dst_n + (row + row_offset);
+        *value = ComplexAdd(*value, ComplexMul(src[col * n + row], alpha));
+    }
+}
+
 __global__ void ElementwiseMulKernel(const Complex* a, const Complex* b, Complex* out, int64_t n)
 {
     int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (idx < n)
     {
         out[idx] = ComplexMul(a[idx], b[idx]);
+    }
+}
+
+__global__ void ElementwiseInverseKernel(const Complex* input, Complex* output, int64_t n)
+{
+    int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (idx < n)
+    {
+        output[idx] = ComplexInv(input[idx]);
     }
 }
 
@@ -894,6 +922,38 @@ Status ScaleAddInPlace(Complex* A, const Complex* B, int64_t n, Complex alpha, c
     int64_t count = n * n;
     int blocks = static_cast<int>((count + CUDA_THREADS - 1) / CUDA_THREADS);
     ScaleAddInPlaceKernel<<<blocks, CUDA_THREADS, 0, stream>>>(A, B, count, alpha);
+    return StatusFromCuda(cudaGetLastError());
+}
+
+Status ScaleAddBlockInPlace(Complex* dst,
+                            int64_t dst_n,
+                            const Complex* src,
+                            int64_t n,
+                            int64_t row_offset,
+                            int64_t col_offset,
+                            Complex alpha,
+                            cudaStream_t stream)
+{
+    if (!dst || !src || dst_n <= 0 || n <= 0 || row_offset < 0 || col_offset < 0 ||
+        row_offset + n > dst_n || col_offset + n > dst_n)
+    {
+        return Status::kInvalidValue;
+    }
+    int64_t total = n * n;
+    int blocks = static_cast<int>((total + CUDA_THREADS - 1) / CUDA_THREADS);
+    ScaleAddBlockInPlaceKernel<<<blocks, CUDA_THREADS, 0, stream>>>(
+        dst, dst_n, src, n, row_offset, col_offset, alpha);
+    return StatusFromCuda(cudaGetLastError());
+}
+
+Status ElementwiseInverse(const Complex* input, Complex* output, int64_t n, cudaStream_t stream)
+{
+    if (!input || !output || n <= 0)
+    {
+        return Status::kInvalidValue;
+    }
+    int blocks = static_cast<int>((n + CUDA_THREADS - 1) / CUDA_THREADS);
+    ElementwiseInverseKernel<<<blocks, CUDA_THREADS, 0, stream>>>(input, output, n);
     return StatusFromCuda(cudaGetLastError());
 }
 

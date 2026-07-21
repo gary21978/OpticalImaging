@@ -50,6 +50,11 @@ class RCWA
     Status AddLayerHomogeneous(Real thickness, Real eps);
     Status AddLayerHomogeneous(Real thickness, Complex eps);
     Status AddLayer(Real thickness, const Complex* eps_conv);
+    Status AddLayerLalanne(Real thickness,
+                           const Complex* material,
+                           int64_t nx,
+                           int64_t ny,
+                           Real eta = static_cast<Real>(1e-6));
     Status AddInputLayer(Real eps);
     Status AddInputLayer(Complex eps);
     Status AddOutputLayer(Real eps);
@@ -150,6 +155,14 @@ class RCWA
     Status BuildKxKy(Real inc_ang, Real azi_ang, Real eps_ref);
     Status BuildV0(Real eps_ref);
     Status BuildPQ(const Complex* eps_conv, int64_t n, Complex* P, Complex* Q);
+    Status BuildPQLalanne(const Complex* eps_conv,
+                          const Complex* inv_eps_conv,
+                          const Complex* nxx_conv,
+                          const Complex* nxy_conv,
+                          const Complex* nyy_conv,
+                          int64_t n,
+                          Complex* P,
+                          Complex* Q);
     Status RepeatSMatrix(SMatrix* S, int repeats, int64_t n);
     Status RSProd(const SMatrix& Sm,
                   const SMatrix& Sn,
