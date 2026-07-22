@@ -474,23 +474,12 @@ __global__ void ScaleComplexKernel(Complex* data, int64_t n, Real scale)
     data[idx] = make_complex(ComplexReal(value) * scale, ComplexImag(value) * scale);
 }
 
-__device__ inline bool ComplexNearlyEqualDevice(Complex a, Complex b, double tol)
-{
-    const double dr = static_cast<double>(ComplexReal(a) - ComplexReal(b));
-    const double di = static_cast<double>(ComplexImag(a) - ComplexImag(b));
-    return dr * dr + di * di <= tol * tol;
-}
-
-__device__ inline int PeriodicIndex(int64_t i, int64_t n)
-{
-    i %= n;
-    return static_cast<int>(i < 0 ? i + n : i);
-}
-
 __device__ inline Real PhiAt(const Complex* eps, int64_t nx, int64_t ny, int64_t x, int64_t y)
 {
-    const int px = PeriodicIndex(x, nx);
-    const int py = PeriodicIndex(y, ny);
+    x %= nx;
+    y %= ny;
+    const int64_t px = x < 0 ? x + nx : x;
+    const int64_t py = y < 0 ? y + ny : y;
     return ComplexReal(eps[static_cast<int64_t>(px) * ny + py]);
 }
 
@@ -534,12 +523,14 @@ __device__ inline bool BoundaryVectorAt(const Complex* eps,
         return false;
     }
 
-    const Real dx = lx / static_cast<Real>(nx);
-    const Real dy = ly / static_cast<Real>(ny);
-    Real gx = (BlurredPhiAt(eps, nx, ny, x + 1, y) - BlurredPhiAt(eps, nx, ny, x - 1, y)) /
-              (static_cast<Real>(2.0) * dx);
-    Real gy = (BlurredPhiAt(eps, nx, ny, x, y + 1) - BlurredPhiAt(eps, nx, ny, x, y - 1)) /
-              (static_cast<Real>(2.0) * dy);
+    const Real inv_2dx = static_cast<Real>(nx) / (static_cast<Real>(2.0) * lx);
+    const Real inv_2dy = static_cast<Real>(ny) / (static_cast<Real>(2.0) * ly);
+    Real gx = (BlurredPhiAt(eps, nx, ny, x + 1, y) -
+               BlurredPhiAt(eps, nx, ny, x - 1, y)) *
+              inv_2dx;
+    Real gy = (BlurredPhiAt(eps, nx, ny, x, y + 1) -
+               BlurredPhiAt(eps, nx, ny, x, y - 1)) *
+              inv_2dy;
     const Real norm = sqrt(gx * gx + gy * gy);
     if (norm <= eta)
     {
@@ -3138,28 +3129,28 @@ Status RCWA::AddLayerHomogeneous(Real thickness, Complex eps)
 
 Status RCWA::AddLayer(Real thickness, const Complex* eps_conv)
 {
-    return AddLayer(thickness, eps_conv, LayerFactorization::kLaurent);
+    return AddLayerFromConvolution(thickness, eps_conv, LayerFactorization::kLaurent);
 }
 
-Status RCWA::AddLayer(Real thickness,
-                      const Complex* eps_conv,
-                      LayerFactorization factorization,
-                      const Complex* eps_inv_conv,
-                      const Complex* nxx_conv,
-                      const Complex* nxy_conv,
-                      const Complex* nyy_conv)
+Status RCWA::AddLayerFromConvolution(Real thickness,
+                                     const Complex* eps_conv,
+                                     LayerFactorization factorization,
+                                     const Complex* eps_inv_conv,
+                                     const Complex* nxx_conv,
+                                     const Complex* nxy_conv,
+                                     const Complex* nyy_conv)
 {
     if (!eps_conv || !kvectors_ready_)
     {
         return Status::kInvalidValue;
     }
-    if (factorization == LayerFactorization::kLalanne &&
-        (!eps_inv_conv || !nxx_conv || !nxy_conv || !nyy_conv))
+    if (factorization != LayerFactorization::kLaurent &&
+        factorization != LayerFactorization::kLalanne)
     {
         return Status::kInvalidValue;
     }
-    if (factorization != LayerFactorization::kLaurent &&
-        factorization != LayerFactorization::kLalanne)
+    if (factorization == LayerFactorization::kLalanne &&
+        (!eps_inv_conv || !nxx_conv || !nxy_conv || !nyy_conv))
     {
         return Status::kInvalidValue;
     }
@@ -3171,14 +3162,11 @@ Status RCWA::AddLayer(Real thickness,
     DeviceMatrix Q;
     CHECK(P.Allocate(n2, n2));
     CHECK(Q.Allocate(n2, n2));
+    CHECK(BuildPQ(eps_conv, n, P.get(), Q.get()));
     if (factorization == LayerFactorization::kLalanne)
     {
-        CHECK(BuildPQLalanne(
-            eps_conv, eps_inv_conv, nxx_conv, nxy_conv, nyy_conv, n, P.get(), Q.get()));
-    }
-    else
-    {
-        CHECK(BuildPQ(eps_conv, n, P.get(), Q.get()));
+        CHECK(AddLalanneDeltaQ(
+            eps_conv, eps_inv_conv, nxx_conv, nxy_conv, nyy_conv, n, Q.get()));
     }
 
     return AddLayerFromPQ(thickness, P.get(), Q.get(), n2);
@@ -3195,20 +3183,19 @@ Status RCWA::AddLayer(Real thickness,
     {
         return Status::kInvalidValue;
     }
-    if (factorization == LayerFactorization::kLalanne)
+    if (factorization == LayerFactorization::kLaurent)
+    {
+        Complex* raw_eps_conv = nullptr;
+        CHECK(MaterialConv(material, nx, ny, &raw_eps_conv, stream_));
+        DeviceMatrix eps_conv;
+        eps_conv.Reset(raw_eps_conv, static_cast<size_t>(order_N_) * static_cast<size_t>(order_N_));
+        return AddLayer(thickness, eps_conv.get());
+    }
+    else if (factorization == LayerFactorization::kLalanne)
     {
         return AddLayerLalanne(thickness, material, nx, ny, eta);
     }
-    if (factorization != LayerFactorization::kLaurent)
-    {
-        return Status::kInvalidValue;
-    }
-
-    Complex* raw_eps_conv = nullptr;
-    CHECK(MaterialConv(material, nx, ny, &raw_eps_conv, stream_));
-    DeviceMatrix eps_conv;
-    eps_conv.Reset(raw_eps_conv, static_cast<size_t>(order_N_) * static_cast<size_t>(order_N_));
-    return AddLayer(thickness, eps_conv.get(), LayerFactorization::kLaurent);
+    return Status::kInvalidValue;
 }
 
 Status RCWA::AddLayerFromPQ(Real thickness, const Complex* P, const Complex* Q, int64_t n2)
@@ -3392,13 +3379,13 @@ Status RCWA::AddLayerLalanne(Real thickness,
     nxy_conv.Reset(raw_nxy_conv, conv_elements);
     nyy_conv.Reset(raw_nyy_conv, conv_elements);
 
-    return AddLayer(thickness,
-                    eps_conv.get(),
-                    LayerFactorization::kLalanne,
-                    inv_eps_conv.get(),
-                    nxx_conv.get(),
-                    nxy_conv.get(),
-                    nyy_conv.get());
+    return AddLayerFromConvolution(thickness,
+                                   eps_conv.get(),
+                                   LayerFactorization::kLalanne,
+                                   inv_eps_conv.get(),
+                                   nxx_conv.get(),
+                                   nxy_conv.get(),
+                                   nyy_conv.get());
 }
 
 Status RCWA::MaterialConv(const Complex* material,
@@ -4044,22 +4031,18 @@ Status RCWA::BuildPQ(const Complex* eps_conv, int64_t n, Complex* P, Complex* Q)
     return Status::kSuccess;
 }
 
-Status RCWA::BuildPQLalanne(const Complex* eps_conv,
-                            const Complex* inv_eps_conv,
-                            const Complex* nxx_conv,
-                            const Complex* nxy_conv,
-                            const Complex* nyy_conv,
-                            int64_t n,
-                            Complex* P,
-                            Complex* Q)
+Status RCWA::AddLalanneDeltaQ(const Complex* eps_conv,
+                              const Complex* inv_eps_conv,
+                              const Complex* nxx_conv,
+                              const Complex* nxy_conv,
+                              const Complex* nyy_conv,
+                              int64_t n,
+                              Complex* Q)
 {
-    if (!eps_conv || !inv_eps_conv || !nxx_conv || !nxy_conv || !nyy_conv || !P || !Q ||
-        n <= 0)
+    if (!eps_conv || !inv_eps_conv || !nxx_conv || !nxy_conv || !nyy_conv || !Q || n <= 0)
     {
         return Status::kInvalidValue;
     }
-
-    CHECK(BuildPQ(eps_conv, n, P, Q));
 
     ComplexMatrixOps ops(stream_);
     CHECK(ops.SetStream(stream_));

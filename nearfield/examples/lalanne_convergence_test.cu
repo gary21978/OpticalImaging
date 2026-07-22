@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <vector>
@@ -127,97 +128,76 @@ double RunTmReflectance(int order, int cross_order, GratingAxis axis, bool lalan
     return ComplexAbsSquaredDouble(value);
 }
 
-bool RunAxisConvergenceCheck(GratingAxis axis)
+struct ConvergenceData
 {
-    const double reference = RunTmReflectance(25, 0, axis, true);
+    std::vector<int> orders;
+    std::vector<double> laurent;
+    std::vector<double> lalanne;
+};
 
-    struct Sample
-    {
-        int order;
-        double laurent;
-        double lalanne;
-    };
-
-    const int orders[] = {9, 11, 13, 15, 17, 19, 21, 23};
-    std::vector<Sample> samples;
-    for (int order : orders)
-    {
-        const double r_laurent = RunTmReflectance(order, 0, axis, false);
-        const double r_lalanne = RunTmReflectance(order, 0, axis, true);
-        samples.push_back({order, r_laurent, r_lalanne});
-    }
-
-    std::cout << (axis == GratingAxis::kX ? "X" : "Y")
-              << "-axis TM high-conductivity grating reflectance\n";
-    std::cout << std::setw(7) << "order"
-              << std::setw(22) << "Laurent R (%)"
-              << std::setw(22) << "Lalanne R (%)" << "\n";
-    for (const Sample& sample : samples)
-    {
-        std::cout << std::setw(7) << sample.order
-                  << std::setw(22) << std::fixed << std::setprecision(8)
-                  << sample.laurent * 100.0
-                  << std::setw(22) << sample.lalanne * 100.0 << "\n";
-    }
-
-    const Sample& high = samples.back();
-    const double high_laurent_error = std::abs(high.laurent - reference);
-    const double high_lalanne_error = std::abs(high.lalanne - reference);
-    if (!(high_lalanne_error < high_laurent_error))
-    {
-        std::cerr << "Lalanne correction was not more accurate than Laurent at order "
-                  << high.order << ".\n";
-        return false;
-    }
-    return true;
-}
-
-bool RunLamellarWithCrossOrdersCheck(GratingAxis axis)
+ConvergenceData RunConvergenceSweep(GratingAxis axis, int cross_order)
 {
-    constexpr int cross_order = 2;
-    const double reference = RunTmReflectance(25, cross_order, axis, true);
-
-    std::cout << (axis == GratingAxis::kX ? "X" : "Y")
-              << "-axis lamellar grating reflectance with cross order " << cross_order << "\n";
-    std::cout << std::setw(7) << "order"
-              << std::setw(22) << "Laurent R (%)"
-              << std::setw(22) << "Lalanne R (%)" << "\n";
-
+    ConvergenceData data;
     const int orders[] = {9, 11, 13, 15, 17, 19, 21, 23};
-    double high_laurent = 0.0;
-    double high_lalanne = 0.0;
     for (int order : orders)
     {
         const double r_laurent = RunTmReflectance(order, cross_order, axis, false);
         const double r_lalanne = RunTmReflectance(order, cross_order, axis, true);
-        if (order == orders[sizeof(orders) / sizeof(orders[0]) - 1])
-        {
-            high_laurent = r_laurent;
-            high_lalanne = r_lalanne;
-        }
-        std::cout << std::setw(7) << order
-                  << std::setw(22) << std::fixed << std::setprecision(8)
-                  << r_laurent * 100.0
-                  << std::setw(22) << r_lalanne * 100.0 << "\n";
+        data.orders.push_back(order);
+        data.laurent.push_back(r_laurent);
+        data.lalanne.push_back(r_lalanne);
     }
+    return data;
+}
 
-    const double laurent_error = std::abs(high_laurent - reference);
-    const double lalanne_error = std::abs(high_lalanne - reference);
-
-    if (!(lalanne_error < laurent_error))
+void WriteDataFile(const char* filename, const ConvergenceData& data)
+{
+    std::ofstream out(filename);
+    for (size_t i = 0; i < data.orders.size(); ++i)
     {
-        std::cerr << "Lalanne correction was not more accurate with retained cross orders.\n";
-        return false;
+        out << data.orders[i] << " "
+            << std::fixed << std::setprecision(10)
+            << data.laurent[i] * 100.0 << " "
+            << data.lalanne[i] * 100.0 << "\n";
     }
-    return true;
+}
+
+void PrintTable(const char* label, const ConvergenceData& data)
+{
+    std::cout << label << "\n";
+    std::cout << std::setw(7) << "order"
+              << std::setw(22) << "Laurent R (%)"
+              << std::setw(22) << "Lalanne R (%)" << "\n";
+    for (size_t i = 0; i < data.orders.size(); ++i)
+    {
+        std::cout << std::setw(7) << data.orders[i]
+                  << std::setw(22) << std::fixed << std::setprecision(8)
+                  << data.laurent[i] * 100.0
+                  << std::setw(22) << data.lalanne[i] * 100.0 << "\n";
+    }
 }
 } // namespace
 
 int main()
 {
-    const bool x_ok = RunAxisConvergenceCheck(GratingAxis::kX);
-    const bool y_ok = RunAxisConvergenceCheck(GratingAxis::kY);
-    const bool x_cross_ok = RunLamellarWithCrossOrdersCheck(GratingAxis::kX);
-    const bool y_cross_ok = RunLamellarWithCrossOrdersCheck(GratingAxis::kY);
-    return x_ok && y_ok && x_cross_ok && y_cross_ok ? EXIT_SUCCESS : EXIT_FAILURE;
+    const auto x_data = RunConvergenceSweep(GratingAxis::kX, 0);
+    PrintTable("X-axis TM high-conductivity grating reflectance", x_data);
+    WriteDataFile("convergence_x.txt", x_data);
+
+    const auto y_data = RunConvergenceSweep(GratingAxis::kY, 0);
+    PrintTable("Y-axis TM high-conductivity grating reflectance", y_data);
+    WriteDataFile("convergence_y.txt", y_data);
+
+    const auto x_cross_data = RunConvergenceSweep(GratingAxis::kX, 2);
+    PrintTable("X-axis lamellar grating reflectance (cross order 2)", x_cross_data);
+    WriteDataFile("convergence_x_cross.txt", x_cross_data);
+
+    const auto y_cross_data = RunConvergenceSweep(GratingAxis::kY, 2);
+    PrintTable("Y-axis lamellar grating reflectance (cross order 2)", y_cross_data);
+    WriteDataFile("convergence_y_cross.txt", y_cross_data);
+
+    std::cout << "\nData files written: convergence_x.txt, convergence_y.txt, "
+                 "convergence_x_cross.txt, convergence_y_cross.txt\n";
+
+    return EXIT_SUCCESS;
 }

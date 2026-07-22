@@ -32,6 +32,9 @@ target_link_libraries(pipeline_test PRIVATE complex_ops)
 add_executable(lalanne_convergence_test ${CMAKE_CURRENT_SOURCE_DIR}/examples/lalanne_convergence_test.cu)
 target_link_libraries(lalanne_convergence_test PRIVATE complex_ops)
 
+add_executable(normal_vector_field_test ${CMAKE_CURRENT_SOURCE_DIR}/examples/normal_vector_field_test.cu)
+target_link_libraries(normal_vector_field_test PRIVATE complex_ops)
+
 if(USE_DOUBLE_PRECISION)
   set(PRECISION_DEF USE_DOUBLE_PRECISION=1)
 else()
@@ -43,6 +46,7 @@ target_compile_definitions(homogeneous_test PRIVATE ${PRECISION_DEF})
 target_compile_definitions(method_test PRIVATE ${PRECISION_DEF})
 target_compile_definitions(pipeline_test PRIVATE ${PRECISION_DEF})
 target_compile_definitions(lalanne_convergence_test PRIVATE ${PRECISION_DEF})
+target_compile_definitions(normal_vector_field_test PRIVATE ${PRECISION_DEF})
 
 # Optimization
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -march=native -ffast-math -funroll-loops")

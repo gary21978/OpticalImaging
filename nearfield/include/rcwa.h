@@ -57,23 +57,11 @@ class RCWA
     Status AddLayerHomogeneous(Real thickness, Complex eps);
     Status AddLayer(Real thickness, const Complex* eps_conv);
     Status AddLayer(Real thickness,
-                    const Complex* eps_conv,
-                    LayerFactorization factorization,
-                    const Complex* eps_inv_conv = nullptr,
-                    const Complex* nxx_conv = nullptr,
-                    const Complex* nxy_conv = nullptr,
-                    const Complex* nyy_conv = nullptr);
-    Status AddLayer(Real thickness,
                     const Complex* material,
                     int64_t nx,
                     int64_t ny,
-                    LayerFactorization factorization,
+                    LayerFactorization factorization = LayerFactorization::kLaurent,
                     Real eta = static_cast<Real>(1e-6));
-    Status AddLayerLalanne(Real thickness,
-                           const Complex* material,
-                           int64_t nx,
-                           int64_t ny,
-                           Real eta = static_cast<Real>(1e-6));
     Status AddInputLayer(Real eps);
     Status AddInputLayer(Complex eps);
     Status AddOutputLayer(Real eps);
@@ -180,6 +168,13 @@ class RCWA
   private:
     Status BuildKxKy(Real inc_ang, Real azi_ang, Real eps_ref);
     Status BuildV0(Real eps_ref);
+    Status AddLayerFromConvolution(Real thickness,
+                                   const Complex* eps_conv,
+                                   LayerFactorization factorization,
+                                   const Complex* eps_inv_conv = nullptr,
+                                   const Complex* nxx_conv = nullptr,
+                                   const Complex* nxy_conv = nullptr,
+                                   const Complex* nyy_conv = nullptr);
     Status AddLayerFromPQ(Real thickness, const Complex* P, const Complex* Q, int64_t n2);
     Status BuildLalanneNormalProducts(const Complex* material,
                                       int64_t nx,
@@ -189,14 +184,18 @@ class RCWA
                                       Complex* nxy,
                                       Complex* nyy) const;
     Status BuildPQ(const Complex* eps_conv, int64_t n, Complex* P, Complex* Q);
-    Status BuildPQLalanne(const Complex* eps_conv,
-                          const Complex* inv_eps_conv,
-                          const Complex* nxx_conv,
-                          const Complex* nxy_conv,
-                          const Complex* nyy_conv,
-                          int64_t n,
-                          Complex* P,
-                          Complex* Q);
+    Status AddLalanneDeltaQ(const Complex* eps_conv,
+                            const Complex* inv_eps_conv,
+                            const Complex* nxx_conv,
+                            const Complex* nxy_conv,
+                            const Complex* nyy_conv,
+                            int64_t n,
+                            Complex* Q);
+    Status AddLayerLalanne(Real thickness,
+                           const Complex* material,
+                           int64_t nx,
+                           int64_t ny,
+                           Real eta);
     Status RepeatSMatrix(SMatrix* S, int repeats, int64_t n);
     Status RSProd(const SMatrix& Sm,
                   const SMatrix& Sn,
