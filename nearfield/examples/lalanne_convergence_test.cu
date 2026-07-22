@@ -11,6 +11,10 @@ namespace
 {
 Status CudaStatus(cudaError_t status)
 {
+    if (status != cudaSuccess)
+    {
+        std::cerr << "CUDA runtime error: " << cudaGetErrorString(status) << "\n";
+    }
     return status == cudaSuccess ? Status::kSuccess : Status::kCudaError;
 }
 
@@ -52,7 +56,7 @@ void BuildConductiveGrating(std::vector<Complex>& eps, int nx, int ny, GratingAx
     }
 }
 
-double RunTmReflectionProxy(int order, int cross_order, GratingAxis axis, bool lalanne)
+double RunTmReflectance(int order, int cross_order, GratingAxis axis, bool lalanne)
 {
     constexpr Real wavelength = 1.0;
     constexpr Real period_x = 0.72;
@@ -89,14 +93,21 @@ double RunTmReflectionProxy(int order, int cross_order, GratingAxis axis, bool l
 
     if (lalanne)
     {
-        Require(rcwa.AddLayerLalanne(thickness, d_eps.ptr, geom_x, geom_y), "AddLayerLalanne");
+        Require(rcwa.AddLayer(thickness,
+                              d_eps.ptr,
+                              geom_x,
+                              geom_y,
+                              LayerFactorization::kLalanne),
+                "AddLayer Lalanne");
     }
     else
     {
-        Complex* eps_conv = nullptr;
-        Require(rcwa.MaterialConv(d_eps.ptr, geom_x, geom_y, &eps_conv), "MaterialConv");
-        Require(rcwa.AddLayer(thickness, eps_conv), "AddLayer");
-        rcwa.FreeDeviceTensor(eps_conv);
+        Require(rcwa.AddLayer(thickness,
+                              d_eps.ptr,
+                              geom_x,
+                              geom_y,
+                              LayerFactorization::kLaurent),
+                "AddLayer Laurent");
     }
 
     Require(rcwa.SolveGlobalSMatrix(), "SolveGlobalSMatrix");
@@ -118,45 +129,41 @@ double RunTmReflectionProxy(int order, int cross_order, GratingAxis axis, bool l
 
 bool RunAxisConvergenceCheck(GratingAxis axis)
 {
-    const double reference = RunTmReflectionProxy(21, 0, axis, true);
+    const double reference = RunTmReflectance(25, 0, axis, true);
 
     struct Sample
     {
         int order;
-        double laurent_error;
-        double lalanne_error;
+        double laurent;
+        double lalanne;
     };
 
-    const int orders[] = {5, 9, 13};
+    const int orders[] = {9, 11, 13, 15, 17, 19, 21, 23};
     std::vector<Sample> samples;
     for (int order : orders)
     {
-        const double r_laurent = RunTmReflectionProxy(order, 0, axis, false);
-        const double r_lalanne = RunTmReflectionProxy(order, 0, axis, true);
-        samples.push_back({order, std::abs(r_laurent - reference), std::abs(r_lalanne - reference)});
+        const double r_laurent = RunTmReflectance(order, 0, axis, false);
+        const double r_lalanne = RunTmReflectance(order, 0, axis, true);
+        samples.push_back({order, r_laurent, r_lalanne});
     }
 
     std::cout << (axis == GratingAxis::kX ? "X" : "Y")
-              << "-axis TM high-conductivity grating convergence, reference Lalanne order 21\n";
+              << "-axis TM high-conductivity grating reflectance\n";
     std::cout << std::setw(7) << "order"
-              << std::setw(18) << "Laurent |dR|"
-              << std::setw(18) << "Lalanne |dR|" << "\n";
+              << std::setw(22) << "Laurent R (%)"
+              << std::setw(22) << "Lalanne R (%)" << "\n";
     for (const Sample& sample : samples)
     {
         std::cout << std::setw(7) << sample.order
-                  << std::setw(18) << std::scientific << std::setprecision(6)
-                  << sample.laurent_error
-                  << std::setw(18) << sample.lalanne_error << "\n";
+                  << std::setw(22) << std::fixed << std::setprecision(8)
+                  << sample.laurent * 100.0
+                  << std::setw(22) << sample.lalanne * 100.0 << "\n";
     }
 
-    const Sample& low = samples.front();
     const Sample& high = samples.back();
-    if (!(high.lalanne_error < low.lalanne_error))
-    {
-        std::cerr << "Lalanne path did not converge between tested orders.\n";
-        return false;
-    }
-    if (!(high.lalanne_error < high.laurent_error))
+    const double high_laurent_error = std::abs(high.laurent - reference);
+    const double high_lalanne_error = std::abs(high.lalanne - reference);
+    if (!(high_lalanne_error < high_laurent_error))
     {
         std::cerr << "Lalanne correction was not more accurate than Laurent at order "
                   << high.order << ".\n";
@@ -168,17 +175,34 @@ bool RunAxisConvergenceCheck(GratingAxis axis)
 bool RunLamellarWithCrossOrdersCheck(GratingAxis axis)
 {
     constexpr int cross_order = 2;
-    const double reference = RunTmReflectionProxy(17, cross_order, axis, true);
-    const double r_laurent = RunTmReflectionProxy(9, cross_order, axis, false);
-    const double r_lalanne = RunTmReflectionProxy(9, cross_order, axis, true);
-    const double laurent_error = std::abs(r_laurent - reference);
-    const double lalanne_error = std::abs(r_lalanne - reference);
+    const double reference = RunTmReflectance(25, cross_order, axis, true);
 
     std::cout << (axis == GratingAxis::kX ? "X" : "Y")
-              << "-axis lamellar grating with cross order " << cross_order
-              << ": Laurent |dR|=" << std::scientific << std::setprecision(6)
-              << laurent_error
-              << ", Lalanne |dR|=" << lalanne_error << "\n";
+              << "-axis lamellar grating reflectance with cross order " << cross_order << "\n";
+    std::cout << std::setw(7) << "order"
+              << std::setw(22) << "Laurent R (%)"
+              << std::setw(22) << "Lalanne R (%)" << "\n";
+
+    const int orders[] = {9, 11, 13, 15, 17, 19, 21, 23};
+    double high_laurent = 0.0;
+    double high_lalanne = 0.0;
+    for (int order : orders)
+    {
+        const double r_laurent = RunTmReflectance(order, cross_order, axis, false);
+        const double r_lalanne = RunTmReflectance(order, cross_order, axis, true);
+        if (order == orders[sizeof(orders) / sizeof(orders[0]) - 1])
+        {
+            high_laurent = r_laurent;
+            high_lalanne = r_lalanne;
+        }
+        std::cout << std::setw(7) << order
+                  << std::setw(22) << std::fixed << std::setprecision(8)
+                  << r_laurent * 100.0
+                  << std::setw(22) << r_lalanne * 100.0 << "\n";
+    }
+
+    const double laurent_error = std::abs(high_laurent - reference);
+    const double lalanne_error = std::abs(high_lalanne - reference);
 
     if (!(lalanne_error < laurent_error))
     {

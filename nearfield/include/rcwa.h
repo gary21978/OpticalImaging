@@ -30,6 +30,12 @@ struct VMatrix
     Complex* V_22 = nullptr;
 };
 
+enum class LayerFactorization
+{
+    kLaurent,
+    kLalanne,
+};
+
 class ComplexMatrixOps;
 
 class RCWA
@@ -50,6 +56,19 @@ class RCWA
     Status AddLayerHomogeneous(Real thickness, Real eps);
     Status AddLayerHomogeneous(Real thickness, Complex eps);
     Status AddLayer(Real thickness, const Complex* eps_conv);
+    Status AddLayer(Real thickness,
+                    const Complex* eps_conv,
+                    LayerFactorization factorization,
+                    const Complex* eps_inv_conv = nullptr,
+                    const Complex* nxx_conv = nullptr,
+                    const Complex* nxy_conv = nullptr,
+                    const Complex* nyy_conv = nullptr);
+    Status AddLayer(Real thickness,
+                    const Complex* material,
+                    int64_t nx,
+                    int64_t ny,
+                    LayerFactorization factorization,
+                    Real eta = static_cast<Real>(1e-6));
     Status AddLayerLalanne(Real thickness,
                            const Complex* material,
                            int64_t nx,
@@ -68,6 +87,13 @@ class RCWA
                         int64_t ny,
                         Complex** eps_conv,
                         cudaStream_t stream = nullptr) const;
+    Status GenerateNormalVectorField(const Complex* material,
+                                     int64_t nx,
+                                     int64_t ny,
+                                     Real eta,
+                                     Complex** nx_field,
+                                     Complex** ny_field,
+                                     cudaStream_t stream = nullptr) const;
     Status SolveGlobalSMatrix(SMatrix* S,
                               const SMatrix* S_in = nullptr,
                               const SMatrix* S_out = nullptr,
@@ -154,6 +180,14 @@ class RCWA
   private:
     Status BuildKxKy(Real inc_ang, Real azi_ang, Real eps_ref);
     Status BuildV0(Real eps_ref);
+    Status AddLayerFromPQ(Real thickness, const Complex* P, const Complex* Q, int64_t n2);
+    Status BuildLalanneNormalProducts(const Complex* material,
+                                      int64_t nx,
+                                      int64_t ny,
+                                      Real eta,
+                                      Complex* nxx,
+                                      Complex* nxy,
+                                      Complex* nyy) const;
     Status BuildPQ(const Complex* eps_conv, int64_t n, Complex* P, Complex* Q);
     Status BuildPQLalanne(const Complex* eps_conv,
                           const Complex* inv_eps_conv,
