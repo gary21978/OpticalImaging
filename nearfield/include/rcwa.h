@@ -60,8 +60,7 @@ class RCWA
                     const Complex* material,
                     int64_t nx,
                     int64_t ny,
-                    LayerFactorization factorization = LayerFactorization::kLaurent,
-                    Real eta = static_cast<Real>(1e-6));
+                    LayerFactorization factorization = LayerFactorization::kLaurent);
     Status AddInputLayer(Real eps);
     Status AddInputLayer(Complex eps);
     Status AddOutputLayer(Real eps);
@@ -194,8 +193,7 @@ class RCWA
     Status AddLayerLalanne(Real thickness,
                            const Complex* material,
                            int64_t nx,
-                           int64_t ny,
-                           Real eta);
+                           int64_t ny);
     Status RepeatSMatrix(SMatrix* S, int repeats, int64_t n);
     Status RSProd(const SMatrix& Sm,
                   const SMatrix& Sn,

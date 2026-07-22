@@ -3176,8 +3176,7 @@ Status RCWA::AddLayer(Real thickness,
                       const Complex* material,
                       int64_t nx,
                       int64_t ny,
-                      LayerFactorization factorization,
-                      Real eta)
+                      LayerFactorization factorization)
 {
     if (!material)
     {
@@ -3193,7 +3192,7 @@ Status RCWA::AddLayer(Real thickness,
     }
     else if (factorization == LayerFactorization::kLalanne)
     {
-        return AddLayerLalanne(thickness, material, nx, ny, eta);
+        return AddLayerLalanne(thickness, material, nx, ny);
     }
     return Status::kInvalidValue;
 }
@@ -3326,10 +3325,9 @@ Status RCWA::GenerateNormalVectorField(const Complex* material,
 Status RCWA::AddLayerLalanne(Real thickness,
                              const Complex* material,
                              int64_t nx,
-                             int64_t ny,
-                             Real eta)
+                             int64_t ny)
 {
-    if (!material || !kvectors_ready_ || eta < static_cast<Real>(0.0))
+    if (!material || !kvectors_ready_)
     {
         return Status::kInvalidValue;
     }
@@ -3357,8 +3355,13 @@ Status RCWA::AddLayerLalanne(Real thickness,
     CHECK(nyy_map.Allocate(nx, ny));
 
     CHECK(ElementwiseInverse(material, inv_map.get(), map_size, stream_));
-    CHECK(BuildLalanneNormalProducts(
-        material, nx, ny, eta, nxx_map.get(), nxy_map.get(), nyy_map.get()));
+    CHECK(BuildLalanneNormalProducts(material,
+                                     nx,
+                                     ny,
+                                     1e-6,
+                                     nxx_map.get(),
+                                     nxy_map.get(),
+                                     nyy_map.get()));
 
     Complex* raw_inv_eps_conv = nullptr;
     Complex* raw_nxx_conv = nullptr;
