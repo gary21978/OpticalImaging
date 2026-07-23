@@ -163,11 +163,18 @@ __device__ inline Complex ComplexReciprocal(Complex z)
     const Real ar = ComplexReal(z);
     const Real ai = ComplexImag(z);
     const Real denom = ar * ar + ai * ai;
-    if (denom == 0.0)
-    {
-        return make_complex(0.0, 0.0);
-    }
     return make_complex(ar / denom, -ai / denom);
+}
+
+__device__ inline Complex RegularizeGrazingKz(Complex kz)
+{
+    const Real floor = static_cast<Real>(1e-9);
+    if (ComplexAbs(kz) >= floor)
+    {
+        return kz;
+    }
+    const Real imag = ComplexImag(kz) < static_cast<Real>(0.0) ? -floor : floor;
+    return make_complex(static_cast<Real>(0.0), imag);
 }
 
 __device__ inline Complex ComplexExpI(Complex z)
