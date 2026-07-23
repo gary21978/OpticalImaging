@@ -46,15 +46,6 @@ Status StatusFromCudaLocal(cudaError_t status)
     return status == cudaSuccess ? Status::kSuccess : Status::kCudaError;
 }
 
-void Require(Status status, const char* step)
-{
-    if (status != Status::kSuccess)
-    {
-        std::cerr << step << " failed: " << StatusToString(status) << std::endl;
-        std::exit(EXIT_FAILURE);
-    }
-}
-
 double ElapsedMs(Clock::time_point start, Clock::time_point end)
 {
     return std::chrono::duration<double, std::milli>(end - start).count();
@@ -353,11 +344,10 @@ int main(int argc, char** argv)
 
     const auto rcwa_setup_start = Clock::now();
     RCWA rcwa(freq, config.order_x, config.order_y, config.period_x, config.period_y);
-    Require(rcwa.AddInputLayer(1.0), "AddInputLayer");
-    Require(rcwa.AddOutputLayer(
-                ComplexMul(make_complex(6.5271, 2.6672), make_complex(6.5271, 2.6672))),
-            "AddOutputLayer");
-    Require(rcwa.SetIncidentAngles(0.0, 0.0, "input"), "SetIncidentAngles");
+    rcwa.AddInputLayer(1.0);
+    rcwa.AddOutputLayer(
+                ComplexMul(make_complex(6.5271, 2.6672), make_complex(6.5271, 2.6672)));
+    rcwa.SetIncidentAngles(0.0, 0.0, "input");
     const auto rcwa_setup_end = Clock::now();
 
     const auto geometry_start = Clock::now();
@@ -382,20 +372,20 @@ int main(int argc, char** argv)
                    eps_map.data(),
                    eps_map.size() * sizeof(Complex),
                    cudaMemcpyHostToDevice);
-        Complex* eps_conv = nullptr;
-        Require(rcwa.MaterialConv(d_material.ptr, config.geom_x, config.geom_y, &eps_conv), "MaterialConv");
-        Require(rcwa.AddLayer(thicknesses[i], eps_conv), "AddLayer");
-        rcwa.FreeDeviceTensor(eps_conv);
+        rcwa.AddLayer(thicknesses[i],
+                              d_material.ptr,
+                              config.geom_x,
+                              config.geom_y,
+                              LayerFactorization::kLaurent);
     }
-    Require(rcwa.AddLayerHomogeneous(
-                20.0, ComplexMul(make_complex(2.1222, 0.0), make_complex(2.1222, 0.0))),
-            "AddLayerHomogeneous");
-    Require(StatusFromCudaLocal(cudaDeviceSynchronize()), "GeometryAndLayerSync");
+    rcwa.AddLayerHomogeneous(
+                20.0, ComplexMul(make_complex(2.1222, 0.0), make_complex(2.1222, 0.0)));
+    StatusFromCudaLocal(cudaDeviceSynchronize());
     const auto geometry_end = Clock::now();
 
     const auto smatrix_start = Clock::now();
-    Require(rcwa.SolveGlobalSMatrix(), "SolveGlobalSMatrix");
-    Require(StatusFromCudaLocal(cudaDeviceSynchronize()), "SolveGlobalSMatrixSync");
+    rcwa.SolveGlobalSMatrix();
+    StatusFromCudaLocal(cudaDeviceSynchronize());
     const auto smatrix_end = Clock::now();
 
     const auto imaging_grid_start = Clock::now();
@@ -420,19 +410,18 @@ int main(int argc, char** argv)
     numerics.object_z_positions = {0.0};
     AbbeImager imager(source, projector, numerics);
     const auto abbe_start = Clock::now();
-    Require(imager.ComputeFromRCWA(
-                rcwa, xs.data(), config.image_w, ys.data(), config.image_h),
-            "ComputeFromRCWA");
-    Require(StatusFromCudaLocal(cudaDeviceSynchronize()), "ComputeFromRCWASync");
+    imager.ComputeFromRCWA(
+                rcwa, xs.data(), config.image_w, ys.data(), config.image_h);
+    StatusFromCudaLocal(cudaDeviceSynchronize());
     const auto abbe_end = Clock::now();
 
     const auto nearfield_start = Clock::now();
-    Require(rcwa.SourcePlanewave(1.0, 0.0, "forward"), "SourcePlanewave");
+    rcwa.SourcePlanewave(1.0, 0.0, "forward");
     Complex* ex = nullptr;
     Complex* ey = nullptr;
     Complex* ez = nullptr;
-    Require(rcwa.FieldXY(xs.data(), config.image_w, ys.data(), config.image_h, &ex, &ey, &ez), "FieldXY");
-    Require(StatusFromCudaLocal(cudaDeviceSynchronize()), "FieldXYSync");
+    rcwa.FieldXY(xs.data(), config.image_w, ys.data(), config.image_h, &ex, &ey, &ez);
+    StatusFromCudaLocal(cudaDeviceSynchronize());
     const std::vector<Real> nearfield_intensity = ComputeIntensityImage(ex, ey, ez, config.image_w, config.image_h);
     rcwa.FreeDeviceTensor(ex);
     rcwa.FreeDeviceTensor(ey);

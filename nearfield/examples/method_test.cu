@@ -150,14 +150,14 @@ RunResult RunPipeline(Real freq,
         BuildEpsMap(geometry, materials[i], eps_map);
         cudaMemcpy(d_material.get(), eps_map.data(), mat_bytes, cudaMemcpyHostToDevice);
 
-        Complex* eps_conv = nullptr;
-        RequireStatus(
-            rcwa.MaterialConv(d_material.get(), geom_x, geom_y, &eps_conv), "MaterialConv");
-
         auto t0 = Clock::now();
-        RequireStatus(rcwa.AddLayer(thicknesses[i], eps_conv), "AddLayer");
+        RequireStatus(rcwa.AddLayer(thicknesses[i],
+                                    d_material.get(),
+                                    geom_x,
+                                    geom_y,
+                                    LayerFactorization::kLaurent),
+                      "AddLayer");
         t_addlayer += ElapsedMillis(t0, Clock::now());
-        SAFEFREE(eps_conv);
     }
 
     RequireStatus(rcwa.AddLayerHomogeneous(20.0, eps_sub), "AddLayerHomogeneous");

@@ -1,5 +1,10 @@
 #include <cstring>
 #include <cufft.h>
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <iomanip>
+#include <iostream>
 #include <limits>
 #include <vector>
 #include "complex_matrix.h"
@@ -13,6 +18,75 @@ static Status StatusFromCuda(cudaError_t status)
 static Status StatusFromCufft(cufftResult status)
 {
     return status == CUFFT_SUCCESS ? Status::kSuccess : Status::kCudaError;
+}
+
+static int PeakMatrixCountForPath(char expm_method, bool high_order)
+{
+    if (expm_method == 'S')
+    {
+        return high_order ? 16 : 14;
+    }
+    if (expm_method == 'F')
+    {
+        return high_order ? 15 : 13;
+    }
+    return high_order ? 30 : 24;
+}
+
+static size_t EstimatedPeakLayerBytesForOrder(int order, int peak_matrix_count)
+{
+    if (order < 0 || peak_matrix_count <= 0)
+    {
+        return std::numeric_limits<size_t>::max();
+    }
+    const double orders_per_axis = static_cast<double>(2 * order + 1);
+    const double harmonic_count = orders_per_axis * orders_per_axis;
+    const double block_dim = 2.0 * harmonic_count;
+    const double bytes = static_cast<double>(peak_matrix_count) * block_dim * block_dim *
+                         static_cast<double>(sizeof(Complex));
+    if (bytes > static_cast<double>(std::numeric_limits<size_t>::max()))
+    {
+        return std::numeric_limits<size_t>::max();
+    }
+    return static_cast<size_t>(bytes);
+}
+
+static int MemoryLimitedOrderMax(int requested_order_max,
+                                 char expm_method,
+                                 bool high_order,
+                                 Real safety_fraction)
+{
+    if (requested_order_max <= 0)
+    {
+        return requested_order_max;
+    }
+
+    size_t free_bytes = 0;
+    size_t total_bytes = 0;
+    if (cudaMemGetInfo(&free_bytes, &total_bytes) != cudaSuccess || free_bytes == 0)
+    {
+        return requested_order_max;
+    }
+
+    const double clamped_fraction = std::min(
+        0.95, std::max(0.10, static_cast<double>(safety_fraction)));
+    const size_t budget_bytes = static_cast<size_t>(static_cast<double>(free_bytes) *
+                                                    clamped_fraction);
+    // Bound automatic order selection by the same peak-live-matrix model
+    // documented above.  The safety fraction leaves room for material maps,
+    // cuFFT/cuBLAS workspaces, the accumulated stack S-matrix, and allocator
+    // fragmentation on the current GPU.
+    const int peak_matrix_count = PeakMatrixCountForPath(expm_method, high_order);
+    int limited = 0;
+    for (int order = 1; order <= requested_order_max; ++order)
+    {
+        if (EstimatedPeakLayerBytesForOrder(order, peak_matrix_count) > budget_bytes)
+        {
+            break;
+        }
+        limited = order;
+    }
+    return std::max(limited, 1);
 }
 
 static constexpr double kExpConstantOrder18[5][5] = {
@@ -1022,6 +1096,7 @@ RCWA::RCWA(Real freq, int order_x, int order_y, Real Lx, Real Ly, cudaStream_t s
     : freq_(freq), omega_(static_cast<Real>(6.28318530717958647692) * freq), Lx_(Lx), Ly_(Ly),
       order_x_(std::max(order_x, 0)), order_y_(std::max(order_y, 0)), stream_(stream)
 {
+    auto_order_enabled_ = (order_x == 0 && order_y == 0);
     order_N_ = static_cast<int64_t>((2 * order_x_ + 1) * (2 * order_y_ + 1));
     Gx_norm_ = 1.0 / (Lx_ * freq_);
     Gy_norm_ = 1.0 / (Ly_ * freq_);
@@ -1206,14 +1281,412 @@ void RCWA::FreeGlobalSMatrix() { FreeSMatrix(&global_smatrix_); }
 
 void RCWA::FreeSource() { SAFEFREE(source_ei_); }
 
+Status RCWA::ResetOrder(int order_x, int order_y)
+{
+    if (order_x < 0 || order_y < 0)
+    {
+        return Status::kInvalidValue;
+    }
+
+    FreeSMatrix(&stack_smatrix_);
+    FreeGlobalSMatrix();
+    FreeKVectors();
+    FreeSource();
+
+    order_x_ = order_x;
+    order_y_ = order_y;
+    order_N_ = static_cast<int64_t>((2 * order_x_ + 1) * (2 * order_y_ + 1));
+    Gx_norm_ = 1.0 / (Lx_ * freq_);
+    Gy_norm_ = 1.0 / (Ly_ * freq_);
+    return Status::kSuccess;
+}
+
+Status RCWA::ReplayRecordedSetup(RCWA* target) const
+{
+    if (!target)
+    {
+        return Status::kInvalidValue;
+    }
+
+    target->SetExpmMethod(expm_method_);
+    target->SetHighOrder(high_order_);
+    CHECK(target->AddInputLayer(eps_in_));
+    CHECK(target->AddOutputLayer(eps_out_));
+
+    if (!incident_recorded_)
+    {
+        return Status::kInvalidValue;
+    }
+
+    if (incident_uses_layer_)
+    {
+        CHECK(target->SetIncidentAngles(
+            incident_inc_ang_, incident_azi_ang_, incident_angle_layer_input_ ? "input" : "output"));
+    }
+    else
+    {
+        CHECK(target->SetIncidentAngles(incident_inc_ang_, incident_azi_ang_, incident_eps_ref_));
+    }
+
+    for (const RecordedLayer& layer : recorded_layers_)
+    {
+        if (layer.type == RecordedLayerType::kHomogeneous)
+        {
+            CHECK(target->AddLayerHomogeneous(layer.thickness, layer.eps));
+        }
+        else if (layer.type == RecordedLayerType::kMaterial)
+        {
+            Complex* d_material = nullptr;
+            const size_t bytes = layer.material.size() * sizeof(Complex);
+            CHECK(StatusFromCuda(cudaMalloc(&d_material, bytes)));
+            const cudaError_t copy_status = cudaMemcpyAsync(d_material,
+                                                            layer.material.data(),
+                                                            bytes,
+                                                            cudaMemcpyHostToDevice,
+                                                            target->stream_);
+            if (copy_status != cudaSuccess)
+            {
+                cudaFree(d_material);
+                return Status::kCudaError;
+            }
+            const Status status = target->AddLayer(layer.thickness,
+                                                   d_material,
+                                                   layer.nx,
+                                                   layer.ny,
+                                                   layer.factorization);
+            const Status sync_status = StatusFromCuda(cudaStreamSynchronize(target->stream_));
+            cudaFree(d_material);
+            CHECK(status);
+            CHECK(sync_status);
+        }
+    }
+
+    if (source_recorded_)
+    {
+        CHECK(target->SourcePlanewave(source_ex_, source_ey_, source_forward_ ? "forward" : "backward"));
+    }
+    return Status::kSuccess;
+}
+
+double RCWA::CurrentReflectance() const
+{
+    if (!HasSMatrix(global_smatrix_))
+    {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+
+    const int64_t n2 = 2 * order_N_;
+    const int64_t oy_len = static_cast<int64_t>(2 * order_y_ + 1);
+    const int64_t source_order = static_cast<int64_t>(order_x_) * oy_len + order_y_;
+    std::vector<Complex> s11(static_cast<size_t>(n2) * static_cast<size_t>(n2));
+    if (cudaMemcpy(s11.data(),
+                   global_smatrix_.S_11,
+                   s11.size() * sizeof(Complex),
+                   cudaMemcpyDeviceToHost) != cudaSuccess)
+    {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    const Complex value = s11[static_cast<size_t>(source_order) * n2 + source_order];
+    return ComplexAbsSquaredDouble(value);
+}
+
+Status RCWA::ResolveAutoOrder()
+{
+    if (!auto_order_enabled_)
+    {
+        return Status::kSuccess;
+    }
+    if (auto_order_resolving_)
+    {
+        return Status::kInvalidValue;
+    }
+
+    const AutoOrderOptions& cfg = auto_order_options_;
+    int effective_order_max = cfg.order_max;
+    const int memory_order_max = cfg.cap_order_by_memory
+                                     ? MemoryLimitedOrderMax(cfg.order_max,
+                                                             expm_method_,
+                                                             high_order_,
+                                                             cfg.memory_safety_fraction)
+                                     : cfg.order_max;
+    effective_order_max = std::min(effective_order_max, memory_order_max);
+    for (const RecordedLayer& layer : recorded_layers_)
+    {
+        if (layer.type == RecordedLayerType::kMaterial)
+        {
+            // The Fourier orders should stay below the sampled material bandwidth.
+            // Lalanne also needs normal-vector products on the same material grid.
+            effective_order_max =
+                std::min(effective_order_max,
+                         static_cast<int>((std::min(layer.nx, layer.ny) - 1) / 4));
+        }
+    }
+    if (cfg.order_start > effective_order_max || cfg.order_step <= 0 ||
+        cfg.order_min_step <= 0 || cfg.order_max_step < cfg.order_min_step ||
+        cfg.window_size < 2 || cfg.max_evaluations <= 0 ||
+        cfg.reflectance_tol <= static_cast<Real>(0.0) ||
+        cfg.reflectance_floor <= static_cast<Real>(0.0))
+    {
+        return Status::kInvalidValue;
+    }
+
+    struct Sample
+    {
+        int order = 0;
+        double reflectance = 0.0;
+        double elapsed_ms = 0.0;
+        double relative_change = std::numeric_limits<double>::quiet_NaN();
+        double window_range = std::numeric_limits<double>::quiet_NaN();
+        int next_step = 0;
+    };
+
+    auto relative_change = [&](double a, double b) {
+        const double denom =
+            std::max({std::abs(a), std::abs(b), static_cast<double>(cfg.reflectance_floor)});
+        return std::abs(a - b) / denom;
+    };
+
+    auto window_range = [&](const std::vector<Sample>& samples) {
+        if (samples.size() < static_cast<size_t>(cfg.window_size))
+        {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+        const size_t begin = samples.size() - static_cast<size_t>(cfg.window_size);
+        double min_r = std::numeric_limits<double>::infinity();
+        double max_r = -std::numeric_limits<double>::infinity();
+        double sum_abs = 0.0;
+        for (size_t i = begin; i < samples.size(); ++i)
+        {
+            min_r = std::min(min_r, samples[i].reflectance);
+            max_r = std::max(max_r, samples[i].reflectance);
+            sum_abs += std::abs(samples[i].reflectance);
+        }
+        const double mean_abs = sum_abs / static_cast<double>(cfg.window_size);
+        return (max_r - min_r) /
+               std::max(mean_abs, static_cast<double>(cfg.reflectance_floor));
+    };
+
+    auto choose_next_step = [&](double change, double range) {
+        double signal = change;
+        if (std::isfinite(range))
+        {
+            signal = std::isfinite(signal) ? std::max(signal, range) : range;
+        }
+        if (!cfg.adaptive_step || !std::isfinite(signal))
+        {
+            return std::max(cfg.order_min_step,
+                            std::min(cfg.order_step, cfg.order_max_step));
+        }
+        const double tol = static_cast<double>(cfg.reflectance_tol);
+        if (signal > tol * static_cast<double>(cfg.high_change_factor))
+        {
+            return cfg.order_min_step;
+        }
+        if (signal < tol * static_cast<double>(cfg.low_change_factor))
+        {
+            return cfg.order_max_step;
+        }
+        return std::max(cfg.order_min_step, std::min(cfg.order_step, cfg.order_max_step));
+    };
+
+    auto run_order = [&](int order, Sample* sample) -> Status {
+        auto start = std::chrono::steady_clock::now();
+        RCWA trial(freq_, order, order, Lx_, Ly_, stream_);
+        trial.auto_order_enabled_ = false;
+        CHECK(ReplayRecordedSetup(&trial));
+        CHECK(trial.SolveGlobalSMatrix());
+        CHECK(StatusFromCuda(cudaStreamSynchronize(stream_)));
+        auto stop = std::chrono::steady_clock::now();
+        sample->order = order;
+        sample->reflectance = trial.CurrentReflectance();
+        sample->elapsed_ms = std::chrono::duration<double, std::milli>(stop - start).count();
+        if (!std::isfinite(sample->reflectance))
+        {
+            return Status::kInvalidValue;
+        }
+        return Status::kSuccess;
+    };
+
+    auto_order_resolving_ = true;
+    struct AutoOrderResolvingGuard
+    {
+        RCWA* rcwa = nullptr;
+        ~AutoOrderResolvingGuard()
+        {
+            if (rcwa)
+            {
+                rcwa->auto_order_resolving_ = false;
+            }
+        }
+    } resolving_guard{this};
+    auto_order_converged_ = false;
+    auto_selected_order_ = effective_order_max;
+
+    double total_ms = 0.0;
+    if (cfg.warmup)
+    {
+        Sample warmup{};
+        CHECK(run_order(cfg.order_start, &warmup));
+        total_ms += warmup.elapsed_ms;
+    }
+
+    std::vector<Sample> samples;
+    std::cout << std::defaultfloat << std::setprecision(6);
+    std::cout << "\nRCWA auto order selection\n";
+    std::cout << "tol=" << static_cast<double>(cfg.reflectance_tol)
+              << ", window=" << cfg.window_size
+              << ", order_start=" << cfg.order_start
+              << ", user_order_max=" << cfg.order_max
+              << ", effective_order_max=" << effective_order_max
+              << ", memory_order_max=" << memory_order_max
+              << ", adaptive_step=" << (cfg.adaptive_step ? "yes" : "no")
+              << ", confirm=" << (cfg.confirm_convergence ? "yes" : "no") << "\n";
+    std::cout << std::setw(7) << "order"
+              << std::setw(18) << "Reflectance"
+              << std::setw(16) << "change %"
+              << std::setw(16) << "window %"
+              << std::setw(10) << "next"
+              << std::setw(12) << "state"
+              << std::setw(14) << "ms\n";
+
+    int order = cfg.order_start;
+    int candidate_order = -1;
+    double candidate_reflectance = std::numeric_limits<double>::quiet_NaN();
+    while (order <= effective_order_max)
+    {
+        if (static_cast<int>(samples.size()) >= cfg.max_evaluations ||
+            total_ms >= static_cast<double>(cfg.max_total_ms))
+        {
+            break;
+        }
+
+        Sample sample{};
+        CHECK(run_order(order, &sample));
+        total_ms += sample.elapsed_ms;
+        if (!samples.empty())
+        {
+            sample.relative_change = relative_change(sample.reflectance, samples.back().reflectance);
+        }
+        samples.push_back(sample);
+        samples.back().window_range = window_range(samples);
+        samples.back().next_step =
+            choose_next_step(samples.back().relative_change, samples.back().window_range);
+        const bool window_converged =
+            samples.size() >= static_cast<size_t>(cfg.window_size) &&
+            samples.back().window_range <= static_cast<double>(cfg.reflectance_tol);
+        const bool candidate_confirmed =
+            candidate_order >= 0 && window_converged &&
+            relative_change(sample.reflectance, candidate_reflectance) <=
+                static_cast<double>(cfg.reflectance_tol);
+        const char* state = "-";
+        if (candidate_confirmed)
+        {
+            state = "confirm";
+        }
+        else if (window_converged)
+        {
+            state = "candidate";
+        }
+
+        std::cout << std::setw(7) << order
+                  << std::setw(18) << std::fixed << std::setprecision(10)
+                  << sample.reflectance
+                  << std::setw(16);
+        if (std::isfinite(sample.relative_change))
+        {
+            std::cout << std::fixed << std::setprecision(4) << sample.relative_change * 100.0;
+        }
+        else
+        {
+            std::cout << "-";
+        }
+        std::cout << std::setw(16);
+        if (std::isfinite(samples.back().window_range))
+        {
+            std::cout << std::fixed << std::setprecision(4) << samples.back().window_range * 100.0;
+        }
+        else
+        {
+            std::cout << "-";
+        }
+        std::cout << std::setw(10) << samples.back().next_step
+                  << std::setw(12) << state
+                  << std::setw(14) << std::fixed << std::setprecision(1)
+                  << sample.elapsed_ms << "\n";
+
+        if (candidate_confirmed || (window_converged && !cfg.confirm_convergence))
+        {
+            auto_order_converged_ = true;
+            auto_selected_order_ = candidate_confirmed ? candidate_order : order;
+            break;
+        }
+        if (window_converged)
+        {
+            candidate_order = order;
+            candidate_reflectance = sample.reflectance;
+        }
+        else
+        {
+            candidate_order = -1;
+            candidate_reflectance = std::numeric_limits<double>::quiet_NaN();
+        }
+
+        const int next_order = order + samples.back().next_step;
+        if (next_order > effective_order_max)
+        {
+            if (order == effective_order_max)
+            {
+                break;
+            }
+            order = effective_order_max;
+        }
+        else
+        {
+            order = next_order;
+        }
+    }
+
+    if (!auto_order_converged_ && !samples.empty())
+    {
+        auto_selected_order_ = samples.back().order;
+    }
+
+    std::cout << "RCWA auto order selected " << auto_selected_order_
+              << " (converged=" << (auto_order_converged_ ? "yes" : "no")
+              << ", total_ms=" << std::fixed << std::setprecision(1) << total_ms << ")\n\n";
+
+    CHECK(ResetOrder(auto_selected_order_, auto_selected_order_));
+    auto_order_enabled_ = false;
+    CHECK(ReplayRecordedSetup(this));
+    return Status::kSuccess;
+}
+
 Status RCWA::SetIncidentAngles(Real inc_ang, Real azi_ang, Real eps_ref)
 {
+    incident_recorded_ = true;
+    incident_uses_layer_ = false;
+    incident_inc_ang_ = inc_ang;
+    incident_azi_ang_ = azi_ang;
+    incident_eps_ref_ = eps_ref;
+    if (IsAutoRecording())
+    {
+        return Status::kSuccess;
+    }
     return BuildKxKy(inc_ang, azi_ang, eps_ref);
 }
 
 Status RCWA::SetIncidentAngles(Real inc_ang, Real azi_ang, const char* angle_layer)
 {
     angle_layer_input_ = IsInputLayerName(angle_layer);
+    incident_recorded_ = true;
+    incident_uses_layer_ = true;
+    incident_inc_ang_ = inc_ang;
+    incident_azi_ang_ = azi_ang;
+    incident_angle_layer_input_ = angle_layer_input_;
+    if (IsAutoRecording())
+    {
+        return Status::kSuccess;
+    }
     const Complex eps = angle_layer_input_ ? eps_in_ : eps_out_;
     const Real sqrt_eps = ComplexReal(ComplexSqrt(eps));
     const Real eps_ref = sqrt_eps * sqrt_eps;
@@ -1246,6 +1719,13 @@ Status RCWA::SourcePlanewave(Real ex_amp, Real ey_amp, const char* direction)
 Status RCWA::SourcePlanewave(Complex ex_amp, Complex ey_amp, const char* direction)
 {
     source_forward_ = IsForwardDirection(direction);
+    source_recorded_ = true;
+    source_ex_ = ex_amp;
+    source_ey_ = ey_amp;
+    if (IsAutoRecording())
+    {
+        return Status::kSuccess;
+    }
     FreeSource();
 
     const size_t count = static_cast<size_t>(2 * order_N_);
@@ -3072,6 +3552,16 @@ Status RCWA::AddLayer(Real thickness, Real eps)
 
 Status RCWA::AddLayer(Real thickness, Complex eps)
 {
+    if (IsAutoRecording())
+    {
+        RecordedLayer layer;
+        layer.type = RecordedLayerType::kHomogeneous;
+        layer.thickness = thickness;
+        layer.eps = eps;
+        recorded_layers_.push_back(std::move(layer));
+        return Status::kSuccess;
+    }
+
     DeviceMatrix E;
     CHECK(E.Allocate(order_N_, order_N_));
     CHECK(FillDiagonalConstant(order_N_, eps, E.get(), stream_));
@@ -3085,6 +3575,16 @@ Status RCWA::AddLayerHomogeneous(Real thickness, Real eps)
 
 Status RCWA::AddLayerHomogeneous(Real thickness, Complex eps)
 {
+    if (IsAutoRecording())
+    {
+        RecordedLayer layer;
+        layer.type = RecordedLayerType::kHomogeneous;
+        layer.thickness = thickness;
+        layer.eps = eps;
+        recorded_layers_.push_back(std::move(layer));
+        return Status::kSuccess;
+    }
+
     if (!kvectors_ready_ || !kx_diag_ || !ky_diag_)
     {
         return Status::kInvalidValue;
@@ -3123,6 +3623,10 @@ Status RCWA::AddLayerHomogeneous(Real thickness, Complex eps)
 
 Status RCWA::AddLayer(Real thickness, const Complex* eps_conv)
 {
+    if (IsAutoRecording())
+    {
+        return Status::kInvalidValue;
+    }
     return AddLayerFromConvolution(thickness, eps_conv, LayerFactorization::kLaurent);
 }
 
@@ -3175,6 +3679,26 @@ Status RCWA::AddLayer(Real thickness,
     if (!material)
     {
         return Status::kInvalidValue;
+    }
+    if (IsAutoRecording())
+    {
+        if (nx <= 0 || ny <= 0)
+        {
+            return Status::kInvalidValue;
+        }
+        RecordedLayer layer;
+        layer.type = RecordedLayerType::kMaterial;
+        layer.thickness = thickness;
+        layer.nx = nx;
+        layer.ny = ny;
+        layer.factorization = factorization;
+        layer.material.resize(static_cast<size_t>(nx) * static_cast<size_t>(ny));
+        CHECK(StatusFromCuda(cudaMemcpy(layer.material.data(),
+                                        material,
+                                        layer.material.size() * sizeof(Complex),
+                                        cudaMemcpyDeviceToHost)));
+        recorded_layers_.push_back(std::move(layer));
+        return Status::kSuccess;
     }
     if (factorization == LayerFactorization::kLaurent)
     {
@@ -3674,6 +4198,10 @@ Status RCWA::SolveGlobalSMatrix(SMatrix* S,
 
 Status RCWA::SolveGlobalSMatrix()
 {
+    if (auto_order_enabled_ && !auto_order_resolving_)
+    {
+        CHECK(ResolveAutoOrder());
+    }
     if (HasSMatrix(global_smatrix_))
     {
         return Status::kSuccess;

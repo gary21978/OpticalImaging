@@ -36,6 +36,27 @@ enum class LayerFactorization
     kLalanne,
 };
 
+struct AutoOrderOptions
+{
+    int order_start = 3;
+    int order_step = 2;
+    int order_min_step = 1;
+    int order_max_step = 2;
+    int order_max = 15;
+    int window_size = 3;
+    int max_evaluations = 12;
+    Real reflectance_tol = static_cast<Real>(0.02);
+    Real reflectance_floor = static_cast<Real>(1e-6);
+    Real high_change_factor = static_cast<Real>(1.0);
+    Real low_change_factor = static_cast<Real>(0.25);
+    Real max_total_ms = static_cast<Real>(120000.0);
+    Real memory_safety_fraction = static_cast<Real>(0.60);
+    bool warmup = false;
+    bool adaptive_step = true;
+    bool confirm_convergence = true;
+    bool cap_order_by_memory = true;
+};
+
 class ComplexMatrixOps;
 
 class RCWA
@@ -55,7 +76,6 @@ class RCWA
     Status AddLayer(Real thickness, Complex eps);
     Status AddLayerHomogeneous(Real thickness, Real eps);
     Status AddLayerHomogeneous(Real thickness, Complex eps);
-    Status AddLayer(Real thickness, const Complex* eps_conv);
     Status AddLayer(Real thickness,
                     const Complex* material,
                     int64_t nx,
@@ -159,6 +179,11 @@ class RCWA
     char expm_method() const { return expm_method_; }
     void SetHighOrder(bool high) { high_order_ = high; }
     bool high_order() const { return high_order_; }
+    void SetAutoOrderOptions(const AutoOrderOptions& options) { auto_order_options_ = options; }
+    const AutoOrderOptions& auto_order_options() const { return auto_order_options_; }
+    bool auto_order_enabled() const { return auto_order_enabled_; }
+    bool auto_order_converged() const { return auto_order_converged_; }
+    int auto_selected_order() const { return auto_selected_order_; }
     Status GetKxKyKz(std::vector<Real>* kx,
                      std::vector<Real>* ky,
                      std::vector<Real>* kz,
@@ -167,6 +192,7 @@ class RCWA
   private:
     Status BuildKxKy(Real inc_ang, Real azi_ang, Real eps_ref);
     Status BuildV0(Real eps_ref);
+    Status AddLayer(Real thickness, const Complex* eps_conv);
     Status AddLayerFromConvolution(Real thickness,
                                    const Complex* eps_conv,
                                    LayerFactorization factorization,
@@ -222,6 +248,28 @@ class RCWA
     void FreeKVectors();
     void FreeGlobalSMatrix();
     void FreeSource();
+    Status ResetOrder(int order_x, int order_y);
+    Status ReplayRecordedSetup(RCWA* target) const;
+    Status ResolveAutoOrder();
+    double CurrentReflectance() const;
+    bool IsAutoRecording() const { return auto_order_enabled_ && !auto_order_resolving_; }
+
+    enum class RecordedLayerType
+    {
+        kHomogeneous,
+        kMaterial,
+    };
+
+    struct RecordedLayer
+    {
+        RecordedLayerType type = RecordedLayerType::kHomogeneous;
+        Real thickness = 0.0;
+        Complex eps = make_complex(0.0, 0.0);
+        std::vector<Complex> material;
+        int64_t nx = 0;
+        int64_t ny = 0;
+        LayerFactorization factorization = LayerFactorization::kLaurent;
+    };
 
     Real freq_ = 0.0;
     Real omega_ = 0.0;
@@ -234,7 +282,6 @@ class RCWA
     int64_t order_N_ = 0;
     bool kvectors_ready_ = false;
     char expm_method_ = 'G';
-    int order_method_ = 18;
     bool high_order_ = true;
     cudaStream_t stream_ = nullptr;
 
@@ -249,4 +296,20 @@ class RCWA
     Complex eps_out_ = make_complex(1.0, 0.0);
     bool angle_layer_input_ = true;
     bool source_forward_ = true;
+
+    bool auto_order_enabled_ = false;
+    bool auto_order_resolving_ = false;
+    bool auto_order_converged_ = false;
+    int auto_selected_order_ = 0;
+    AutoOrderOptions auto_order_options_{};
+    std::vector<RecordedLayer> recorded_layers_;
+    bool incident_recorded_ = false;
+    bool incident_uses_layer_ = false;
+    Real incident_inc_ang_ = 0.0;
+    Real incident_azi_ang_ = 0.0;
+    Real incident_eps_ref_ = 1.0;
+    bool incident_angle_layer_input_ = true;
+    bool source_recorded_ = false;
+    Complex source_ex_ = make_complex(0.0, 0.0);
+    Complex source_ey_ = make_complex(0.0, 0.0);
 };
