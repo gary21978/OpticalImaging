@@ -168,7 +168,14 @@ __device__ inline Complex ComplexReciprocal(Complex z)
 
 __device__ inline Complex RegularizeGrazingKz(Complex kz)
 {
-    const Real floor = static_cast<Real>(1e-9);
+    // At a grazing diffraction order (Wood anomaly), kz = sqrt(eps - kx^2 - ky^2)
+    // hits the square-root branch point.  A tiny positive imaginary kz selects the
+    // evanescent-side branch and keeps divisions by kz finite.
+#if USE_DOUBLE_PRECISION
+    const Real floor = static_cast<Real>(1e-8);
+#else
+    const Real floor = static_cast<Real>(3e-4);
+#endif
     if (ComplexAbs(kz) >= floor)
     {
         return kz;
