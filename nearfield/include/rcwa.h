@@ -158,6 +158,7 @@ class RCWA
                                cudaStream_t stream = nullptr) const;
     Status ComputeSMatrixFREE(const Complex* P,
                                const Complex* Q,
+                               const Complex* P_inv,
                                int64_t n,
                                Real k0d,
                                const VMatrix& V,
@@ -200,7 +201,11 @@ class RCWA
                                    const Complex* nxx_conv = nullptr,
                                    const Complex* nxy_conv = nullptr,
                                    const Complex* nyy_conv = nullptr);
-    Status AddLayerFromPQ(Real thickness, const Complex* P, const Complex* Q, int64_t n2);
+    Status AddLayerFromPQ(Real thickness,
+                          const Complex* P,
+                          const Complex* Q,
+                          const Complex* P_inv,
+                          int64_t n2);
     Status BuildLalanneNormalProducts(const Complex* material,
                                       int64_t nx,
                                       int64_t ny,
@@ -208,7 +213,8 @@ class RCWA
                                       Complex* nxx,
                                       Complex* nxy,
                                       Complex* nyy) const;
-    Status BuildPQ(const Complex* eps_conv, int64_t n, Complex* P, Complex* Q);
+    Status
+    BuildPQ(const Complex* eps_conv, int64_t n, Complex* P, Complex* Q, Complex* P_inv = nullptr);
     Status AddLalanneDeltaQ(const Complex* eps_conv,
                             const Complex* inv_eps_conv,
                             const Complex* nxx_conv,

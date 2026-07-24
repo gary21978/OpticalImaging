@@ -3436,18 +3436,19 @@ Status RCWA::ComputeSMatrixSQRT(const Complex* P,
 //   1.  [Cos, Sinc] = ComputeCosSincFromPQ(P, Q)
 //   2.  V₀Q = V₀·Q
 //   3.  E   = Cos + i·k₀d·V₀Q·Sinc
-//   4.  F   = −(i·k₀d·Sinc·P + V₀Q·Cos·Q⁻¹)·V₀
+//   4.  F   = −(i·k₀d·Sinc + V₀·P⁻¹·Cos)·P·V₀
 //   5.  S-blocks from E, F  via EFToSMatrix
 // ─────────────────────────────────────────────────────────────────────────────
 Status RCWA::ComputeSMatrixFREE(const Complex* P,
                                 const Complex* Q,
+                                const Complex* P_inv,
                                 int64_t n,
                                 Real k0d,
                                 const VMatrix& V,
                                 SMatrix* S,
                                 cudaStream_t stream) const
 {
-    if (!P || !Q || !S || n <= 0 || (n % 2) != 0)
+    if (!P || !Q || !P_inv || !S || n <= 0 || (n % 2) != 0)
     {
         return Status::kInvalidValue;
     }
@@ -3495,45 +3496,29 @@ Status RCWA::ComputeSMatrixFREE(const Complex* P,
         CHECK(AddMatrix(ops, Cos.get(), V0Q_Sinc.get(), E.get(), n));
     }
 
-    // ── 4. F = −(i·k₀d·Sinc·P + V₀Q·Cos·Q⁻¹)·V₀ ─────────────────────
-    //
-    //  4a. part1 = i·k₀d·Sinc·P
-    DeviceMatrix part1;
-    CHECK(part1.Allocate(n, n));
-    CHECK(MatMul(ops, Sinc.get(), P, part1.get(), n));
-    CHECK(ScaleInPlace(part1.get(), n, k0d_imag, use_stream));
+    // ── 4. F = −(i·k₀d·Sinc + V₀·P⁻¹·Cos)·P·V₀ ─────────────────────
+    DeviceMatrix V0Pinv;
+    CHECK(ApplyV0Left(V, P_inv, n, &V0Pinv, use_stream));
+
+    DeviceMatrix F_left;
+    CHECK(F_left.Allocate(n, n));
+    CHECK(ScaleMatrix(Sinc.get(), F_left.get(), n, k0d_imag, use_stream));
     Sinc.Reset();
 
-    //  4b. CosQ = Cos·Q⁻¹  (solve Q^T·X = Cos^T, then transpose)
-    DeviceMatrix CosQ;
-    CHECK(CosQ.Allocate(n, n));
-    {
-        DeviceMatrix CosT;
-        CHECK(CosT.Allocate(n, n));
-        CHECK(TransposeMatrix(Cos.get(), CosT.get(), n, use_stream));
-        Cos.Reset();
-
-        DeviceMatrix X;
-        CHECK(X.Allocate(n, n));
-        CHECK(ops.Solve(Q, CosT.get(), X.get(), n, n, CUBLAS_OP_T));
-        CHECK(TransposeMatrix(X.get(), CosQ.get(), n, use_stream));
-    }
-
-    //  4c. V0Q_CosQ = V₀Q · CosQ
-    DeviceMatrix V0Q_CosQ;
-    CHECK(V0Q_CosQ.Allocate(n, n));
-    CHECK(MatMul(ops, V0Q.get(), CosQ.get(), V0Q_CosQ.get(), n));
-    CosQ.Reset();
+    DeviceMatrix V0PinvCos;
+    CHECK(V0PinvCos.Allocate(n, n));
+    CHECK(MatMul(ops, V0Pinv.get(), Cos.get(), V0PinvCos.get(), n));
+    V0Pinv.Reset();
+    Cos.Reset();
+    CHECK(AddInPlace(ops, F_left.get(), V0PinvCos.get(), n));
+    V0PinvCos.Reset();
     V0Q.Reset();
 
-    //  4d. F_pre = part1 + V0Q_CosQ
     DeviceMatrix F_pre;
     CHECK(F_pre.Allocate(n, n));
-    CHECK(AddMatrix(ops, part1.get(), V0Q_CosQ.get(), F_pre.get(), n));
-    part1.Reset();
-    V0Q_CosQ.Reset();
+    CHECK(MatMul(ops, F_left.get(), P, F_pre.get(), n));
+    F_left.Reset();
 
-    //  4e. F = −F_pre · V₀
     DeviceMatrix F;
     CHECK(F.Allocate(n, n));
     CHECK(ApplyV0Right(V, F_pre.get(), n, &F, use_stream));
@@ -3660,14 +3645,21 @@ Status RCWA::AddLayerFromConvolution(Real thickness,
     DeviceMatrix Q;
     CHECK(P.Allocate(n2, n2));
     CHECK(Q.Allocate(n2, n2));
-    CHECK(BuildPQ(eps_conv, n, P.get(), Q.get()));
+    DeviceMatrix P_inv;
+    Complex* P_inv_ptr = nullptr;
+    if (expm_method_ == 'F')
+    {
+        CHECK(P_inv.Allocate(n2, n2));
+        P_inv_ptr = P_inv.get();
+    }
+    CHECK(BuildPQ(eps_conv, n, P.get(), Q.get(), P_inv_ptr));
     if (factorization == LayerFactorization::kLalanne)
     {
         CHECK(AddLalanneDeltaQ(
             eps_conv, eps_inv_conv, nxx_conv, nxy_conv, nyy_conv, n, Q.get()));
     }
 
-    return AddLayerFromPQ(thickness, P.get(), Q.get(), n2);
+    return AddLayerFromPQ(thickness, P.get(), Q.get(), P_inv_ptr, n2);
 }
 
 Status RCWA::AddLayer(Real thickness,
@@ -3715,7 +3707,11 @@ Status RCWA::AddLayer(Real thickness,
     return Status::kInvalidValue;
 }
 
-Status RCWA::AddLayerFromPQ(Real thickness, const Complex* P, const Complex* Q, int64_t n2)
+Status RCWA::AddLayerFromPQ(Real thickness,
+                            const Complex* P,
+                            const Complex* Q,
+                            const Complex* P_inv,
+                            int64_t n2)
 {
     if (!P || !Q || n2 <= 0 || !kvectors_ready_)
     {
@@ -3754,7 +3750,7 @@ Status RCWA::AddLayerFromPQ(Real thickness, const Complex* P, const Complex* Q, 
     }
     else if (expm_method_ == 'F')
     {
-        CHECK(ComputeSMatrixFREE(P, Q, n2, k0d, V0_, &S, stream_));
+        CHECK(ComputeSMatrixFREE(P, Q, P_inv, n2, k0d, V0_, &S, stream_));
     }
     else
     {
@@ -4432,7 +4428,7 @@ Status RCWA::EnergyBalance(double* R,
 
 void RCWA::FreeDeviceTensor(Complex* ptr) const { SAFEFREE(ptr); }
 
-Status RCWA::BuildPQ(const Complex* eps_conv, int64_t n, Complex* P, Complex* Q)
+Status RCWA::BuildPQ(const Complex* eps_conv, int64_t n, Complex* P, Complex* Q, Complex* P_inv)
 {
     if (!eps_conv || !P || !Q || n <= 0)
     {
@@ -4548,6 +4544,53 @@ Status RCWA::BuildPQ(const Complex* eps_conv, int64_t n, Complex* P, Complex* Q)
     CHECK(CopyBlockDirect(P12.get(), n, P, 2 * n, n, 0, stream_));
     CHECK(CopyBlockNegated(KyEiKx.get(), n, P, 2 * n, n, n, stream_));
 
+    if (P_inv)
+    {
+        DeviceMatrix H;
+        CHECK(H.Allocate(n, n));
+        CHECK(CopyMatrix(eps_conv, H.get(), n, stream_));
+        CHECK(AddDiagonalInPlace(H.get(), KxKxDiag.get(), n, make_complex(-1.0, 0.0), stream_));
+        CHECK(AddDiagonalInPlace(H.get(), KyKyDiag.get(), n, make_complex(-1.0, 0.0), stream_));
+
+        DeviceMatrix HinvK;
+        CHECK(HinvK.Allocate(n, 2 * n));
+        CHECK(CopyBlockDirect(KxMat.get(), n, HinvK.get(), n, 0, 0, stream_));
+        CHECK(CopyBlockDirect(KyMat.get(), n, HinvK.get(), n, 0, n, stream_));
+        CHECK(ops.Solve(H.get(), HinvK.get(), HinvK.get(), n, 2 * n));
+        H.Reset();
+
+        DeviceMatrix HinvKx;
+        DeviceMatrix HinvKy;
+        CHECK(HinvKx.Allocate(n, n));
+        CHECK(HinvKy.Allocate(n, n));
+        const size_t matrix_bytes = static_cast<size_t>(n) * static_cast<size_t>(n) * sizeof(Complex);
+        CHECK(StatusFromCuda(cudaMemcpyAsync(
+            HinvKx.get(), HinvK.get(), matrix_bytes, cudaMemcpyDeviceToDevice, stream_)));
+        CHECK(StatusFromCuda(cudaMemcpyAsync(HinvKy.get(),
+                                             HinvK.get() + static_cast<size_t>(n) * n,
+                                             matrix_bytes,
+                                             cudaMemcpyDeviceToDevice,
+                                             stream_)));
+
+        DeviceMatrix block;
+        CHECK(block.Allocate(n, n));
+
+        CHECK(ops.DiagLeftMatMul(ky_diag_, HinvKx.get(), block.get(), n));
+        CHECK(CopyBlockNegated(block.get(), n, P_inv, 2 * n, 0, 0, stream_));
+
+        CHECK(ops.DiagLeftMatMul(ky_diag_, HinvKy.get(), block.get(), n));
+        CHECK(ScaleInPlace(block.get(), n, make_complex(-1.0, 0.0), stream_));
+        CHECK(AddDiagonalConstantInPlace(block.get(), n, make_complex(-1.0, 0.0), stream_));
+        CHECK(CopyBlockDirect(block.get(), n, P_inv, 2 * n, 0, n, stream_));
+
+        CHECK(ops.DiagLeftMatMul(kx_diag_, HinvKx.get(), block.get(), n));
+        CHECK(AddDiagonalConstantInPlace(block.get(), n, make_complex(1.0, 0.0), stream_));
+        CHECK(CopyBlockDirect(block.get(), n, P_inv, 2 * n, n, 0, stream_));
+
+        CHECK(ops.DiagLeftMatMul(kx_diag_, HinvKy.get(), block.get(), n));
+        CHECK(CopyBlockDirect(block.get(), n, P_inv, 2 * n, n, n, stream_));
+    }
+
     CHECK(CopyDiagonalBlock(KxKyDiag.get(), n, Q, 2 * n, 0, 0, make_complex(-1.0, 0.0), stream_));
     CHECK(CopyBlockDirect(Q21.get(), n, Q, 2 * n, 0, n, stream_));
     CHECK(CopyBlockDirect(Q12.get(), n, Q, 2 * n, n, 0, stream_));
@@ -4572,61 +4615,32 @@ Status RCWA::AddLalanneDeltaQ(const Complex* eps_conv,
     ComplexMatrixOps ops(stream_);
     CHECK(ops.SetStream(stream_));
 
-    DeviceMatrix combined;
-    CHECK(combined.Allocate(n, 3 * n));
-    CHECK(CopyBlockDirect(nxx_conv, n, combined.get(), n, 0, 0, stream_));
-    CHECK(CopyBlockDirect(nxy_conv, n, combined.get(), n, 0, n, stream_));
-    CHECK(CopyBlockDirect(nyy_conv, n, combined.get(), n, 0, 2 * n, stream_));
-    CHECK(ops.Solve(inv_eps_conv, combined.get(), combined.get(), n, 3 * n));
+    DeviceMatrix a_inv;
+    CHECK(a_inv.Allocate(n, n));
+    CHECK(MakeIdentity(a_inv.get(), n, stream_));
+    CHECK(ops.Solve(inv_eps_conv, a_inv.get(), a_inv.get(), n));
 
-    DeviceMatrix Rxx;
-    DeviceMatrix Rxy;
-    DeviceMatrix Ryy;
-    CHECK(Rxx.Allocate(n, n));
-    CHECK(Rxy.Allocate(n, n));
-    CHECK(Ryy.Allocate(n, n));
-    const size_t matrix_bytes = static_cast<size_t>(n) * static_cast<size_t>(n) * sizeof(Complex);
-    CHECK(StatusFromCuda(
-        cudaMemcpyAsync(Rxx.get(), combined.get(), matrix_bytes, cudaMemcpyDeviceToDevice, stream_)));
-    CHECK(StatusFromCuda(cudaMemcpyAsync(Rxy.get(),
-                                         combined.get() + static_cast<size_t>(n) * n,
-                                         matrix_bytes,
-                                         cudaMemcpyDeviceToDevice,
-                                         stream_)));
-    CHECK(StatusFromCuda(cudaMemcpyAsync(Ryy.get(),
-                                         combined.get() + static_cast<size_t>(2) * n * n,
-                                         matrix_bytes,
-                                         cudaMemcpyDeviceToDevice,
-                                         stream_)));
+    DeviceMatrix d_eps;
+    CHECK(d_eps.Allocate(n, n));
+    CHECK(SubMatrix(ops, eps_conv, a_inv.get(), d_eps.get(), n));
 
-    DeviceMatrix ENxx;
-    DeviceMatrix ENxy;
-    DeviceMatrix ENyy;
-    CHECK(ENxx.Allocate(n, n));
-    CHECK(ENxy.Allocate(n, n));
-    CHECK(ENyy.Allocate(n, n));
-    CHECK(MatMul(ops, eps_conv, nxx_conv, ENxx.get(), n));
-    CHECK(MatMul(ops, eps_conv, nxy_conv, ENxy.get(), n));
-    CHECK(MatMul(ops, eps_conv, nyy_conv, ENyy.get(), n));
-
-    DeviceMatrix Dxx;
-    DeviceMatrix Dxy;
-    DeviceMatrix Dyy;
-    CHECK(Dxx.Allocate(n, n));
-    CHECK(Dxy.Allocate(n, n));
-    CHECK(Dyy.Allocate(n, n));
-
-    // Delta Q = [[E*Nxy - Rxy, E*Nyy - Ryy],
-    //            [Rxx - E*Nxx, Rxy - E*Nxy]]
-    CHECK(SubMatrix(ops, Rxy.get(), ENxy.get(), Dxy.get(), n));
-    CHECK(SubMatrix(ops, ENyy.get(), Ryy.get(), Dyy.get(), n));
-    CHECK(SubMatrix(ops, Rxx.get(), ENxx.get(), Dxx.get(), n));
+    DeviceMatrix dnxx;
+    DeviceMatrix dnxy;
+    DeviceMatrix dnyy;
+    CHECK(dnxx.Allocate(n, n));
+    CHECK(dnxy.Allocate(n, n));
+    CHECK(dnyy.Allocate(n, n));
+    CHECK(MatMul(ops, d_eps.get(), nxx_conv, dnxx.get(), n));
+    CHECK(MatMul(ops, d_eps.get(), nxy_conv, dnxy.get(), n));
+    // Nxx + Nyy = I, so D*Nyy = D - D*Nxx.
+    CHECK(SubMatrix(ops, d_eps.get(), dnxx.get(), dnyy.get(), n));
 
     const Complex one = make_complex(1.0, 0.0);
-    CHECK(ScaleAddBlockInPlace(Q, 2 * n, Dxy.get(), n, 0, 0, make_complex(-1.0, 0.0), stream_));
-    CHECK(ScaleAddBlockInPlace(Q, 2 * n, Dyy.get(), n, 0, n, one, stream_));
-    CHECK(ScaleAddBlockInPlace(Q, 2 * n, Dxx.get(), n, n, 0, one, stream_));
-    CHECK(ScaleAddBlockInPlace(Q, 2 * n, Dxy.get(), n, n, n, one, stream_));
+    const Complex neg_one = make_complex(-1.0, 0.0);
+    CHECK(ScaleAddBlockInPlace(Q, 2 * n, dnxy.get(), n, 0, 0, one, stream_));
+    CHECK(ScaleAddBlockInPlace(Q, 2 * n, dnyy.get(), n, 0, n, one, stream_));
+    CHECK(ScaleAddBlockInPlace(Q, 2 * n, dnxx.get(), n, n, 0, neg_one, stream_));
+    CHECK(ScaleAddBlockInPlace(Q, 2 * n, dnxy.get(), n, n, n, neg_one, stream_));
 
     return Status::kSuccess;
 }
