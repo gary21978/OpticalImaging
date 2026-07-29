@@ -3730,7 +3730,9 @@ Status RCWA::AddLayerFromPQ(Real thickness,
         const Real dy = Ly_ / static_cast<Real>(order_y_);
         thickness_thres = thickness_thres > 0.0 ? std::min(thickness_thres, dy) : dy;
     }
+#if USE_DOUBLE_PRECISION
     thickness_thres *= static_cast<Real>(2.0);
+#endif
     if (thickness_thres > 0.0 && thickness > thickness_thres)
     {
         const Real ratio = thickness / thickness_thres;
