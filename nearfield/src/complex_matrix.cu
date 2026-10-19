@@ -1,4 +1,5 @@
 #include "complex_matrix.h"
+#include "matrix_storage.h"
 
 #include <limits>
 
@@ -483,6 +484,11 @@ Status ComplexMatrixOps::MatMul(const Complex* A,
                                 cublasOperation_t transA,
                                 cublasOperation_t transB)
 {
+    if (rcwa_memory::IsHost(A) || rcwa_memory::IsHost(B) || rcwa_memory::IsHost(C))
+        return rcwa_memory::Gemm(cublas_handle_, A, transA==CUBLAS_OP_N?m:k,
+            B, transB==CUBLAS_OP_N?k:n, C, m, m,n,k,transA,transB,
+            make_complex(1,0),make_complex(0,0),stream_);
+
     if (!A || !B || !C || !cublas_handle_)
     {
         return Status::kInvalidValue;
@@ -535,6 +541,9 @@ Status ComplexMatrixOps::DiagLeftMatMul(const Complex* diag,
                                         int64_t m,
                                         int64_t n)
 {
+    if (rcwa_memory::IsHost(B) || rcwa_memory::IsHost(C))
+        return rcwa_memory::Elementwise(rcwa_memory::ElementOp::LeftDiag,diag,B,C,m,n,make_complex(1,0),stream_);
+
     if (!diag || !B || !C)
     {
         return Status::kInvalidValue;
@@ -561,6 +570,9 @@ Status ComplexMatrixOps::DiagRightMatMul(const Complex* A,
                                          int64_t m,
                                          int64_t n)
 {
+    if (rcwa_memory::IsHost(A) || rcwa_memory::IsHost(C))
+        return rcwa_memory::Elementwise(rcwa_memory::ElementOp::RightDiag,diag,A,C,m,n,make_complex(1,0),stream_);
+
     if (!A || !diag || !C)
     {
         return Status::kInvalidValue;
@@ -584,6 +596,9 @@ ComplexMatrixOps::DiagRightMatMul(const Complex* A, const Complex* diag, Complex
 Status
 ComplexMatrixOps::MatAdd(const Complex* A, const Complex* B, Complex* C, int64_t m, int64_t n)
 {
+    if (rcwa_memory::IsHost(A) || rcwa_memory::IsHost(B) || rcwa_memory::IsHost(C))
+        return rcwa_memory::Elementwise(rcwa_memory::ElementOp::Add,A,B,C,m,n,make_complex(1,0),stream_);
+
     if (!A || !B || !C)
     {
         return Status::kInvalidValue;
@@ -606,6 +621,9 @@ Status ComplexMatrixOps::MatAdd(const Complex* A, const Complex* B, Complex* C, 
 Status
 ComplexMatrixOps::MatSub(const Complex* A, const Complex* B, Complex* C, int64_t m, int64_t n)
 {
+    if (rcwa_memory::IsHost(A) || rcwa_memory::IsHost(B) || rcwa_memory::IsHost(C))
+        return rcwa_memory::Elementwise(rcwa_memory::ElementOp::Sub,A,B,C,m,n,make_complex(1,0),stream_);
+
     if (!A || !B || !C)
     {
         return Status::kInvalidValue;
@@ -632,6 +650,9 @@ Status ComplexMatrixOps::Solve(const Complex* A,
                                int64_t nrhs,
                                cublasOperation_t trans)
 {
+    if (rcwa_memory::IsHost(A) || rcwa_memory::IsHost(B) || rcwa_memory::IsHost(X))
+        return rcwa_memory::Solve(cublas_handle_,cusolver_handle_,A,B,X,n,nrhs,trans,stream_);
+
     if (!A || !B || !X || !cusolver_handle_)
     {
         return Status::kInvalidValue;
@@ -734,6 +755,20 @@ Status ComplexMatrixOps::Solve(const Complex* A,
         return Status::kCusolverError;
     }
 
+    int info = 0;
+    if (StatusFromCuda(cudaMemcpyAsync(&info, dev_info, sizeof(int), cudaMemcpyDeviceToHost, stream_)) !=
+            Status::kSuccess ||
+        StatusFromCuda(cudaStreamSynchronize(stream_)) != Status::kSuccess)
+    {
+        cleanup();
+        return Status::kCudaError;
+    }
+    if (info != 0)
+    {
+        cleanup();
+        return Status::kCusolverError;
+    }
+
     if (StatusFromCusolver(CUSOLVER_GETRS(cusolver_handle_,
                                           trans,
                                           n_int,
@@ -744,6 +779,19 @@ Status ComplexMatrixOps::Solve(const Complex* A,
                                           X,
                                           n_int,
                                           dev_info)) != Status::kSuccess)
+    {
+        cleanup();
+        return Status::kCusolverError;
+    }
+
+    if (StatusFromCuda(cudaMemcpyAsync(&info, dev_info, sizeof(int), cudaMemcpyDeviceToHost, stream_)) !=
+            Status::kSuccess ||
+        StatusFromCuda(cudaStreamSynchronize(stream_)) != Status::kSuccess)
+    {
+        cleanup();
+        return Status::kCudaError;
+    }
+    if (info != 0)
     {
         cleanup();
         return Status::kCusolverError;
@@ -760,6 +808,11 @@ Status ComplexMatrixOps::Solve(const Complex* A, const Complex* B, Complex* X, i
 
 Status MakeIdentity(Complex* A, int64_t n, cudaStream_t stream)
 {
+    if (rcwa_memory::IsHost(A)) {
+        CHECK(StatusFromCuda(rcwa_memory::MemsetAsync(A,0,static_cast<size_t>(n)*n*sizeof(Complex),stream)));
+        return rcwa_memory::Diagonal(A,n,0,0,n,nullptr,make_complex(1,0),false,stream);
+    }
+
     if (!A || n <= 0)
     {
         return Status::kInvalidValue;
@@ -772,6 +825,11 @@ Status MakeIdentity(Complex* A, int64_t n, cudaStream_t stream)
 
 Status FillDiagonalFromVector(const Complex* diag, int64_t n, Complex* out, cudaStream_t stream)
 {
+    if (rcwa_memory::IsHost(out)) {
+        CHECK(StatusFromCuda(rcwa_memory::MemsetAsync(out,0,static_cast<size_t>(n)*n*sizeof(Complex),stream)));
+        return rcwa_memory::Diagonal(out,n,0,0,n,diag,make_complex(1,0),false,stream);
+    }
+
     if (!diag || !out || n <= 0)
     {
         return Status::kInvalidValue;
@@ -784,6 +842,11 @@ Status FillDiagonalFromVector(const Complex* diag, int64_t n, Complex* out, cuda
 
 Status FillDiagonalConstant(int64_t n, Complex value, Complex* out, cudaStream_t stream)
 {
+    if (rcwa_memory::IsHost(out)) {
+        CHECK(StatusFromCuda(rcwa_memory::MemsetAsync(out,0,static_cast<size_t>(n)*n*sizeof(Complex),stream)));
+        return rcwa_memory::Diagonal(out,n,0,0,n,nullptr,value,false,stream);
+    }
+
     if (!out || n <= 0)
     {
         return Status::kInvalidValue;
@@ -842,6 +905,8 @@ Status MatMul(ComplexMatrixOps& ops, const Complex* A, const Complex* B, Complex
 Status
 AddDiagonalInPlace(Complex* A, const Complex* diag, int64_t n, Complex scale, cudaStream_t stream)
 {
+    if (rcwa_memory::IsHost(A)) return rcwa_memory::Diagonal(A,n,0,0,n,diag,scale,true,stream);
+
     if (!A || !diag || n <= 0)
     {
         return Status::kInvalidValue;
@@ -853,6 +918,8 @@ AddDiagonalInPlace(Complex* A, const Complex* diag, int64_t n, Complex scale, cu
 
 Status AddDiagonalConstantInPlace(Complex* A, int64_t n, Complex value, cudaStream_t stream)
 {
+    if (rcwa_memory::IsHost(A)) return rcwa_memory::Diagonal(A,n,0,0,n,nullptr,value,true,stream);
+
     if (!A || n <= 0)
     {
         return Status::kInvalidValue;
@@ -871,6 +938,8 @@ Status CopyDiagonalBlock(const Complex* diag,
                          Complex scale,
                          cudaStream_t stream)
 {
+    if (rcwa_memory::IsHost(dst)) return rcwa_memory::Diagonal(dst,dst_n,row_offset,col_offset,n,diag,scale,false,stream);
+
     if (!diag || !dst || n <= 0 || dst_n <= 0)
     {
         return Status::kInvalidValue;
@@ -898,6 +967,9 @@ Status MultiplyDiagonalVectors(const Complex* a,
 
 Status ScaleMatrix(const Complex* A, Complex* C, int64_t n, Complex scalar, cudaStream_t stream)
 {
+    if (rcwa_memory::IsHost(A) || rcwa_memory::IsHost(C))
+        return rcwa_memory::Elementwise(rcwa_memory::ElementOp::Scale,A,nullptr,C,n,n,scalar,stream);
+
     if (!A || !C || n <= 0)
     {
         return Status::kInvalidValue;
@@ -915,6 +987,9 @@ Status ScaleInPlace(Complex* A, int64_t n, Complex scalar, cudaStream_t stream)
 
 Status ScaleAddInPlace(Complex* A, const Complex* B, int64_t n, Complex alpha, cudaStream_t stream)
 {
+    if (rcwa_memory::IsHost(A) || rcwa_memory::IsHost(B))
+        return rcwa_memory::Elementwise(rcwa_memory::ElementOp::ScaleAdd,A,B,A,n,n,alpha,stream);
+
     if (!A || !B || n <= 0)
     {
         return Status::kInvalidValue;
@@ -934,6 +1009,9 @@ Status ScaleAddBlockInPlace(Complex* dst,
                             Complex alpha,
                             cudaStream_t stream)
 {
+    if (rcwa_memory::IsHost(dst) || rcwa_memory::IsHost(src))
+        return rcwa_memory::Block(src,n,dst,dst_n,row_offset,col_offset,alpha,true,stream);
+
     if (!dst || !src || dst_n <= 0 || n <= 0 || row_offset < 0 || col_offset < 0 ||
         row_offset + n > dst_n || col_offset + n > dst_n)
     {
@@ -948,6 +1026,9 @@ Status ScaleAddBlockInPlace(Complex* dst,
 
 Status ElementwiseInverse(const Complex* input, Complex* output, int64_t n, cudaStream_t stream)
 {
+    if (rcwa_memory::IsHost(input) || rcwa_memory::IsHost(output))
+        return rcwa_memory::Elementwise(rcwa_memory::ElementOp::Inverse,input,nullptr,output,n,1,make_complex(1,0),stream);
+
     if (!input || !output || n <= 0)
     {
         return Status::kInvalidValue;
@@ -959,6 +1040,8 @@ Status ElementwiseInverse(const Complex* input, Complex* output, int64_t n, cuda
 
 Status TransposeMatrix(const Complex* src, Complex* dst, int64_t n, cudaStream_t stream)
 {
+    if (rcwa_memory::IsHost(src) || rcwa_memory::IsHost(dst))return rcwa_memory::Transpose(src,dst,n,stream);
+
     if (!src || !dst || n <= 0)
     {
         return Status::kInvalidValue;
@@ -977,7 +1060,7 @@ Status CopyMatrix(const Complex* src, Complex* dst, int64_t n, cudaStream_t stre
     }
     const size_t count = static_cast<size_t>(n) * static_cast<size_t>(n);
     return StatusFromCuda(
-        cudaMemcpyAsync(dst, src, count * sizeof(Complex), cudaMemcpyDeviceToDevice, stream));
+        rcwa_memory::MemcpyAsync(dst, src, count * sizeof(Complex), cudaMemcpyDeviceToDevice, stream));
 }
 
 Status CopyBlock(const Complex* src,
@@ -989,6 +1072,9 @@ Status CopyBlock(const Complex* src,
                  Complex scale,
                  cudaStream_t stream)
 {
+    if (rcwa_memory::IsHost(src) || rcwa_memory::IsHost(dst))
+        return rcwa_memory::Block(src,n,dst,dst_n,row_offset,col_offset,scale,false,stream);
+
     if (!src || !dst || n <= 0 || dst_n <= 0)
     {
         return Status::kInvalidValue;
@@ -1008,6 +1094,9 @@ Status CopyBlockDirect(const Complex* src,
                        int64_t col_offset,
                        cudaStream_t stream)
 {
+    if (rcwa_memory::IsHost(src) || rcwa_memory::IsHost(dst))
+        return rcwa_memory::Block(src,n,dst,dst_n,row_offset,col_offset,make_complex(1,0),false,stream);
+
     if (!src || !dst || n <= 0 || dst_n <= 0)
     {
         return Status::kInvalidValue;
@@ -1027,6 +1116,9 @@ Status CopyBlockNegated(const Complex* src,
                         int64_t col_offset,
                         cudaStream_t stream)
 {
+    if (rcwa_memory::IsHost(src) || rcwa_memory::IsHost(dst))
+        return rcwa_memory::Block(src,n,dst,dst_n,row_offset,col_offset,make_complex(-1,0),false,stream);
+
     if (!src || !dst || n <= 0 || dst_n <= 0)
     {
         return Status::kInvalidValue;
@@ -1040,6 +1132,8 @@ Status CopyBlockNegated(const Complex* src,
 
 Status ComputeMatrixNorm1(const Complex* A, int64_t n, double* out_norm, cudaStream_t stream)
 {
+    if (rcwa_memory::IsHost(A))return rcwa_memory::Norm1(A,n,make_complex(0,0),out_norm,stream);
+
     if (!A || !out_norm || n <= 0)
     {
         return Status::kInvalidValue;
@@ -1092,6 +1186,8 @@ Status ComputeMatrixNorm1WithDiagOffset(const Complex* A,
                                         double* out_norm,
                                         cudaStream_t stream)
 {
+    if (rcwa_memory::IsHost(A))return rcwa_memory::Norm1(A,n,diag_offset,out_norm,stream);
+
     if (!A || !out_norm || n <= 0)
     {
         return Status::kInvalidValue;

@@ -201,12 +201,14 @@ __device__ inline Complex ComplexExpI(Complex z)
 }
 
 #ifndef SAFEFREE
+namespace rcwa_memory { cudaError_t Free(void* ptr); }
+
 #define SAFEFREE(ptr)                                                                              \
     do                                                                                             \
     {                                                                                              \
         if (ptr)                                                                                   \
         {                                                                                          \
-            cudaFree(ptr);                                                                         \
+            rcwa_memory::Free(ptr);                                                                         \
             (ptr) = nullptr;                                                                       \
         }                                                                                          \
     } while (false)

@@ -170,7 +170,10 @@ class RCWA
     int order_x() const { return order_x_; }
     int order_y() const { return order_y_; }
     Real omega() const { return omega_; }
-    const SMatrix& global_smatrix() const { return global_smatrix_; }
+    const SMatrix& global_smatrix() const;
+    Status MaterializeGlobalSMatrix() const;
+    // Column-major host output. Works for resident and file-backed S blocks.
+    Status ReadSMatrixBlock(int block, int64_t row, int64_t col, int64_t rows, int64_t cols, Complex* host) const;
     cudaStream_t stream() const { return stream_; }
     bool angle_layer_is_input() const { return angle_layer_input_; }
     bool source_is_forward() const { return source_forward_; }
@@ -296,7 +299,7 @@ class RCWA
     VMatrix V0_{};
 
     SMatrix stack_smatrix_{};
-    SMatrix global_smatrix_{};
+    mutable SMatrix global_smatrix_{};
     Complex* source_ei_ = nullptr;
     Complex eps_in_ = make_complex(1.0, 0.0);
     Complex eps_out_ = make_complex(1.0, 0.0);

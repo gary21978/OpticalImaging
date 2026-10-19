@@ -8,6 +8,8 @@
 #include <limits>
 #include <vector>
 #include "complex_matrix.h"
+#include "matrix_storage.h"
+#include <stdexcept>
 #include "rcwa.h"
 
 static Status StatusFromCuda(cudaError_t status)
@@ -205,7 +207,7 @@ struct DeviceMatrix
     {
         if (ptr)
         {
-            cudaFree(ptr);
+            rcwa_memory::Free(ptr);
         }
     }
 
@@ -214,7 +216,7 @@ struct DeviceMatrix
     {
         if (ptr)
         {
-            cudaFree(ptr);
+            rcwa_memory::Free(ptr);
         }
         ptr = p;
         elements = count;
@@ -236,7 +238,7 @@ struct DeviceMatrix
         other.elements = tmp_elements;
     }
 
-    Status Allocate(int64_t rows, int64_t cols)
+    Status Allocate(int64_t rows, int64_t cols, bool device_only = false)
     {
         if (rows <= 0 || cols <= 0)
         {
@@ -253,11 +255,18 @@ struct DeviceMatrix
         }
         if (ptr)
         {
-            cudaFree(ptr);
+            rcwa_memory::Free(ptr);
         }
         Complex* out = nullptr;
-        if (cudaMalloc(&out, count * sizeof(Complex)) != cudaSuccess)
+        const cudaError_t allocation_status = device_only ? cudaMalloc(&out, count * sizeof(Complex)) :
+                                                          rcwa_memory::Allocate(&out, count * sizeof(Complex));
+        if (allocation_status != cudaSuccess)
         {
+            size_t free_bytes = 0, total_bytes = 0;
+            cudaMemGetInfo(&free_bytes, &total_bytes);
+            fprintf(stderr, "DeviceMatrix allocation %lld x %lld (%zu bytes): %s (%d); free=%zu total=%zu bytes\n",
+                    static_cast<long long>(rows), static_cast<long long>(cols), count * sizeof(Complex),
+                    cudaGetErrorString(allocation_status), static_cast<int>(allocation_status), free_bytes, total_bytes);
             return Status::kCudaError;
         }
         ptr = out;
@@ -275,7 +284,7 @@ struct DeviceVector
     {
         if (ptr)
         {
-            cudaFree(ptr);
+            rcwa_memory::Free(ptr);
         }
     }
 
@@ -297,7 +306,7 @@ struct DeviceVector
         }
         if (ptr)
         {
-            cudaFree(ptr);
+            rcwa_memory::Free(ptr);
         }
         Complex* out = nullptr;
         if (cudaMalloc(&out, count * sizeof(Complex)) != cudaSuccess)
@@ -319,7 +328,7 @@ struct DeviceRealBuffer
     {
         if (ptr)
         {
-            cudaFree(ptr);
+            rcwa_memory::Free(ptr);
         }
     }
 
@@ -341,7 +350,7 @@ struct DeviceRealBuffer
         }
         if (ptr)
         {
-            cudaFree(ptr);
+            rcwa_memory::Free(ptr);
         }
         Real* out = nullptr;
         if (cudaMalloc(&out, count * sizeof(Real)) != cudaSuccess)
@@ -362,7 +371,7 @@ __global__ void BuildHomogeneousSBlocksKernel(const Complex* __restrict__ kx_dia
                                               Complex* __restrict__ S12,
                                               Complex* __restrict__ S21,
                                               Complex* __restrict__ S22,
-                                              int64_t n)
+                                              int64_t n, bool packed = false)
 {
     const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (idx >= n)
@@ -419,10 +428,10 @@ __global__ void BuildHomogeneousSBlocksKernel(const Complex* __restrict__ kx_dia
     const int64_t row1 = idx + n;
     const int64_t base_col0 = 2 * row0 * n;
     const int64_t base_col1 = 2 * row1 * n;
-    const int64_t i00 = base_col0 + row0;
-    const int64_t i10 = base_col0 + row1;
-    const int64_t i01 = base_col1 + row0;
-    const int64_t i11 = base_col1 + row1;
+    const int64_t i00 = packed ? idx : base_col0 + row0;
+    const int64_t i10 = packed ? idx+n : base_col0 + row1;
+    const int64_t i01 = packed ? idx+2*n : base_col1 + row0;
+    const int64_t i11 = packed ? idx+3*n : base_col1 + row1;
 
     S11[i00] = S11_block.m00;
     S11[i10] = S11_block.m10;
@@ -458,7 +467,7 @@ __global__ void BuildPortSBlocksKernel(const Complex* __restrict__ v0_11,
                                        Complex* __restrict__ S12,
                                        Complex* __restrict__ S21,
                                        Complex* __restrict__ S22,
-                                       int64_t n)
+                                       int64_t n, bool packed = false)
 {
     const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (idx >= n)
@@ -505,10 +514,10 @@ __global__ void BuildPortSBlocksKernel(const Complex* __restrict__ v0_11,
     const int64_t row1 = idx + n;
     const int64_t base_col0 = 2 * row0 * n;
     const int64_t base_col1 = 2 * row1 * n;
-    const int64_t i00 = base_col0 + row0;
-    const int64_t i10 = base_col0 + row1;
-    const int64_t i01 = base_col1 + row0;
-    const int64_t i11 = base_col1 + row1;
+    const int64_t i00 = packed ? idx : base_col0 + row0;
+    const int64_t i10 = packed ? idx+n : base_col0 + row1;
+    const int64_t i01 = packed ? idx+2*n : base_col1 + row0;
+    const int64_t i11 = packed ? idx+3*n : base_col1 + row1;
 
     S11[i00] = S11_block.m00;
     S11[i10] = S11_block.m10;
@@ -726,6 +735,46 @@ __global__ void BuildNormalProductsKernel(const Complex* eps,
     nyy[idx] = make_complex(nyv * nyv, 0.0);
 }
 
+// Cache boundary vectors once; preserve ascending pixel order in interpolation.
+__global__ void CachedBoundaryKernel(const Complex* eps, int64_t nx, int64_t ny,
+                                    Real lx, Real ly, Real eta, Complex* boundary)
+{
+    const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= nx * ny) return;
+    Real vx = 0, vy = 0;
+    BoundaryVectorAt(eps, nx, ny, lx, ly, eta, i / ny, i % ny, &vx, &vy);
+    boundary[i] = make_complex(vx, vy);
+}
+
+__global__ void CachedNormalProductsKernel(const Complex* boundary, const int64_t* indices,
+    int64_t count, int64_t nx, int64_t ny, Real lx, Real ly, Real eta,
+    Complex* nxx, Complex* nxy, Complex* nyy)
+{
+    const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= nx * ny) return;
+    Real vx = ComplexReal(boundary[i]), vy = ComplexImag(boundary[i]);
+    if (vx == 0 && vy == 0) {
+        Real sx = 0, sy = 0, sw = 0;
+        const int64_t x = i / ny, y = i % ny;
+        const Real dx_cell = lx / static_cast<Real>(nx), dy_cell = ly / static_cast<Real>(ny);
+        for (int64_t j = 0; j < count; ++j) {
+            const int64_t b = indices[j];
+            int64_t dx = llabs(x - b / ny), dy = llabs(y - b % ny);
+            dx = min(dx, nx - dx); dy = min(dy, ny - dy);
+            const Real xx = static_cast<Real>(dx) * dx_cell, yy = static_cast<Real>(dy) * dy_cell;
+            const Real weight = static_cast<Real>(1) / (xx * xx + yy * yy + eta * eta);
+            sx += weight * ComplexReal(boundary[b]);
+            sy += weight * ComplexImag(boundary[b]);
+            sw += weight;
+        }
+        const Real norm = sqrt(sx * sx + sy * sy);
+        if (sw > 0 && norm > eta) { vx = sx / norm; vy = sy / norm; }
+    }
+    nxx[i] = make_complex(vx * vx, 0);
+    nxy[i] = make_complex(vx * vy, 0);
+    nyy[i] = make_complex(vy * vy, 0);
+}
+
 __global__ void SetSourceKernel(Complex* vec, int64_t index, Complex ex, Complex ey, int64_t n)
 {
     if (blockIdx.x == 0 && threadIdx.x == 0)
@@ -859,21 +908,21 @@ __global__ void EnergyBalanceKernel(const Complex* kx,
     const Complex ks = ComplexAdd(ComplexMul(kx_i, kx_i), ComplexMul(ky_i, ky_i));
 
     const Complex kz_in = ComplexSqrt(ComplexSub(eps_in, ks));
-    const double wt_in = static_cast<double>(ComplexReal(ComplexDiv(kz_in, eps_in)));
+    const double wt_in = static_cast<double>(ComplexReal(kz_in));
     if (wt_in > 0.0)
     {
-        const Complex re = S11[source_col * n2 + idx];
-        const Complex rm = S11[source_col * n2 + idx + n];
+        const Complex re = S21[source_col * n2 + idx];
+        const Complex rm = S21[source_col * n2 + idx + n];
         const double r2 = ComplexAbsSquaredDouble(re) + ComplexAbsSquaredDouble(rm);
         atomicAdd(accum, static_cast<Real>((wt_in / kz_inc) * r2));
     }
 
     const Complex kz_out = ComplexSqrt(ComplexSub(eps_out, ks));
-    const double wt_out = static_cast<double>(ComplexReal(ComplexDiv(kz_out, eps_out)));
+    const double wt_out = static_cast<double>(ComplexReal(kz_out));
     if (wt_out > 0.0)
     {
-        const Complex te = S21[source_col * n2 + idx];
-        const Complex tm = S21[source_col * n2 + idx + n];
+        const Complex te = S11[source_col * n2 + idx];
+        const Complex tm = S11[source_col * n2 + idx + n];
         const double t2 = ComplexAbsSquaredDouble(te) + ComplexAbsSquaredDouble(tm);
         atomicAdd(accum + 1, static_cast<Real>((wt_out / kz_inc) * t2));
     }
@@ -1060,6 +1109,47 @@ __global__ void BuildKxKyDiagKernel(Complex* kx_diag,
     ky_diag[idx] = make_complex(ky, 0.0);
 }
 
+static Status ApplyV0Stored(const VMatrix& V,const Complex* B,int64_t n,Complex* C,bool left,cudaStream_t stream)
+{
+    const int64_t h=n/2, stripe=std::min<int64_t>(64,h);
+    std::vector<Complex> v11(h),v12(h),v21(h),v22(h);
+    CHECK(rcwa_memory::Read(V.V_11,v11.data(),h,stream)); CHECK(rcwa_memory::Read(V.V_12,v12.data(),h,stream));
+    CHECK(rcwa_memory::Read(V.V_21,v21.data(),h,stream)); CHECK(rcwa_memory::Read(V.V_22,v22.data(),h,stream));
+    std::vector<Complex> a(n*stripe),b(n*stripe),c(n*stripe),d(n*stripe);
+    if(left) {
+        for(int64_t j=0;j<n;j+=stripe) {
+            auto nc=std::min(stripe,n-j);
+            CHECK(rcwa_memory::ReadRect(B,n,0,j,h,nc,a.data(),stream));
+            CHECK(rcwa_memory::ReadRect(B,n,h,j,h,nc,b.data(),stream));
+            for(int64_t x=0;x<h*nc;++x) { auto r=x%h;
+                c[x]=ComplexAdd(ComplexMul(v11[r],a[x]),ComplexMul(v12[r],b[x]));
+                d[x]=ComplexAdd(ComplexMul(v21[r],a[x]),ComplexMul(v22[r],b[x])); }
+            CHECK(rcwa_memory::WriteRect(C,n,0,j,h,nc,c.data(),stream));
+            CHECK(rcwa_memory::WriteRect(C,n,h,j,h,nc,d.data(),stream));
+        }
+    } else {
+        for(int64_t j=0;j<h;j+=stripe) {
+            auto nc=std::min(stripe,h-j);
+            CHECK(rcwa_memory::ReadRect(B,n,0,j,n,nc,a.data(),stream));
+            CHECK(rcwa_memory::ReadRect(B,n,0,h+j,n,nc,b.data(),stream));
+            for(int64_t x=0;x<n*nc;++x) { auto col=j+x/n;
+                c[x]=ComplexAdd(ComplexMul(a[x],v11[col]),ComplexMul(b[x],v21[col]));
+                d[x]=ComplexAdd(ComplexMul(a[x],v12[col]),ComplexMul(b[x],v22[col])); }
+            CHECK(rcwa_memory::WriteRect(C,n,0,j,n,nc,c.data(),stream));
+            CHECK(rcwa_memory::WriteRect(C,n,0,h+j,n,nc,d.data(),stream));
+        }
+    }
+    return Status::kSuccess;
+}
+
+static Status UnpackSBlocks(const Complex* packed,Complex* matrix,int64_t n,cudaStream_t stream)
+{
+    CHECK(CopyDiagonalBlock(packed,n,matrix,2*n,0,0,make_complex(1,0),stream));
+    CHECK(CopyDiagonalBlock(packed+n,n,matrix,2*n,n,0,make_complex(1,0),stream));
+    CHECK(CopyDiagonalBlock(packed+2*n,n,matrix,2*n,0,n,make_complex(1,0),stream));
+    return CopyDiagonalBlock(packed+3*n,n,matrix,2*n,n,n,make_complex(1,0),stream);
+}
+
 static Status
 ApplyV0Left(const VMatrix& V, const Complex* B, int64_t n, DeviceMatrix* out, cudaStream_t stream)
 {
@@ -1068,6 +1158,7 @@ ApplyV0Left(const VMatrix& V, const Complex* B, int64_t n, DeviceMatrix* out, cu
         return Status::kInvalidValue;
     }
     CHECK(out->Allocate(n, n));
+    if (rcwa_memory::IsHost(B) || rcwa_memory::IsHost(out->get())) return ApplyV0Stored(V,B,n,out->get(),true,stream);
     int64_t n2 = n / 2;
     int64_t total = n2 * n;
     int blocks = static_cast<int>((total + CUDA_THREADS - 1) / CUDA_THREADS);
@@ -1084,6 +1175,7 @@ ApplyV0Right(const VMatrix& V, const Complex* B, int64_t n, DeviceMatrix* out, c
         return Status::kInvalidValue;
     }
     CHECK(out->Allocate(n, n));
+    if (rcwa_memory::IsHost(B) || rcwa_memory::IsHost(out->get())) return ApplyV0Stored(V,B,n,out->get(),false,stream);
     int64_t n2 = n / 2;
     int64_t total = n2 * n;
     int blocks = static_cast<int>((total + CUDA_THREADS - 1) / CUDA_THREADS);
@@ -1096,6 +1188,7 @@ RCWA::RCWA(Real freq, int order_x, int order_y, Real Lx, Real Ly, cudaStream_t s
     : freq_(freq), omega_(static_cast<Real>(6.28318530717958647692) * freq), Lx_(Lx), Ly_(Ly),
       order_x_(std::max(order_x, 0)), order_y_(std::max(order_y, 0)), stream_(stream)
 {
+    rcwa_memory::Configure(order_x_,order_y_);
     auto_order_enabled_ = (order_x == 0 && order_y == 0);
     order_N_ = static_cast<int64_t>((2 * order_x_ + 1) * (2 * order_y_ + 1));
     Gx_norm_ = 1.0 / (Lx_ * freq_);
@@ -1203,11 +1296,33 @@ Status RCWA::BuildPortSMatrix(Complex eps, bool input_port, SMatrix* S, cudaStre
     CHECK(S22.Allocate(n2, n2));
 
     const size_t matrix_bytes = static_cast<size_t>(n2) * static_cast<size_t>(n2) * sizeof(Complex);
-    CHECK(StatusFromCuda(cudaMemsetAsync(S11.get(), 0, matrix_bytes, use_stream)));
-    CHECK(StatusFromCuda(cudaMemsetAsync(S12.get(), 0, matrix_bytes, use_stream)));
-    CHECK(StatusFromCuda(cudaMemsetAsync(S21.get(), 0, matrix_bytes, use_stream)));
-    CHECK(StatusFromCuda(cudaMemsetAsync(S22.get(), 0, matrix_bytes, use_stream)));
+    CHECK(StatusFromCuda(rcwa_memory::MemsetAsync(S11.get(), 0, matrix_bytes, use_stream)));
+    CHECK(StatusFromCuda(rcwa_memory::MemsetAsync(S12.get(), 0, matrix_bytes, use_stream)));
+    CHECK(StatusFromCuda(rcwa_memory::MemsetAsync(S21.get(), 0, matrix_bytes, use_stream)));
+    CHECK(StatusFromCuda(rcwa_memory::MemsetAsync(S22.get(), 0, matrix_bytes, use_stream)));
 
+    if (rcwa_memory::IsHost(S11.get()) || rcwa_memory::IsHost(S12.get()) ||
+        rcwa_memory::IsHost(S21.get()) || rcwa_memory::IsHost(S22.get())) {
+        DeviceVector p11,p12,p21,p22;
+        CHECK(p11.Allocate(4*n)); CHECK(p12.Allocate(4*n)); CHECK(p21.Allocate(4*n)); CHECK(p22.Allocate(4*n));
+    BuildPortSBlocksKernel<<<blocks, CUDA_THREADS, 0, use_stream>>>(V0_.V_11,
+                                                                    V0_.V_12,
+                                                                    V0_.V_21,
+                                                                    V0_.V_22,
+                                                                    port11.get(),
+                                                                    port12.get(),
+                                                                    port21.get(),
+                                                                    port22.get(),
+                                                                    input_port ? 1 : 0,
+                                                                    p11.get(),
+                                                                    p12.get(),
+                                                                    p21.get(),
+                                                                    p22.get(),
+                                                                    n, true);
+    CHECK(StatusFromCuda(cudaGetLastError()));
+        CHECK(UnpackSBlocks(p11.get(),S11.get(),n,use_stream)); CHECK(UnpackSBlocks(p12.get(),S12.get(),n,use_stream));
+        CHECK(UnpackSBlocks(p21.get(),S21.get(),n,use_stream)); CHECK(UnpackSBlocks(p22.get(),S22.get(),n,use_stream));
+    } else {
     BuildPortSBlocksKernel<<<blocks, CUDA_THREADS, 0, use_stream>>>(V0_.V_11,
                                                                     V0_.V_12,
                                                                     V0_.V_21,
@@ -1223,6 +1338,7 @@ Status RCWA::BuildPortSMatrix(Complex eps, bool input_port, SMatrix* S, cudaStre
                                                                     S22.get(),
                                                                     n);
     CHECK(StatusFromCuda(cudaGetLastError()));
+    }
 
     S->S_11 = S11.Release();
     S->S_12 = S12.Release();
@@ -1293,6 +1409,7 @@ Status RCWA::ResetOrder(int order_x, int order_y)
     FreeKVectors();
     FreeSource();
 
+    rcwa_memory::Configure(order_x,order_y);
     order_x_ = order_x;
     order_y_ = order_y;
     order_N_ = static_cast<int64_t>((2 * order_x_ + 1) * (2 * order_y_ + 1));
@@ -1339,7 +1456,7 @@ Status RCWA::ReplayRecordedSetup(RCWA* target) const
             Complex* d_material = nullptr;
             const size_t bytes = layer.material.size() * sizeof(Complex);
             CHECK(StatusFromCuda(cudaMalloc(&d_material, bytes)));
-            const cudaError_t copy_status = cudaMemcpyAsync(d_material,
+            const cudaError_t copy_status = rcwa_memory::MemcpyAsync(d_material,
                                                             layer.material.data(),
                                                             bytes,
                                                             cudaMemcpyHostToDevice,
@@ -1378,15 +1495,9 @@ double RCWA::CurrentReflectance() const
     const int64_t n2 = 2 * order_N_;
     const int64_t oy_len = static_cast<int64_t>(2 * order_y_ + 1);
     const int64_t source_order = static_cast<int64_t>(order_x_) * oy_len + order_y_;
-    std::vector<Complex> s11(static_cast<size_t>(n2) * static_cast<size_t>(n2));
-    if (cudaMemcpy(s11.data(),
-                   global_smatrix_.S_11,
-                   s11.size() * sizeof(Complex),
-                   cudaMemcpyDeviceToHost) != cudaSuccess)
-    {
+    Complex value;
+    if(rcwa_memory::Read(global_smatrix_.S_11+source_order*n2+source_order,&value,1,stream_)!=Status::kSuccess)
         return std::numeric_limits<double>::quiet_NaN();
-    }
-    const Complex value = s11[static_cast<size_t>(source_order) * n2 + source_order];
     return ComplexAbsSquaredDouble(value);
 }
 
@@ -1403,7 +1514,8 @@ Status RCWA::ResolveAutoOrder()
 
     const AutoOrderOptions& cfg = auto_order_options_;
     int effective_order_max = cfg.order_max;
-    const int memory_order_max = cfg.cap_order_by_memory
+    const char* memory_mode = std::getenv("RCWA_MEMORY_MODE");
+    const int memory_order_max = cfg.cap_order_by_memory && memory_mode && std::strcmp(memory_mode,"resident")==0
                                      ? MemoryLimitedOrderMax(cfg.order_max,
                                                              expm_method_,
                                                              high_order_,
@@ -1730,7 +1842,7 @@ Status RCWA::SourcePlanewave(Complex ex_amp, Complex ey_amp, const char* directi
 
     const size_t count = static_cast<size_t>(2 * order_N_);
     CHECK(StatusFromCuda(cudaMalloc(&source_ei_, count * sizeof(Complex))));
-    CHECK(StatusFromCuda(cudaMemsetAsync(source_ei_, 0, count * sizeof(Complex), stream_)));
+    CHECK(StatusFromCuda(rcwa_memory::MemsetAsync(source_ei_, 0, count * sizeof(Complex), stream_)));
 
     const int64_t order_y_len = static_cast<int64_t>(2 * order_y_ + 1);
     const int64_t index = order_y_len * static_cast<int64_t>(order_x_) + order_y_;
@@ -2232,9 +2344,9 @@ Status RCWA::ComputeCosSinFromThetaOrder12(const Complex* Theta,
 
     const size_t bytes = static_cast<size_t>(n) * static_cast<size_t>(n) * sizeof(Complex);
     CHECK(
-        StatusFromCuda(cudaMemcpyAsync(Cos, C.get(), bytes, cudaMemcpyDeviceToDevice, use_stream)));
+        StatusFromCuda(rcwa_memory::MemcpyAsync(Cos, C.get(), bytes, cudaMemcpyDeviceToDevice, use_stream)));
     CHECK(
-        StatusFromCuda(cudaMemcpyAsync(Sin, S.get(), bytes, cudaMemcpyDeviceToDevice, use_stream)));
+        StatusFromCuda(rcwa_memory::MemcpyAsync(Sin, S.get(), bytes, cudaMemcpyDeviceToDevice, use_stream)));
     return Status::kSuccess;
 }
 
@@ -2395,9 +2507,9 @@ Status RCWA::ComputeCosSinFromThetaOrder18(const Complex* Theta,
 
     const size_t bytes = static_cast<size_t>(n) * static_cast<size_t>(n) * sizeof(Complex);
     CHECK(
-        StatusFromCuda(cudaMemcpyAsync(Cos, C.get(), bytes, cudaMemcpyDeviceToDevice, use_stream)));
+        StatusFromCuda(rcwa_memory::MemcpyAsync(Cos, C.get(), bytes, cudaMemcpyDeviceToDevice, use_stream)));
     CHECK(
-        StatusFromCuda(cudaMemcpyAsync(Sin, S.get(), bytes, cudaMemcpyDeviceToDevice, use_stream)));
+        StatusFromCuda(rcwa_memory::MemcpyAsync(Sin, S.get(), bytes, cudaMemcpyDeviceToDevice, use_stream)));
     return Status::kSuccess;
 }
 
@@ -2577,9 +2689,9 @@ static Status ComputeCosSincFromPQOrder12(const Complex* P,
 
     const size_t bytes = static_cast<size_t>(n) * static_cast<size_t>(n) * sizeof(Complex);
     CHECK(StatusFromCuda(
-        cudaMemcpyAsync(Cos, C_mat.get(), bytes, cudaMemcpyDeviceToDevice, use_stream)));
+        rcwa_memory::MemcpyAsync(Cos, C_mat.get(), bytes, cudaMemcpyDeviceToDevice, use_stream)));
     CHECK(StatusFromCuda(
-        cudaMemcpyAsync(Sinc, Sinc_mat.get(), bytes, cudaMemcpyDeviceToDevice, use_stream)));
+        rcwa_memory::MemcpyAsync(Sinc, Sinc_mat.get(), bytes, cudaMemcpyDeviceToDevice, use_stream)));
     return Status::kSuccess;
 }
 
@@ -2765,9 +2877,9 @@ static Status ComputeCosSincFromPQOrder18(const Complex* P,
 
     const size_t bytes = static_cast<size_t>(n) * static_cast<size_t>(n) * sizeof(Complex);
     CHECK(StatusFromCuda(
-        cudaMemcpyAsync(Cos, C_mat.get(), bytes, cudaMemcpyDeviceToDevice, use_stream)));
+        rcwa_memory::MemcpyAsync(Cos, C_mat.get(), bytes, cudaMemcpyDeviceToDevice, use_stream)));
     CHECK(StatusFromCuda(
-        cudaMemcpyAsync(Sinc, Sinc_mat.get(), bytes, cudaMemcpyDeviceToDevice, use_stream)));
+        rcwa_memory::MemcpyAsync(Sinc, Sinc_mat.get(), bytes, cudaMemcpyDeviceToDevice, use_stream)));
     return Status::kSuccess;
 }
 
@@ -3560,6 +3672,8 @@ Status RCWA::AddLayerHomogeneous(Real thickness, Real eps)
 
 Status RCWA::AddLayerHomogeneous(Real thickness, Complex eps)
 {
+    rcwa_memory::Configure(order_x_,order_y_);
+
     if (IsAutoRecording())
     {
         RecordedLayer layer;
@@ -3587,16 +3701,27 @@ Status RCWA::AddLayerHomogeneous(Real thickness, Complex eps)
     CHECK(S22.Allocate(n2, n2));
 
     const size_t matrix_bytes = static_cast<size_t>(n2) * static_cast<size_t>(n2) * sizeof(Complex);
-    CHECK(StatusFromCuda(cudaMemsetAsync(S11.get(), 0, matrix_bytes, stream_)));
-    CHECK(StatusFromCuda(cudaMemsetAsync(S12.get(), 0, matrix_bytes, stream_)));
-    CHECK(StatusFromCuda(cudaMemsetAsync(S21.get(), 0, matrix_bytes, stream_)));
-    CHECK(StatusFromCuda(cudaMemsetAsync(S22.get(), 0, matrix_bytes, stream_)));
+    CHECK(StatusFromCuda(rcwa_memory::MemsetAsync(S11.get(), 0, matrix_bytes, stream_)));
+    CHECK(StatusFromCuda(rcwa_memory::MemsetAsync(S12.get(), 0, matrix_bytes, stream_)));
+    CHECK(StatusFromCuda(rcwa_memory::MemsetAsync(S21.get(), 0, matrix_bytes, stream_)));
+    CHECK(StatusFromCuda(rcwa_memory::MemsetAsync(S22.get(), 0, matrix_bytes, stream_)));
 
     const Real k0d = omega_ * thickness;
     const int blocks = static_cast<int>((n + CUDA_THREADS - 1) / CUDA_THREADS);
+    if (rcwa_memory::IsHost(S11.get()) || rcwa_memory::IsHost(S12.get()) ||
+        rcwa_memory::IsHost(S21.get()) || rcwa_memory::IsHost(S22.get())) {
+        DeviceVector p11,p12,p21,p22;
+        CHECK(p11.Allocate(4*n)); CHECK(p12.Allocate(4*n)); CHECK(p21.Allocate(4*n)); CHECK(p22.Allocate(4*n));
+    BuildHomogeneousSBlocksKernel<<<blocks, CUDA_THREADS, 0, stream_>>>(
+        kx_diag_, ky_diag_, eps, k0d, p11.get(), p12.get(), p21.get(), p22.get(), n, true);
+    CHECK(StatusFromCuda(cudaGetLastError()));
+        CHECK(UnpackSBlocks(p11.get(),S11.get(),n,stream_)); CHECK(UnpackSBlocks(p12.get(),S12.get(),n,stream_));
+        CHECK(UnpackSBlocks(p21.get(),S21.get(),n,stream_)); CHECK(UnpackSBlocks(p22.get(),S22.get(),n,stream_));
+    } else {
     BuildHomogeneousSBlocksKernel<<<blocks, CUDA_THREADS, 0, stream_>>>(
         kx_diag_, ky_diag_, eps, k0d, S11.get(), S12.get(), S21.get(), S22.get(), n);
     CHECK(StatusFromCuda(cudaGetLastError()));
+    }
 
     SMatrix S{};
     S.S_11 = S11.Release();
@@ -3623,6 +3748,8 @@ Status RCWA::AddLayerFromConvolution(Real thickness,
                                      const Complex* nxy_conv,
                                      const Complex* nyy_conv)
 {
+    rcwa_memory::Configure(order_x_,order_y_);
+
     if (!eps_conv || !kvectors_ready_)
     {
         return Status::kInvalidValue;
@@ -3783,9 +3910,30 @@ Status RCWA::BuildLalanneNormalProducts(const Complex* material,
 
     const int64_t map_size = nx * ny;
     const int blocks = static_cast<int>((map_size + CUDA_THREADS - 1) / CUDA_THREADS);
-    BuildNormalProductsKernel<<<blocks, CUDA_THREADS, 0, stream_>>>(
-        material, nx, ny, Lx_, Ly_, eta, nxx, nxy, nyy);
-    return StatusFromCuda(cudaGetLastError());
+    DeviceMatrix boundary;
+    CHECK(boundary.Allocate(nx, ny, true));
+    CachedBoundaryKernel<<<blocks, CUDA_THREADS, 0, stream_>>>(material, nx, ny, Lx_, Ly_, eta, boundary.get());
+    CHECK(StatusFromCuda(cudaGetLastError()));
+    std::vector<Complex> host_boundary(static_cast<size_t>(map_size));
+    CHECK(StatusFromCuda(rcwa_memory::MemcpyAsync(host_boundary.data(), boundary.get(),
+        host_boundary.size() * sizeof(Complex), cudaMemcpyDeviceToHost, stream_)));
+    CHECK(StatusFromCuda(cudaStreamSynchronize(stream_)));
+    std::vector<int64_t> indices;
+    for (int64_t i = 0; i < map_size; ++i)
+        if (ComplexReal(host_boundary[i]) != 0 || ComplexImag(host_boundary[i]) != 0) indices.push_back(i);
+    int64_t* device_indices = nullptr;
+    if (!indices.empty()) {
+        CHECK(StatusFromCuda(cudaMalloc(&device_indices, indices.size() * sizeof(int64_t))));
+        const cudaError_t copied = rcwa_memory::MemcpyAsync(device_indices, indices.data(), indices.size() * sizeof(int64_t), cudaMemcpyHostToDevice, stream_);
+        if (copied != cudaSuccess) { cudaFree(device_indices); return StatusFromCuda(copied); }
+    }
+    CachedNormalProductsKernel<<<blocks, CUDA_THREADS, 0, stream_>>>(boundary.get(), device_indices,
+        static_cast<int64_t>(indices.size()), nx, ny, Lx_, Ly_, eta, nxx, nxy, nyy);
+    const cudaError_t launched = cudaGetLastError();
+    const cudaError_t completed = cudaStreamSynchronize(stream_);
+    if (device_indices) cudaFree(device_indices);
+    CHECK(StatusFromCuda(launched));
+    return StatusFromCuda(completed);
 }
 
 Status RCWA::GenerateNormalVectorField(const Complex* material,
@@ -3865,10 +4013,10 @@ Status RCWA::AddLayerLalanne(Real thickness,
     DeviceMatrix nxx_map;
     DeviceMatrix nxy_map;
     DeviceMatrix nyy_map;
-    CHECK(inv_map.Allocate(nx, ny));
-    CHECK(nxx_map.Allocate(nx, ny));
-    CHECK(nxy_map.Allocate(nx, ny));
-    CHECK(nyy_map.Allocate(nx, ny));
+    CHECK(inv_map.Allocate(nx, ny, true));
+    CHECK(nxx_map.Allocate(nx, ny, true));
+    CHECK(nxy_map.Allocate(nx, ny, true));
+    CHECK(nyy_map.Allocate(nx, ny, true));
 
     CHECK(ElementwiseInverse(material, inv_map.get(), map_size, stream_));
     CHECK(BuildLalanneNormalProducts(material,
@@ -3913,6 +4061,8 @@ Status RCWA::MaterialConv(const Complex* material,
                           Complex** eps_conv,
                           cudaStream_t stream) const
 {
+    rcwa_memory::Configure(order_x_,order_y_);
+
     if (!material || !eps_conv)
     {
         return Status::kInvalidValue;
@@ -3929,9 +4079,9 @@ Status RCWA::MaterialConv(const Complex* material,
     const int64_t fft_size = nx * ny;
     const size_t fft_bytes = static_cast<size_t>(fft_size) * sizeof(Complex);
     DeviceMatrix fft_buf;
-    CHECK(fft_buf.Allocate(nx, ny));
+    CHECK(fft_buf.Allocate(nx, ny, true));
     CHECK(StatusFromCuda(
-        cudaMemcpyAsync(fft_buf.get(), material, fft_bytes, cudaMemcpyDeviceToDevice, use_stream)));
+        rcwa_memory::MemcpyAsync(fft_buf.get(), material, fft_bytes, cudaMemcpyDeviceToDevice, use_stream)));
 
     CufftPlan plan;
 #if USE_DOUBLE_PRECISION
@@ -3966,9 +4116,23 @@ Status RCWA::MaterialConv(const Complex* material,
     const int64_t total = order_N_ * order_N_;
     blocks = static_cast<int>((total + CUDA_THREADS - 1) / CUDA_THREADS);
     const int64_t oy_len = static_cast<int64_t>(2 * order_y_ + 1);
+    if(rcwa_memory::IsHost(conv.get())) {
+        std::vector<Complex> fft(static_cast<size_t>(nx)*ny),block(static_cast<size_t>(order_N_)*64);
+        CHECK(rcwa_memory::Read(fft_buf.get(),fft.data(),fft.size(),use_stream));
+        for(int64_t j=0;j<order_N_;j+=64) {
+            auto nc=std::min<int64_t>(64,order_N_-j);
+            for(int64_t c=0;c<nc;++c)for(int64_t r=0;r<order_N_;++r) {
+                auto fx=(r/oy_len-(j+c)/oy_len)%nx,fy=(r%oy_len-(j+c)%oy_len)%ny;
+                if(fx<0)fx+=nx; if(fy<0)fy+=ny;
+                block[c*order_N_+r]=fft[fx*ny+fy];
+            }
+            CHECK(rcwa_memory::WriteRect(conv.get(),order_N_,0,j,order_N_,nc,block.data(),use_stream));
+        }
+    } else {
     BuildConvMatrixKernel<<<blocks, CUDA_THREADS, 0, use_stream>>>(
         fft_buf.get(), nx, ny, oy_len, conv.get(), order_N_);
     CHECK(StatusFromCuda(cudaGetLastError()));
+    }
 
     *eps_conv = conv.Release();
     return Status::kSuccess;
@@ -4022,32 +4186,7 @@ Status RCWA::RSProd(const SMatrix& Sm,
     Complex* X2 = rhs.get() + static_cast<size_t>(n) * n;
     CHECK(MatMul(ops, Sm.S_12, Sn.S_22, X2, n));
 
-    const Status solver = ops.Solve(T.get(), rhs.get(), rhs.get(), n, rhs_cols);
-    if (solver != Status::kSuccess)
-    {
-        DeviceMatrix S11;
-        CHECK(S11.Allocate(n, n));
-        CHECK(StatusFromCuda(cudaMemsetAsync(
-            S11.get(), 0, static_cast<size_t>(n) * n * sizeof(Complex), use_stream)));
-
-        DeviceMatrix S12;
-        CHECK(S12.Allocate(n, n));
-        CHECK(CopyMatrix(Sn.S_12, S12.get(), n, use_stream));
-
-        DeviceMatrix S21;
-        CHECK(S21.Allocate(n, n));
-        CHECK(CopyMatrix(Sm.S_21, S21.get(), n, use_stream));
-
-        DeviceMatrix S22;
-        CHECK(S22.Allocate(n, n));
-        CHECK(MatMul(ops, Sm.S_22, Sn.S_22, S22.get(), n));
-
-        out->S_11 = S11.Release();
-        out->S_12 = S12.Release();
-        out->S_21 = S21.Release();
-        out->S_22 = S22.Release();
-        return Status::kSuccess;
-    }
+    CHECK(ops.Solve(T.get(), rhs.get(), rhs.get(), n, rhs_cols));
 
     DeviceMatrix S11;
     CHECK(S11.Allocate(n, n));
@@ -4083,6 +4222,8 @@ Status RCWA::SolveGlobalSMatrix(SMatrix* S,
                                 const SMatrix* S_out,
                                 cudaStream_t stream) const
 {
+    rcwa_memory::Configure(order_x_,order_y_);
+
     if (!S)
     {
         return Status::kInvalidValue;
@@ -4109,12 +4250,14 @@ Status RCWA::SolveGlobalSMatrix(SMatrix* S,
     const SMatrix* use_S_in = S_in;
     const SMatrix* use_S_out = S_out;
 
-    if (!S_in)
+    const bool stored = rcwa_memory::IsHost(stack_smatrix_.S_11) || rcwa_memory::IsHost(stack_smatrix_.S_12) ||
+                        rcwa_memory::IsHost(stack_smatrix_.S_21) || rcwa_memory::IsHost(stack_smatrix_.S_22);
+    if (!S_in && !(stored && ComplexReal(eps_in_)==1 && ComplexImag(eps_in_)==0))
     {
         CHECK(BuildPortSMatrix(eps_in_, true, &auto_in, use_stream));
         use_S_in = &auto_in;
     }
-    if (!S_out)
+    if (!S_out && !(stored && ComplexReal(eps_out_)==1 && ComplexImag(eps_out_)==0))
     {
         CHECK(BuildPortSMatrix(eps_out_, false, &auto_out, use_stream));
         use_S_out = &auto_out;
@@ -4145,9 +4288,9 @@ Status RCWA::SolveGlobalSMatrix(SMatrix* S,
         CHECK(S22.Allocate(n, n));
         CHECK(MakeIdentity(S11.get(), n, use_stream));
         CHECK(MakeIdentity(S22.get(), n, use_stream));
-        CHECK(StatusFromCuda(cudaMemsetAsync(
+        CHECK(StatusFromCuda(rcwa_memory::MemsetAsync(
             S12.get(), 0, static_cast<size_t>(n) * n * sizeof(Complex), use_stream)));
-        CHECK(StatusFromCuda(cudaMemsetAsync(
+        CHECK(StatusFromCuda(rcwa_memory::MemsetAsync(
             S21.get(), 0, static_cast<size_t>(n) * n * sizeof(Complex), use_stream)));
         current.S_11 = S11.Release();
         current.S_12 = S12.Release();
@@ -4269,12 +4412,12 @@ Status RCWA::FieldXY(const Real* x_axis,
     DeviceRealBuffer dy;
     CHECK(dx.Allocate(static_cast<size_t>(x_count)));
     CHECK(dy.Allocate(static_cast<size_t>(y_count)));
-    CHECK(StatusFromCuda(cudaMemcpyAsync(dx.get(),
+    CHECK(StatusFromCuda(rcwa_memory::MemcpyAsync(dx.get(),
                                          x_axis,
                                          static_cast<size_t>(x_count) * sizeof(Real),
                                          cudaMemcpyHostToDevice,
                                          use_stream)));
-    CHECK(StatusFromCuda(cudaMemcpyAsync(dy.get(),
+    CHECK(StatusFromCuda(rcwa_memory::MemcpyAsync(dy.get(),
                                          y_axis,
                                          static_cast<size_t>(y_count) * sizeof(Real),
                                          cudaMemcpyHostToDevice,
@@ -4310,9 +4453,9 @@ Status RCWA::FieldXY(const Real* x_axis,
     DeviceMatrix ExMat;
     DeviceMatrix EyMat;
     DeviceMatrix EzMat;
-    CHECK(ExMat.Allocate(x_count, y_count));
-    CHECK(EyMat.Allocate(x_count, y_count));
-    CHECK(EzMat.Allocate(x_count, y_count));
+    CHECK(ExMat.Allocate(x_count, y_count, true));
+    CHECK(EyMat.Allocate(x_count, y_count, true));
+    CHECK(EzMat.Allocate(x_count, y_count, true));
 
     const int64_t total = x_count * y_count;
     const int grid = static_cast<int>((total + CUDA_THREADS - 1) / CUDA_THREADS);
@@ -4356,12 +4499,12 @@ Status RCWA::GetKxKyKz(std::vector<Real>* kx,
     ky->assign(static_cast<size_t>(n), 0.0);
     kz->assign(static_cast<size_t>(n), 0.0);
 
-    CHECK(StatusFromCuda(cudaMemcpyAsync(kx_complex.data(),
+    CHECK(StatusFromCuda(rcwa_memory::MemcpyAsync(kx_complex.data(),
                                          kx_diag_,
                                          static_cast<size_t>(n) * sizeof(Complex),
                                          cudaMemcpyDeviceToHost,
                                          use_stream)));
-    CHECK(StatusFromCuda(cudaMemcpyAsync(ky_complex.data(),
+    CHECK(StatusFromCuda(rcwa_memory::MemcpyAsync(ky_complex.data(),
                                          ky_diag_,
                                          static_cast<size_t>(n) * sizeof(Complex),
                                          cudaMemcpyDeviceToHost,
@@ -4397,13 +4540,38 @@ Status RCWA::EnergyBalance(double* R,
     const int64_t n2 = 2 * n;
     const int64_t oy_len = static_cast<int64_t>(2 * order_y_ + 1);
     const int64_t source_order = static_cast<int64_t>(order_x_) * oy_len + order_y_;
-    const int64_t source_col = source_order + n;
+    // SourcePlanewave's x component is stored in the first n entries and y
+    // in the second n entries. Evaluate both source polarizations separately
+    // and add their power contributions, as before for a Jones vector.
+    const int64_t source_col_x = source_order;
+    const int64_t source_col_y = source_order + n;
+
+    if(rcwa_memory::IsHost(global_smatrix_.S_11) || rcwa_memory::IsHost(global_smatrix_.S_21)) {
+        DeviceVector tcol,rcol; CHECK(tcol.Allocate(n2)); CHECK(rcol.Allocate(n2));
+        DeviceRealBuffer sums; CHECK(sums.Allocate(2));
+        std::vector<Complex> column(n2); double rt[2]={0,0};
+        const int blocks=static_cast<int>((n+CUDA_THREADS-1)/CUDA_THREADS);
+        for(auto col:{source_col_x,source_col_y}) {
+            CHECK(rcwa_memory::Read(global_smatrix_.S_11+col*n2,column.data(),n2,use_stream));
+            CHECK(rcwa_memory::Write(tcol.get(),column.data(),n2,use_stream));
+            CHECK(rcwa_memory::Read(global_smatrix_.S_21+col*n2,column.data(),n2,use_stream));
+            CHECK(rcwa_memory::Write(rcol.get(),column.data(),n2,use_stream));
+            CHECK(StatusFromCuda(rcwa_memory::MemsetAsync(sums.get(),0,2*sizeof(Real),use_stream)));
+            EnergyBalanceKernel<<<blocks,CUDA_THREADS,0,use_stream>>>(kx_diag_,ky_diag_,tcol.get(),rcol.get(),
+                eps_in_,eps_out_,n,n2,source_order,0,sums.get());
+            CHECK(StatusFromCuda(cudaGetLastError()));
+            Real h[2]; CHECK(StatusFromCuda(cudaMemcpyAsync(h,sums.get(),sizeof(h),cudaMemcpyDeviceToHost,use_stream)));
+            CHECK(StatusFromCuda(cudaStreamSynchronize(use_stream))); rt[0]+=h[0]; rt[1]+=h[1];
+        }
+        *R=rt[0]*0.5; *T=rt[1]*0.5; *A=1-*R-*T; return Status::kSuccess;
+    }
 
     DeviceRealBuffer accum;
     CHECK(accum.Allocate(2));
-    CHECK(StatusFromCuda(cudaMemsetAsync(accum.get(), 0, 2 * sizeof(Real), use_stream)));
+    CHECK(StatusFromCuda(rcwa_memory::MemsetAsync(accum.get(), 0, 2 * sizeof(Real), use_stream)));
 
     const int blocks = static_cast<int>((n + CUDA_THREADS - 1) / CUDA_THREADS);
+    // The energy kernel is launched once for each orthogonal source component.
     EnergyBalanceKernel<<<blocks, CUDA_THREADS, 0, use_stream>>>(kx_diag_,
                                                                  ky_diag_,
                                                                  global_smatrix_.S_11,
@@ -4413,18 +4581,41 @@ Status RCWA::EnergyBalance(double* R,
                                                                  n,
                                                                  n2,
                                                                  source_order,
-                                                                 source_col,
+                                                                 source_col_x,
                                                                  accum.get());
+    CHECK(StatusFromCuda(cudaGetLastError()));
+    // Reset accumulators and add the y-polarized source contribution; averaging
+    // is applied below because the public energy API represents unpolarized
+    // illumination.
+    CHECK(StatusFromCuda(cudaStreamSynchronize(use_stream)));
+    DeviceRealBuffer y_accum;
+    CHECK(y_accum.Allocate(2));
+    CHECK(StatusFromCuda(rcwa_memory::MemsetAsync(y_accum.get(), 0, 2 * sizeof(Real), use_stream)));
+    EnergyBalanceKernel<<<blocks, CUDA_THREADS, 0, use_stream>>>(kx_diag_,
+                                                                 ky_diag_,
+                                                                 global_smatrix_.S_11,
+                                                                 global_smatrix_.S_21,
+                                                                 eps_in_,
+                                                                 eps_out_,
+                                                                 n,
+                                                                 n2,
+                                                                 source_order,
+                                                                 source_col_y,
+                                                                 y_accum.get());
     CHECK(StatusFromCuda(cudaGetLastError()));
 
     Real host_accum[2] = {0.0, 0.0};
-    CHECK(StatusFromCuda(cudaMemcpyAsync(
+    CHECK(StatusFromCuda(rcwa_memory::MemcpyAsync(
         host_accum, accum.get(), sizeof(host_accum), cudaMemcpyDeviceToHost, use_stream)));
     CHECK(StatusFromCuda(cudaStreamSynchronize(use_stream)));
 
-    *R = static_cast<double>(host_accum[0]);
-    *T = static_cast<double>(host_accum[1]);
-    *A = std::max(0.0, 1.0 - *R - *T);
+    Real host_y[2] = {0.0, 0.0};
+    CHECK(StatusFromCuda(rcwa_memory::MemcpyAsync(
+        host_y, y_accum.get(), sizeof(host_y), cudaMemcpyDeviceToHost, use_stream)));
+    CHECK(StatusFromCuda(cudaStreamSynchronize(use_stream)));
+    *R = 0.5 * (static_cast<double>(host_accum[0]) + static_cast<double>(host_y[0]));
+    *T = 0.5 * (static_cast<double>(host_accum[1]) + static_cast<double>(host_y[1]));
+    *A = 1.0 - *R - *T;
     return Status::kSuccess;
 }
 
@@ -4486,9 +4677,9 @@ Status RCWA::BuildPQ(const Complex* eps_conv, int64_t n, Complex* P, Complex* Q,
         // In column-major (ld=n), columns 0..n-1 occupy elements [0, n*n-1] and
         // columns n..2n-1 occupy elements [n*n, 2*n*n-1] — both regions are contiguous.
         const size_t half_bytes = static_cast<size_t>(n) * static_cast<size_t>(n) * sizeof(Complex);
-        CHECK(StatusFromCuda(cudaMemcpyAsync(
+        CHECK(StatusFromCuda(rcwa_memory::MemcpyAsync(
             EiKx.get(), combined.get(), half_bytes, cudaMemcpyDeviceToDevice, stream_)));
-        CHECK(StatusFromCuda(cudaMemcpyAsync(EiKy.get(),
+        CHECK(StatusFromCuda(rcwa_memory::MemcpyAsync(EiKy.get(),
                                              combined.get() + static_cast<size_t>(n) * n,
                                              half_bytes,
                                              cudaMemcpyDeviceToDevice,
@@ -4538,7 +4729,7 @@ Status RCWA::BuildPQ(const Complex* eps_conv, int64_t n, Complex* P, Complex* Q,
     CHECK(ScaleInPlace(Q21.get(), n, make_complex(-1.0, 0.0), stream_));
     CHECK(AddDiagonalInPlace(Q21.get(), KxKxDiag.get(), n, make_complex(1.0, 0.0), stream_));
 
-    CHECK(StatusFromCuda(cudaMemsetAsync(
+    CHECK(StatusFromCuda(rcwa_memory::MemsetAsync(
         Q, 0, static_cast<size_t>(2 * n) * static_cast<size_t>(2 * n) * sizeof(Complex), stream_)));
 
     CHECK(CopyBlockDirect(KxEiKy.get(), n, P, 2 * n, 0, 0, stream_));
@@ -4566,9 +4757,9 @@ Status RCWA::BuildPQ(const Complex* eps_conv, int64_t n, Complex* P, Complex* Q,
         CHECK(HinvKx.Allocate(n, n));
         CHECK(HinvKy.Allocate(n, n));
         const size_t matrix_bytes = static_cast<size_t>(n) * static_cast<size_t>(n) * sizeof(Complex);
-        CHECK(StatusFromCuda(cudaMemcpyAsync(
+        CHECK(StatusFromCuda(rcwa_memory::MemcpyAsync(
             HinvKx.get(), HinvK.get(), matrix_bytes, cudaMemcpyDeviceToDevice, stream_)));
-        CHECK(StatusFromCuda(cudaMemcpyAsync(HinvKy.get(),
+        CHECK(StatusFromCuda(rcwa_memory::MemcpyAsync(HinvKy.get(),
                                              HinvK.get() + static_cast<size_t>(n) * n,
                                              matrix_bytes,
                                              cudaMemcpyDeviceToDevice,
@@ -4678,25 +4869,16 @@ Status RCWA::RepeatSMatrix(SMatrix* S, int repeats, int64_t n)
         CHECK(AddDiagonalConstantInPlace(R.get(), n, one, stream_));
 
         CHECK(rhs.Allocate(n, rhs_cols));
-
-        // rhs = [S_12*S_11 | S_11], solved in one factorization.
         CHECK(MatMul(ops, S->S_12, S->S_11, rhs.get(), n));
-
-        // Right column (n): S_11
         CHECK(CopyBlockDirect(S->S_11, n, rhs.get(), n, 0, n, stream_));
-
-        // Single solve: R*[X | Y] = [S_12*S_11 | S_11]
         CHECK(ops.Solve(R.get(), rhs.get(), rhs.get(), n, rhs_cols));
 
-        // Compute S_11 * [X | Y] once, then split the two n x n blocks.
         CHECK(S11XY.Allocate(n, rhs_cols));
         CHECK(ops.MatMul(S->S_11, rhs.get(), S11XY.get(), n, rhs_cols, n));
-
         CHECK(StatusFromCuda(
-            cudaMemcpyAsync(S->S_21, S11XY.get(), half_bytes, cudaMemcpyDeviceToDevice, stream_)));
+            rcwa_memory::MemcpyAsync(S->S_21, S11XY.get(), half_bytes, cudaMemcpyDeviceToDevice, stream_)));
         CHECK(AddInPlace(ops, S->S_21, S->S_12, n));
-
-        CHECK(StatusFromCuda(cudaMemcpyAsync(S->S_22,
+        CHECK(StatusFromCuda(rcwa_memory::MemcpyAsync(S->S_22,
                                              S11XY.get() + static_cast<size_t>(n) * n,
                                              half_bytes,
                                              cudaMemcpyDeviceToDevice,
@@ -4705,7 +4887,6 @@ Status RCWA::RepeatSMatrix(SMatrix* S, int repeats, int64_t n)
         Complex* next_S11 = S->S_22;
         S->S_22 = S->S_11;
         S->S_11 = next_S11;
-
         Complex* next_S12 = S->S_21;
         S->S_21 = S->S_12;
         S->S_12 = next_S12;
@@ -4713,5 +4894,57 @@ Status RCWA::RepeatSMatrix(SMatrix* S, int repeats, int64_t n)
 
     CHECK(CopyMatrix(S->S_12, S->S_21, n, stream_));
     CHECK(CopyMatrix(S->S_11, S->S_22, n, stream_));
+
     return Status::kSuccess;
+}
+
+Status RCWA::MaterializeGlobalSMatrix() const
+{
+    Complex** blocks[] = {&global_smatrix_.S_11,&global_smatrix_.S_12,&global_smatrix_.S_21,&global_smatrix_.S_22};
+    bool stored[4]; size_t count=0;
+    for(int i=0;i<4;++i) { stored[i]=rcwa_memory::IsHost(*blocks[i]);count+=stored[i]; }
+    if(!count)return Status::kSuccess;
+    const size_t n=static_cast<size_t>(2*order_N_);
+    if(!n || n>std::numeric_limits<size_t>::max()/n/sizeof(Complex)/count)return Status::kInvalidValue;
+    const size_t bytes=n*n*sizeof(Complex),needed=count*bytes;
+    size_t free=0,total=0;
+    if(cudaMemGetInfo(&free,&total)!=cudaSuccess || needed>free || free-needed<64*1024*1024)
+        return Status::kCudaError;
+    CHECK(StatusFromCuda(cudaStreamSynchronize(stream_)));
+    Complex* staged[4]={nullptr,nullptr,nullptr,nullptr};
+    Status status=Status::kSuccess;
+    for(int i=0;i<4;++i)if(stored[i]) {
+        if(cudaMalloc(&staged[i],bytes)!=cudaSuccess ||
+           rcwa_memory::MemcpyAsync(staged[i],*blocks[i],bytes,cudaMemcpyDeviceToDevice,stream_)!=cudaSuccess) {
+            status=Status::kCudaError;break;
+        }
+    }
+    if(status==Status::kSuccess) status=StatusFromCuda(cudaStreamSynchronize(stream_));
+    if(status!=Status::kSuccess) {
+        for(auto ptr:staged)if(ptr)cudaFree(ptr);
+        return status;
+    }
+    // Commit only after every block has been copied. A failed export leaves
+    // the original out-of-core matrices intact and available for block reads.
+    for(int i=0;i<4;++i)if(stored[i]) {
+        rcwa_memory::Free(*blocks[i]); *blocks[i]=staged[i];
+    }
+    return Status::kSuccess;
+}
+
+const SMatrix& RCWA::global_smatrix() const
+{
+    if(MaterializeGlobalSMatrix()!=Status::kSuccess)
+        throw std::logic_error("Full S matrix does not fit device memory; use ReadSMatrixBlock or EnergyBalance");
+    return global_smatrix_;
+}
+
+Status RCWA::ReadSMatrixBlock(int block,int64_t row,int64_t col,int64_t rows,int64_t cols,Complex* host) const
+{
+    const int64_t n=2*order_N_;
+    if(!host || row<0 || col<0 || rows<=0 || cols<=0 || row>n-rows || col>n-cols || !HasSMatrix(global_smatrix_))
+        return Status::kInvalidValue;
+    const Complex* ptr=block==11?global_smatrix_.S_11:block==12?global_smatrix_.S_12:block==21?global_smatrix_.S_21:block==22?global_smatrix_.S_22:nullptr;
+    if(!ptr)return Status::kInvalidValue;
+    return rcwa_memory::ReadRect(ptr,n,row,col,rows,cols,host,stream_);
 }
