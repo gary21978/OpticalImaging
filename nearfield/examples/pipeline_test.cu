@@ -34,8 +34,8 @@ struct DefaultRenderConfig
     int order_y = 12;
     Real sigma_out = 0.9;
     Real sigma_in = 0.15;
-    int geom_x = 200;
-    int geom_y = 100;
+    int geom_x = 1024;
+    int geom_y = 1024;
     int image_w = 257;
     int image_h = 129;
     const char* output_dir = "output";
@@ -376,7 +376,7 @@ int main(int argc, char** argv)
                               d_material.ptr,
                               config.geom_x,
                               config.geom_y,
-                              LayerFactorization::kLaurent);
+                              LayerFactorization::kLalanne);
     }
     rcwa.AddLayerHomogeneous(
                 20.0, ComplexMul(make_complex(2.1222, 0.0), make_complex(2.1222, 0.0)));

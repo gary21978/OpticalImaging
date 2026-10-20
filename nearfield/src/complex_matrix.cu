@@ -309,44 +309,7 @@ __global__ void ColumnSumKernel(const Complex* A, int64_t n, Real* col_sums)
     }
 }
 
-__global__ void
-ColumnSumWithDiagOffsetKernel(const Complex* A, int64_t n, Complex diag_offset, Real* col_sums)
-{
-    const int64_t col = static_cast<int64_t>(blockIdx.x);
-    if (col >= n)
-    {
-        return;
-    }
 
-    Real sum = 0.0;
-    for (int64_t row = threadIdx.x; row < n; row += blockDim.x)
-    {
-        Complex val = A[col * n + row];
-        if (row == col)
-        {
-            val = ComplexSub(val, diag_offset);
-        }
-        sum += ComplexAbs(val);
-    }
-
-    __shared__ Real shared[kReduceBlockSize];
-    shared[threadIdx.x] = sum;
-    __syncthreads();
-
-    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1)
-    {
-        if (threadIdx.x < stride)
-        {
-            shared[threadIdx.x] += shared[threadIdx.x + stride];
-        }
-        __syncthreads();
-    }
-
-    if (threadIdx.x == 0)
-    {
-        col_sums[col] = shared[0];
-    }
-}
 
 __global__ void MaxReduceKernel(const Real* input, int64_t n, Real* output)
 {
@@ -1176,58 +1139,6 @@ Status ComputeMatrixNorm1(const Complex* A, int64_t n, double* out_norm, cudaStr
     Real host_value = 0.0;
     CHECK(StatusFromCuda(cudaMemcpy(&host_value, input, sizeof(Real), cudaMemcpyDeviceToHost)));
 
-    *out_norm = static_cast<double>(host_value);
-    return Status::kSuccess;
-}
-
-Status ComputeMatrixNorm1WithDiagOffset(const Complex* A,
-                                        int64_t n,
-                                        Complex diag_offset,
-                                        double* out_norm,
-                                        cudaStream_t stream)
-{
-    if (rcwa_memory::IsHost(A))return rcwa_memory::Norm1(A,n,diag_offset,out_norm,stream);
-
-    if (!A || !out_norm || n <= 0)
-    {
-        return Status::kInvalidValue;
-    }
-    if (n > std::numeric_limits<int>::max())
-    {
-        return Status::kInvalidValue;
-    }
-
-    const size_t count = static_cast<size_t>(n);
-    const int block = kReduceBlockSize;
-    const int grid = static_cast<int>(count);
-    const size_t temp_count = (count + block - 1) / block;
-
-    DeviceRealVector col_sums;
-    DeviceRealVector temp;
-    CHECK(col_sums.Allocate(count));
-    CHECK(temp.Allocate(temp_count));
-
-    ColumnSumWithDiagOffsetKernel<<<grid, block, 0, stream>>>(A, n, diag_offset, col_sums.get());
-    CHECK(StatusFromCuda(cudaGetLastError()));
-
-    size_t current = count;
-    Real* input = col_sums.get();
-    Real* output = temp.get();
-
-    while (current > 1)
-    {
-        const size_t blocks = (current + block - 1) / block;
-        MaxReduceKernel<<<static_cast<int>(blocks), block, 0, stream>>>(
-            input, static_cast<int64_t>(current), output);
-        CHECK(StatusFromCuda(cudaGetLastError()));
-        current = blocks;
-        Real* swap = input;
-        input = output;
-        output = swap;
-    }
-
-    Real host_value = 0.0;
-    CHECK(StatusFromCuda(cudaMemcpy(&host_value, input, sizeof(Real), cudaMemcpyDeviceToHost)));
     *out_norm = static_cast<double>(host_value);
     return Status::kSuccess;
 }

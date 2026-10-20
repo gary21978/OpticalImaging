@@ -143,9 +143,3 @@ Status ElementwiseInverse(const Complex* input,
 
 Status
 ComputeMatrixNorm1(const Complex* A, int64_t n, double* out_norm, cudaStream_t stream = nullptr);
-
-Status ComputeMatrixNorm1WithDiagOffset(const Complex* A,
-                                        int64_t n,
-                                        Complex diag_offset,
-                                        double* out_norm,
-                                        cudaStream_t stream = nullptr);
