@@ -2756,10 +2756,6 @@ static Status ComputeCosSincFromPQOrder18(const Complex* P,
     CHECK(MatMul(ops, scratch.get(), A2.get(), A6pow.get(), n)); // (A²)³
 
     // ── 3.  B⁽ⁱ⁾  and  B̄⁽ⁱ⁾  (i = 0..4) ───────────────────────────────
-    DeviceMatrix I_mat;
-    CHECK(I_mat.Allocate(n, n));
-    CHECK(MakeIdentity(I_mat.get(), n, use_stream));
-
     DeviceMatrix B[5], Bbar[5];
     for (int i = 0; i < 5; ++i)
     {
@@ -2771,16 +2767,20 @@ static Status ComputeCosSincFromPQOrder18(const Complex* P,
 
         // B⁽ⁱ⁾ = a₀ᵢ·I − a₂ᵢ·A² − a₄ᵢ·A⁶
         CHECK(B[i].Allocate(n, n));
-        CHECK(ScaleMatrix(I_mat.get(), B[i].get(), n, make_complex(a0, 0.0), use_stream));
-        CHECK(ScaleAddInPlace(B[i].get(), A2.get(), n, make_complex(-a2, 0.0), use_stream));
-        CHECK(ScaleAddInPlace(B[i].get(), A6pow.get(), n, make_complex(-a4, 0.0), use_stream));
+        // Build directly in the selected GPU/RAM/file backend. Avoid storing
+        // and streaming a dense identity, and skip the exactly-zero A6 term.
+        CHECK(ScaleMatrix(A2.get(), B[i].get(), n, make_complex(-a2, 0.0), use_stream));
+        if (a0 != 0)
+            CHECK(AddDiagonalConstantInPlace(B[i].get(), n, make_complex(a0, 0.0), use_stream));
+        if (a4 != 0)
+            CHECK(ScaleAddInPlace(B[i].get(), A6pow.get(), n, make_complex(-a4, 0.0), use_stream));
 
         // B̄⁽ⁱ⁾ = a₁ᵢ·I − a₃ᵢ·A²
         CHECK(Bbar[i].Allocate(n, n));
-        CHECK(ScaleMatrix(I_mat.get(), Bbar[i].get(), n, make_complex(a1, 0.0), use_stream));
-        CHECK(ScaleAddInPlace(Bbar[i].get(), A2.get(), n, make_complex(-a3, 0.0), use_stream));
+        CHECK(ScaleMatrix(A2.get(), Bbar[i].get(), n, make_complex(-a3, 0.0), use_stream));
+        if (a1 != 0)
+            CHECK(AddDiagonalConstantInPlace(Bbar[i].get(), n, make_complex(a1, 0.0), use_stream));
     }
-    I_mat.Reset(); // identity consumed into B, B̄ arrays
     A6pow.Reset(); // A⁶ consumed into B arrays
 
     // ── 4.  A⁽⁹⁾  and  Ā⁽⁹⁾ ────────────────────────────────────────────
