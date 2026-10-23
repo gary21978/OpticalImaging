@@ -3782,8 +3782,7 @@ Status RCWA::FieldXY(const Real* x_axis,
     {
         return Status::kInvalidValue;
     }
-    if (!source_ei_ || !global_smatrix_.S_11 || !global_smatrix_.S_12 || !global_smatrix_.S_21 ||
-        !global_smatrix_.S_22 || !kx_diag_ || !ky_diag_)
+    if (!source_ei_ || !kx_diag_ || !ky_diag_)
     {
         return Status::kInvalidValue;
     }
@@ -4343,9 +4342,8 @@ const SMatrix& RCWA::global_smatrix() const
 Status RCWA::ReadSMatrixBlock(int block,int64_t row,int64_t col,int64_t rows,int64_t cols,Complex* host) const
 {
     const int64_t n=2*order_N_;
-    if(!host || row<0 || col<0 || rows<=0 || cols<=0 || row>n-rows || col>n-cols || !HasSMatrix(global_smatrix_))
-        return Status::kInvalidValue;
     const Complex* ptr=block==11?global_smatrix_.S_11:block==12?global_smatrix_.S_12:block==21?global_smatrix_.S_21:block==22?global_smatrix_.S_22:nullptr;
-    if(!ptr)return Status::kInvalidValue;
+    if(!host || !ptr || row<0 || col<0 || rows<=0 || cols<=0 || row>n-rows || col>n-cols)
+        return Status::kInvalidValue;
     return rcwa_memory::ReadRect(ptr,n,row,col,rows,cols,host,stream_);
 }

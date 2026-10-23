@@ -28,6 +28,7 @@ For an annular source,
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 #include <cufft.h>
@@ -80,23 +81,6 @@ struct DeviceRealBuffer
     }
 };
 
-struct DeviceIntBuffer
-{
-    int* ptr = nullptr;
-
-    ~DeviceIntBuffer() { SAFEFREE(ptr); }
-
-    Status Allocate(size_t count)
-    {
-        if (count == 0)
-        {
-            return Status::kInvalidValue;
-        }
-        SAFEFREE(ptr);
-        return StatusFromCudaLocal(cudaMalloc(reinterpret_cast<void**>(&ptr), count * sizeof(int)));
-    }
-};
-
 struct RcwaFarfieldData
 {
     // Per-order data derived once from RCWA and reused across all source/focus/z loops.
@@ -110,7 +94,13 @@ struct RcwaFarfieldData
     std::vector<int> source_indices;
     std::vector<Complex> source_ux;
     std::vector<Complex> source_uy;
+    // Only the two polarization columns for source orders admitted by the
+    // illumination pupil are needed by the imager.  Keep those columns packed
+    // on the device so an out-of-core global S matrix never has to be fully
+    // materialized merely for rendering.
+    DeviceComplexBuffer packed_s_port;
     const Complex* s_port = nullptr;
+    int64_t packed_source_count = 0;
     int src_h = 0;
     int src_w = 0;
 };
@@ -406,11 +396,11 @@ into the padded FFT grid used by the later batched inverse FFT.
 */
 __global__ void BuildSpectrumTileKernel(const Complex* S_port,
                                         int64_t order_count,
+                                        int64_t packed_source_count,
                                         int src_h,
                                         int src_w,
                                         int dst_h,
                                         int dst_w,
-                                        const int* source_indices,
                                         const Complex* u_x,
                                         const Complex* u_y,
                                         int source_base,
@@ -432,9 +422,9 @@ __global__ void BuildSpectrumTileKernel(const Complex* S_port,
 
     const int64_t n = order_count;
     const int64_t n2 = 2 * n;
-    const int source_idx = source_indices[source_base + k_local];
-    const int64_t col_x = source_idx;
-    const int64_t col_y = source_idx + n;
+    const int64_t source_position = source_base + k_local;
+    const int64_t col_x = source_position;
+    const int64_t col_y = source_position + packed_source_count;
 
     // Read the two relevant S-matrix columns directly instead of forming S_port * U explicitly.
     const Complex r00 = S_port[col_x * n2 + i];
@@ -566,20 +556,6 @@ Status BuildRcwaFarfieldData(const RCWA& rcwa,
         return Status::kInvalidValue;
     }
 
-    const SMatrix& smat = rcwa.global_smatrix();
-    if (rcwa.source_is_forward())
-    {
-        data->s_port = smat.S_21;
-    }
-    else
-    {
-        data->s_port = smat.S_12;
-    }
-    if (!data->s_port)
-    {
-        return Status::kInvalidValue;
-    }
-
     data->source_indices.clear();
     data->source_ux.clear();
     data->source_uy.clear();
@@ -620,6 +596,47 @@ Status BuildRcwaFarfieldData(const RCWA& rcwa,
     {
         return Status::kInvalidValue;
     }
+
+    // Pack only the source columns used by the illumination pupil.  Each
+    // source order contributes one x- and one y-polarized column, each with
+    // 2*order_count output rows.  ReadSMatrixBlock works for device-, RAM-,
+    // and file-backed matrices.
+    const int64_t port_rows = 2 * order_count;
+    const int64_t source_count = static_cast<int64_t>(data->source_indices.size());
+    if (port_rows <= 0 || source_count <= 0 ||
+        static_cast<uint64_t>(port_rows) >
+            std::numeric_limits<size_t>::max() /
+                (static_cast<size_t>(2 * source_count) * sizeof(Complex)))
+    {
+        return Status::kInvalidValue;
+    }
+    CHECK(data->packed_s_port.Allocate(
+        static_cast<size_t>(port_rows) * static_cast<size_t>(2 * source_count)));
+    std::vector<Complex> host_column(static_cast<size_t>(port_rows));
+    const int port_block = rcwa.source_is_forward() ? 21 : 12;
+    for (int64_t source_position = 0; source_position < source_count; ++source_position)
+    {
+        const int64_t source_idx = data->source_indices[static_cast<size_t>(source_position)];
+        const int64_t global_columns[2] = {source_idx, source_idx + order_count};
+        const int64_t packed_columns[2] = {source_position, source_position + source_count};
+        for (int polarization = 0; polarization < 2; ++polarization)
+        {
+            CHECK(rcwa.ReadSMatrixBlock(port_block,
+                                        0,
+                                        global_columns[polarization],
+                                        port_rows,
+                                        1,
+                                        host_column.data()));
+            CHECK(StatusFromCudaLocal(cudaMemcpyAsync(
+                data->packed_s_port.ptr + packed_columns[polarization] * port_rows,
+                host_column.data(),
+                static_cast<size_t>(port_rows) * sizeof(Complex),
+                cudaMemcpyHostToDevice,
+                stream)));
+        }
+    }
+    data->s_port = data->packed_s_port.ptr;
+    data->packed_source_count = source_count;
 
     data->g00.assign(static_cast<size_t>(order_count), make_complex(0.0, 0.0));
     data->g01.assign(static_cast<size_t>(order_count), make_complex(0.0, 0.0));
@@ -764,7 +781,6 @@ Status CalculateAbbeImageFromRCWA(const RCWA& rcwa,
     DeviceComplexBuffer d_phase_transfer;
     DeviceComplexBuffer batch_padded;
     DeviceRealBuffer intensity;
-    DeviceIntBuffer d_source_indices;
     DeviceComplexBuffer d_source_ux;
     DeviceComplexBuffer d_source_uy;
     CHECK(d_g00.Allocate(static_cast<size_t>(order_count)));
@@ -772,7 +788,6 @@ Status CalculateAbbeImageFromRCWA(const RCWA& rcwa,
     CHECK(d_g11.Allocate(static_cast<size_t>(order_count)));
     CHECK(d_zphase.Allocate(static_cast<size_t>(order_count)));
     CHECK(d_phase_transfer.Allocate(static_cast<size_t>(order_count)));
-    CHECK(d_source_indices.Allocate(rcwa_data.source_indices.size()));
     CHECK(d_source_ux.Allocate(rcwa_data.source_ux.size()));
     CHECK(d_source_uy.Allocate(rcwa_data.source_uy.size()));
     CHECK(intensity.Allocate(static_cast<size_t>(image_count)));
@@ -782,11 +797,6 @@ Status CalculateAbbeImageFromRCWA(const RCWA& rcwa,
         d_g01.ptr, rcwa_data.g01.data(), static_cast<size_t>(order_count) * sizeof(Complex), cudaMemcpyHostToDevice, use_stream)));
     CHECK(StatusFromCudaLocal(cudaMemcpyAsync(
         d_g11.ptr, rcwa_data.g11.data(), static_cast<size_t>(order_count) * sizeof(Complex), cudaMemcpyHostToDevice, use_stream)));
-    CHECK(StatusFromCudaLocal(cudaMemcpyAsync(d_source_indices.ptr,
-                                              rcwa_data.source_indices.data(),
-                                              rcwa_data.source_indices.size() * sizeof(int),
-                                              cudaMemcpyHostToDevice,
-                                              use_stream)));
     CHECK(StatusFromCudaLocal(cudaMemcpyAsync(d_source_ux.ptr,
                                               rcwa_data.source_ux.data(),
                                               rcwa_data.source_ux.size() * sizeof(Complex),
@@ -874,11 +884,11 @@ Status CalculateAbbeImageFromRCWA(const RCWA& rcwa,
                                 1);
                 BuildSpectrumTileKernel<<<grid, block, 0, use_stream>>>(rcwa_data.s_port,
                                                                         order_count,
+                                                                        rcwa_data.packed_source_count,
                                                                         rcwa_data.src_h,
                                                                         rcwa_data.src_w,
                                                                         static_cast<int>(y_count),
                                                                         static_cast<int>(x_count),
-                                                                        d_source_indices.ptr,
                                                                         d_source_ux.ptr,
                                                                         d_source_uy.ptr,
                                                                         static_cast<int>(source_base),
@@ -925,3 +935,4 @@ Status CalculateAbbeImageFromRCWA(const RCWA& rcwa,
     CHECK(StatusFromCufftLocal(cufftDestroy(plan)));
     return Status::kSuccess;
 }
+
