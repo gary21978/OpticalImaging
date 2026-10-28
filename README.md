@@ -1,196 +1,50 @@
-# OpticalImaging
+# CUDA RCWA Optical Simulator
 
-This repository currently contains a CUDA/C++ near-field electromagnetic solver based on RCWA and one far-field imaging path based on the Abbe method.
+A CUDA C++ implementation of rigorous coupled-wave analysis (RCWA) for periodic optical structures. The project solves layered electromagnetic structures, samples near fields, and computes images using an RCWA-driven Abbe imaging model. Matrix operations can use GPU memory as well as host or file-backed storage for larger problems.
 
-## Current Scope
+## Capabilities
 
-The project is split into:
+- Define input and output media, homogeneous layers, and sampled patterned layers with Laurent or Lalanne factorization.
+- Configure incidence and plane-wave polarization, assemble the global scattering matrix, sample electric fields, and calculate reflectance, transmittance, and absorption.
+- Select different solver methods and their regular or high-order variants; repeat a layer stack and optionally select harmonic order automatically.
+- Compute Abbe images with configurable illumination, polarization, aperture, focus, object planes, and Zernike aberrations.
+- Use tiled matrix operations with GPU, pinned host-memory, or file-backed storage.
 
-- `include/common_utils.h`
-  Common numeric types, CUDA helpers, status handling, complex helpers, and utility macros.
-- `include/rcwa.h`
-  Public interface for the RCWA solver.
-- `src/rcwa.cu`
-  RCWA implementation, including layer assembly, global S-matrix solve, field extraction, and energy balance.
-- `include/farfield_abbe.h`
-  Public Abbe imaging API.
-- `include/abbe_imager.h`
-  Thin C++ wrapper around the Abbe API.
-- `src/farfield_abbe.cu`
-  RCWA-driven Abbe imaging implementation.
-- `src/complex_matrix.cu`
-  Complex matrix operations used by the solver.
-- `examples/`
-  Small executables for rendering, consistency checks, and method benchmarking.
+The public solver interface is in `include/rcwa.h`. Abbe imaging is exposed by `include/farfield_abbe.h` and the `AbbeImager` wrapper in `include/abbe_imager.h`. Implementations are in `src/`; executable examples are in `example/`.
 
-## Implemented Features
+## Requirements and build
 
-### RCWA solver
+- CMake 3.19 or later
+- A CUDA-capable NVIDIA GPU, compatible driver, and CUDA Toolkit with cuBLAS, cuSOLVER, and cuFFT
+- A C++17-capable host compiler supported by the installed CUDA Toolkit
 
-`RCWA` in `nearfield/include/rcwa.h` supports:
-
-- input and output media definition
-- homogeneous and patterned layers
-- incident-angle setup
-- plane-wave source injection
-- global S-matrix solution
-- near-field sampling on an `x/y` grid
-- energy balance calculation
-- repeated-stack acceleration through `RepeatCurrentStackSMatrix`
-
-The RCWA class also exposes multiple matrix-exponential / S-matrix computation paths:
-
-- `G` path
-- `S` path
-- `F` path
-- regular and higher-order variants
-
-These are mainly exercised by the benchmark-style example programs.
-
-### Abbe imaging
-
-The only active imaging path is Abbe imaging.
-
-Public entry points:
-
-- `CalculateAbbeImageFromRCWA(...)`
-- `AbbeImager::ComputeFromRCWA(...)`
-
-Supported Abbe configuration areas:
-
-- source aperture shape:
-  `kAnnular`, `kDipoleCirc`, `kQuasar`, `kRect`
-- source polarization mode:
-  `kJonesVector`, `kX`, `kY`, `kLine`, `kCircular`, `kAngleDegrees`
-- projector focus sweep:
-  `AbbeProjectorConfig::focus_range`
-- object-plane sweep:
-  `AbbeNumericsConfig::object_z_positions`
-- projector aberration coefficients:
-  `AbbeProjectorConfig::aberration_zernike`
-
-Output format:
-
-- `AbbeImageResult::intensity` stores `[z][focus][y][x]`
-- `image_x` and `image_y` store the sampled image coordinates
-
-## Build
-
-Build system:
-
-- CMake 3.19+
-- CUDA toolkit
-- C++17
-
-Configured in `nearfield/CMakeLists.txt`:
-
-- `USE_DOUBLE_PRECISION` defaults to `ON`
-- CUDA architecture is currently hardcoded to `89`
-- optimization flags are enabled for both host and device code
-
-Build commands:
+From the repository root:
 
 ```bash
-cmake -S nearfield -B nearfield/build
-cmake --build nearfield/build -j
+cmake -S . -B build
+cmake --build build -j
 ```
 
-## Built Targets
-
-The current CMake file builds these executables:
-
-- `homogeneous_test`
-- `method_compare_full`
-- `farfield_abbe_render`
-
-### `farfield_abbe_render`
-
-Location:
-
-- `nearfield/examples/farfield_abbe_render.cu`
-
-Purpose:
-
-- builds a small multilayer RCWA scene
-- computes an Abbe far-field image from RCWA output
-- computes a near-field image on the same sampling grid
-- writes PNG outputs to an output directory
-
-Default output files:
-
-- `nearfield/output/mask.png`
-- `nearfield/output/nearfield.png`
-- `nearfield/output/farfield.png`
-
-Run:
+The default CUDA architecture is `89`. Set an architecture appropriate for the target GPU when configuring, for example:
 
 ```bash
-./nearfield/build/farfield_abbe_render
+cmake -S . -B build -DCMAKE_CUDA_ARCHITECTURES=89
 ```
 
-Optional output directory:
+CMake searches for `nvcc` on `PATH` and uses it when found. Check `nvcc --version` if multiple toolkits are installed. `USE_DOUBLE_PRECISION` defaults to `ON`; configure with `-DUSE_DOUBLE_PRECISION=OFF` to use single precision. The build enables aggressive host and CUDA floating-point optimization flags.
+
+## Storage configuration
+
+`RCWA_MEMORY_MODE` accepts `resident`, `ram` or `ram_only`, `hybrid`, and `out_of_core` or `ooc`. These select GPU-resident allocation or out-of-core policies using pinned host memory and/or files. Available memory and allocation thresholds also affect placement. For example:
 
 ```bash
-./nearfield/build/farfield_abbe_render my_output_dir
+RCWA_MEMORY_MODE=ram_only RCWA_RAM_MB=4096 ./build/TSV 2 output/tsv-test
 ```
 
-### `homogeneous_test`
+Other controls include `RCWA_RESIDENT_MB`, `RCWA_GPU_BUDGET_MB`, `RCWA_TILE_SIZE`, `RCWA_LU_PANEL`, `RCWA_CACHE_DIR`, `RCWA_DIRECT_PINNED`, `RCWA_STAGING_POOL`, and `RCWA_GEMM_PIPELINE`. Their implementation and defaults are in `src/matrix_storage.cu`; tune them for the available hardware and workload.
 
-Location:
+## API and data layout
 
-- `nearfield/examples/homogeneous_test.cu`
+A typical workflow is to construct `RCWA(freq, order_x, order_y, Lx, Ly)`, add media and layers, set the incident angles, and solve the global S matrix. Set a plane-wave source before calling `FieldXY`, or provide axes and imaging configuration to `CalculateAbbeImageFromRCWA` or `AbbeImager::ComputeFromRCWA`. The examples show allocation, status checking, and cleanup for the corresponding operations. Use consistent length units: the examples set `freq` to the reciprocal of the wavelength.
 
-Purpose:
-
-- checks consistency between `AddLayer(...)` and `AddLayerHomogeneous(...)`
-- checks explicit free-space input/output layer behavior
-- checks repeated homogeneous stack behavior
-
-Run:
-
-```bash
-./nearfield/build/homogeneous_test
-```
-
-### `method_compare_full`
-
-Location:
-
-- `nearfield/examples/method_compare_full.cu`
-
-Purpose:
-
-- benchmarks RCWA internal computation modes
-- compares runtime and relative S-matrix differences across:
-  `G12`, `G18`, `S12`, `S18`, `F12`, `F18`
-
-This executable is a solver-method benchmark. It is not an imaging-method comparison anymore.
-
-Run:
-
-```bash
-./nearfield/build/method_compare_full
-```
-
-## Data Layout Notes
-
-Some arrays use solver-oriented layouts rather than image-oriented layouts.
-
-- geometry masks in the examples are often filled as `[x][y]`
-- Abbe output images are stored logically as `[z][focus][y][x]`
-- several example helpers convert between solver storage order and raster image order before writing PNGs
-
-When adding new post-processing code, check the existing indexing conventions before assuming row-major image layout.
-
-## Minimal Usage Sketch
-
-Typical flow for RCWA + Abbe imaging:
-
-1. Construct `RCWA(freq, order_x, order_y, Lx, Ly)`.
-2. Add input/output media and layers.
-3. Call `SetIncidentAngles(...)`.
-4. Call `SolveGlobalSMatrix()`.
-5. Prepare image sampling axes.
-6. Fill `AbbeSourceConfig`, `AbbeProjectorConfig`, and `AbbeNumericsConfig`.
-7. Call `AbbeImager::ComputeFromRCWA(...)`.
-8. Read `AbbeImageResult::intensity`.
+Sampled material arrays in the examples use `[x][y]` indexing. `AbbeImageResult::intensity` is laid out as `[object plane][focus][y][x]`; image output is written in row-major order. Account for these layouts when preparing geometry or post-processing results.
