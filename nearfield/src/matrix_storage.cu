@@ -1,6 +1,7 @@
 #include "matrix_storage.h"
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
@@ -144,30 +145,105 @@ struct Device
         p = nullptr;
     }
 };
+struct CopyStream
+{
+    cudaStream_t stream = nullptr;
+    ~CopyStream() { if (stream) { cudaStreamSynchronize(stream); cudaStreamDestroy(stream); } }
+};
+struct Fence
+{
+    cudaStream_t stream;
+    ~Fence() { cudaStreamSynchronize(stream); }
+};
+struct CopyEvent
+{
+    cudaEvent_t event = nullptr;
+    ~CopyEvent() { if (event) cudaEventDestroy(event); }
+    Status Create()
+    {
+        return cudaEventCreateWithFlags(&event, cudaEventDisableTiming) == cudaSuccess
+                   ? Status::kSuccess : Status::kCudaError;
+    }
+};
+struct PinnedPool
+{
+    struct Entry { Complex* ptr; size_t count; int device; };
+    std::vector<Entry> entries;
+    ~PinnedPool() { for (const auto& entry : entries) cudaFreeHost(entry.ptr); }
+};
+thread_local PinnedPool staging_pool;
+bool UseStagingPool()
+{
+    const char* value = std::getenv("RCWA_STAGING_POOL");
+    return value && std::strcmp(value, "1") == 0;
+}
+bool UseDirectPinned()
+{
+    const char* value = std::getenv("RCWA_DIRECT_PINNED");
+    return !value || std::strcmp(value, "0") != 0;
+}
 struct HostBuffer
 {
     Complex* p = nullptr;
     size_t count = 0;
     bool pinned = false;
+    int device = -1;
     ~HostBuffer()
     {
         Reset();
     }
     void Reset()
     {
-        if (pinned) cudaFreeHost(p);
+        if (pinned && p)
+        {
+            if (UseStagingPool() && device >= 0)
+            {
+                auto smallest = std::min_element(staging_pool.entries.begin(), staging_pool.entries.end(),
+                    [](const auto& a, const auto& b) { return a.count < b.count; });
+                if (staging_pool.entries.size() < 4)
+                    staging_pool.entries.push_back({p, count, device});
+                else if (smallest != staging_pool.entries.end() && smallest->count < count)
+                {
+                    cudaFreeHost(smallest->ptr);
+                    *smallest = {p, count, device};
+                }
+                else cudaFreeHost(p);
+            }
+            else cudaFreeHost(p);
+        }
         else std::free(p);
         p = nullptr;
         count = 0;
         pinned = false;
+        device = -1;
     }
     Complex* data() { return p; }
     Complex& operator[](size_t i) { return p[i]; }
     Status Alloc(size_t wanted)
     {
         if (!wanted) return Status::kSuccess;
-        count = std::min(wanted, EnvSize("RCWA_HOST_BUFFER_MB", 128) * 1024 * 1024 /
-                                     sizeof(Complex));
+        const size_t limit = EnvSize("RCWA_HOST_BUFFER_MB", 128) * 1024 * 1024 /
+                             sizeof(Complex);
+        count = std::min(wanted, limit);
+        if (UseStagingPool())
+        {
+            if (cudaGetDevice(&device) != cudaSuccess) { cudaGetLastError(); device = -1; }
+            if (device >= 0)
+            {
+                auto best = staging_pool.entries.end();
+                for (auto it = staging_pool.entries.begin(); it != staging_pool.entries.end(); ++it)
+                    if (it->device == device && it->count >= count && it->count <= limit &&
+                        (best == staging_pool.entries.end() || it->count < best->count)) best = it;
+                if (best != staging_pool.entries.end())
+                {
+                    p = best->ptr;
+                    count = best->count;
+                    pinned = true;
+                    staging_pool.entries.erase(best);
+                    return Status::kSuccess;
+                }
+            }
+        }
         if (cudaMallocHost(&p, count * sizeof(Complex)) == cudaSuccess)
             pinned = true;
         else
@@ -194,6 +270,18 @@ Status Cuda(cudaError_t s)
     return s == cudaSuccess ? Status::kSuccess : Status::kCudaError;
 }
 Status Sync(cudaStream_t s) { return Cuda(cudaStreamSynchronize(s)); }
+bool RamRect(const Complex* ptr, int64_t ld, int64_t row, int64_t col,
+             int64_t rows, int64_t cols)
+{
+    Allocation allocation{};
+    size_t offset = 0;
+    if (!ptr || ld <= 0 || row < 0 || col < 0 || rows <= 0 || cols <= 0 ||
+        row > ld - rows || !Find(ptr, &allocation, &offset) || allocation.kind != BackingKind::kRam)
+        return false;
+    const size_t limit = (allocation.bytes - offset) / sizeof(Complex);
+    const uint64_t end = static_cast<uint64_t>(col + cols - 1) * ld + row + rows;
+    return end <= limit;
+}
 // Pack/upload or download/write a rectangle in bounded, pinned column strips.
 // The buffer is synchronized before reuse, including the pageable fallback.
 Status UploadRect(Complex* device, int64_t device_ld,
@@ -201,6 +289,16 @@ Status UploadRect(Complex* device, int64_t device_ld,
                   int64_t rows, int64_t cols, HostBuffer& host, cudaStream_t stream,
                   const std::vector<int>* pivots = nullptr)
 {
+    if (UseDirectPinned() && !pivots && RamRect(src, ld, row, col, rows, cols))
+    {
+        CHECK(Cuda(cudaMemcpy2DAsync(device, device_ld * sizeof(Complex),
+                                    src + col * ld + row, ld * sizeof(Complex),
+                                    rows * sizeof(Complex), cols, cudaMemcpyHostToDevice, stream)));
+        CHECK(Sync(stream));
+        const uint64_t bytes = static_cast<uint64_t>(rows) * cols * sizeof(Complex);
+        stats.ram_bytes_read += bytes;
+        return Status::kSuccess;
+    }
     if (host.count < static_cast<size_t>(rows)) return Status::kInvalidValue;
     const int64_t strip = std::max<int64_t>(1, host.count / rows);
     for (int64_t j = 0; j < cols; j += strip)
@@ -223,6 +321,16 @@ Status DownloadRect(const Complex* device, int64_t device_ld,
                     Complex* dst, int64_t ld, int64_t row, int64_t col,
                     int64_t rows, int64_t cols, HostBuffer& host, cudaStream_t stream)
 {
+    if (UseDirectPinned() && RamRect(dst, ld, row, col, rows, cols))
+    {
+        CHECK(Cuda(cudaMemcpy2DAsync(dst + col * ld + row, ld * sizeof(Complex),
+                                    device, device_ld * sizeof(Complex), rows * sizeof(Complex),
+                                    cols, cudaMemcpyDeviceToHost, stream)));
+        CHECK(Sync(stream));
+        const uint64_t bytes = static_cast<uint64_t>(rows) * cols * sizeof(Complex);
+        stats.ram_bytes_written += bytes;
+        return Status::kSuccess;
+    }
     if (host.count < static_cast<size_t>(rows)) return Status::kInvalidValue;
     const int64_t strip = std::max<int64_t>(1, host.count / rows);
     for (int64_t j = 0; j < cols; j += strip)
@@ -629,18 +737,68 @@ Status Gemm(cublasHandle_t handle,
     const size_t csize = cf ? bm * bn : 0, abase = af ? bm * bk : 0;
     // Keep a whole B column band across all row tiles. If the budget allows,
     // also upload A once for this operation instead of once per output tile.
-    const bool cache_b = bf && capacity >= abase + csize &&
+    const char* reuse_env = std::getenv("RCWA_GEMM_REUSE");
+    const bool reuse = !reuse_env || std::strcmp(reuse_env, "0") != 0;
+    const bool cache_b = reuse && bf && capacity >= abase + csize &&
                          static_cast<size_t>(k) <= (capacity - abase - csize) / bn;
     const size_t bsize = bf ? (cache_b ? k * bn : bk * bn) : 0;
-    const bool cache_a = af && capacity >= bsize + csize &&
+    const bool cache_a = reuse && af && capacity >= bsize + csize &&
                          static_cast<size_t>(m) <= (capacity - bsize - csize) / k;
     const size_t asize = af ? (cache_a ? m * k : bm * bk) : 0;
-    Device da, db, dc;
+    const bool stage_a_needed = af && !cache_a, stage_b_needed = bf && !cache_b;
+    const bool direct_a = stage_a_needed && UseDirectPinned() && IsRam(A);
+    const bool direct_b = stage_b_needed && UseDirectPinned() && IsRam(B);
+    const size_t extra = (stage_a_needed ? static_cast<size_t>(bm) * bk : 0) +
+                         (stage_b_needed ? static_cast<size_t>(bk) * bn : 0);
+    const char* pipeline_env = std::getenv("RCWA_GEMM_PIPELINE");
+    bool pipeline = (!pipeline_env || std::strcmp(pipeline_env, "0") != 0) &&
+                    (stage_a_needed || stage_b_needed) && k > bk &&
+                    asize + bsize + csize <= capacity &&
+                    extra <= capacity - asize - bsize - csize &&
+                    std::max(stage_a_needed && !direct_a ? static_cast<size_t>(bm) * bk : 0,
+                             stage_b_needed && !direct_b ? static_cast<size_t>(bk) * bn : 0) <=
+                        EnvSize("RCWA_HOST_BUFFER_MB", 128) * 1024 * 1024 / sizeof(Complex);
+    Device da, db, dc, da_alt, db_alt;
     if (af) CHECK(da.Alloc(asize));
     if (bf) CHECK(db.Alloc(bsize));
     if (cf) CHECK(dc.Alloc(csize));
+    std::array<HostBuffer, 2> stage_a, stage_b;
+    std::array<CopyEvent, 2> ready, used;
+    CopyStream copy_stream;
+    bool slot_ready[2] = {false, false}, slot_used[2] = {false, false};
+    if (pipeline)
+    {
+        for (int s = 0; s < 2; ++s)
+        {
+            if (stage_a_needed && !direct_a &&
+                stage_a[s].Alloc(static_cast<size_t>(bm) * bk) != Status::kSuccess) pipeline = false;
+            if (pipeline && stage_b_needed && !direct_b &&
+                stage_b[s].Alloc(static_cast<size_t>(bk) * bn) != Status::kSuccess) pipeline = false;
+            if ((stage_a_needed && !direct_a && !stage_a[s].pinned) ||
+                (stage_b_needed && !direct_b && !stage_b[s].pinned)) pipeline = false;
+            if (!pipeline) break;
+        }
+        if (pipeline && stage_a_needed && da_alt.Alloc(static_cast<size_t>(bm) * bk) != Status::kSuccess)
+        { cudaGetLastError(); pipeline = false; }
+        if (pipeline && stage_b_needed && db_alt.Alloc(static_cast<size_t>(bk) * bn) != Status::kSuccess)
+        { cudaGetLastError(); pipeline = false; }
+        if (pipeline)
+        {
+            if (cudaStreamCreateWithFlags(&copy_stream.stream, cudaStreamNonBlocking) != cudaSuccess)
+            { cudaGetLastError(); pipeline = false; }
+            for (int s = 0; pipeline && s < 2; ++s)
+                if (ready[s].Create() != Status::kSuccess || used[s].Create() != Status::kSuccess)
+                { cudaGetLastError(); pipeline = false; }
+        }
+        if (!pipeline)
+        {
+            da_alt.Reset(); db_alt.Reset();
+            for (int s = 0; s < 2; ++s) { stage_a[s].Reset(); stage_b[s].Reset(); }
+        }
+    }
     HostBuffer host;
     CHECK(host.Alloc(std::max({asize, bsize, csize})));
+    Fence compute_fence{stream};
     if (cache_a)
     {
         const auto rows = ta == CUBLAS_OP_N ? m : k;
@@ -665,6 +823,91 @@ Status Gemm(cublasHandle_t handle,
             const int cld = cf ? mi : static_cast<int>(ldc);
             if (cf && (beta.x != 0 || beta.y != 0))
                 CHECK(UploadRect(dc.p, mi, C, ldc, i, j, mi, nj, host, stream));
+            if (pipeline)
+            {
+                const auto stage = [&](int slot, int64_t t) -> Status {
+                    if (slot_ready[slot]) CHECK(Cuda(cudaEventSynchronize(ready[slot].event)));
+                    if (slot_used[slot])
+                        CHECK(Cuda(cudaStreamWaitEvent(copy_stream.stream, used[slot].event, 0)));
+                    const int kt = static_cast<int>(std::min(bk, k - t));
+                    const int ar = ta == CUBLAS_OP_N ? mi : kt, ac = ta == CUBLAS_OP_N ? kt : mi;
+                    const int br = tb == CUBLAS_OP_N ? kt : nj, bc = tb == CUBLAS_OP_N ? nj : kt;
+                    if (stage_a_needed)
+                    {
+                        const int64_t row = ta == CUBLAS_OP_N ? i : t;
+                        const int64_t col = ta == CUBLAS_OP_N ? t : i;
+                        const Complex* source = stage_a[slot].p;
+                        size_t pitch = static_cast<size_t>(ar) * sizeof(Complex);
+                        if (direct_a)
+                        {
+                            if (!RamRect(A, lda, row, col, ar, ac)) return Status::kInvalidValue;
+                            source = A + col * lda + row;
+                            pitch = static_cast<size_t>(lda) * sizeof(Complex);
+                            const uint64_t bytes = static_cast<uint64_t>(ar) * ac * sizeof(Complex);
+                            stats.ram_bytes_read += bytes;
+                        }
+                        else CHECK(ReadRect(A, lda, row, col, ar, ac, stage_a[slot].p, stream));
+                        CHECK(Cuda(cudaMemcpy2DAsync(slot ? da_alt.p : da.p, ar * sizeof(Complex),
+                                                     source, pitch, ar * sizeof(Complex), ac,
+                                                     cudaMemcpyHostToDevice, copy_stream.stream)));
+                    }
+                    if (stage_b_needed)
+                    {
+                        const int64_t row = tb == CUBLAS_OP_N ? t : j;
+                        const int64_t col = tb == CUBLAS_OP_N ? j : t;
+                        const Complex* source = stage_b[slot].p;
+                        size_t pitch = static_cast<size_t>(br) * sizeof(Complex);
+                        if (direct_b)
+                        {
+                            if (!RamRect(B, ldb, row, col, br, bc)) return Status::kInvalidValue;
+                            source = B + col * ldb + row;
+                            pitch = static_cast<size_t>(ldb) * sizeof(Complex);
+                            const uint64_t bytes = static_cast<uint64_t>(br) * bc * sizeof(Complex);
+                            stats.ram_bytes_read += bytes;
+                        }
+                        else CHECK(ReadRect(B, ldb, row, col, br, bc, stage_b[slot].p, stream));
+                        CHECK(Cuda(cudaMemcpy2DAsync(slot ? db_alt.p : db.p, br * sizeof(Complex),
+                                                     source, pitch, br * sizeof(Complex), bc,
+                                                     cudaMemcpyHostToDevice, copy_stream.stream)));
+                    }
+                    CHECK(Cuda(cudaEventRecord(ready[slot].event, copy_stream.stream)));
+                    slot_ready[slot] = true;
+                    return Status::kSuccess;
+                };
+                CHECK(stage(0, 0));
+                for (int64_t t = 0, tile = 0; t < k; t += bk, ++tile)
+                {
+                    const int slot = static_cast<int>(tile & 1);
+                    const int kt = static_cast<int>(std::min(bk, k - t));
+                    const int ar = ta == CUBLAS_OP_N ? mi : kt;
+                    const int br = tb == CUBLAS_OP_N ? kt : nj;
+                    CHECK(Cuda(cudaStreamWaitEvent(stream, ready[slot].event, 0)));
+                    const Complex* ap = A + (ta == CUBLAS_OP_N ? i + t * lda : t + i * lda);
+                    int ald = static_cast<int>(lda);
+                    if (cache_a)
+                    {
+                        ald = static_cast<int>(ta == CUBLAS_OP_N ? m : k);
+                        ap = da.p + (ta == CUBLAS_OP_N ? i + t * m : t + i * k);
+                    }
+                    else if (stage_a_needed) { ap = slot ? da_alt.p : da.p; ald = ar; }
+                    const Complex* bp = B + (tb == CUBLAS_OP_N ? t + j * ldb : j + t * ldb);
+                    int bld = static_cast<int>(ldb);
+                    if (cache_b)
+                    {
+                        bld = static_cast<int>(tb == CUBLAS_OP_N ? k : nj);
+                        bp = db.p + (tb == CUBLAS_OP_N ? t : t * nj);
+                    }
+                    else if (stage_b_needed) { bp = slot ? db_alt.p : db.p; bld = br; }
+                    const Complex bt = t == 0 ? beta : one;
+                    CHECK(Blas(CUBLAS_GEMM(handle, ta, tb, mi, nj, kt, &alpha,
+                                           ap, ald, bp, bld, &bt, cp, cld)));
+                    CHECK(Cuda(cudaEventRecord(used[slot].event, stream)));
+                    slot_used[slot] = true;
+                    if (t + bk < k) CHECK(stage(1 - slot, t + bk));
+                }
+                if (cf) CHECK(DownloadRect(dc.p, mi, C, ldc, i, j, mi, nj, host, stream));
+                continue;
+            }
             for (int64_t t = 0; t < k; t += bk)
             {
                 const int kt = static_cast<int>(std::min(bk, k - t));
